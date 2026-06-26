@@ -7,7 +7,7 @@ RUN apk add --no-cache git ca-certificates
 RUN go install github.com/osrg/gobgp/v3/cmd/gobgpd@${GOBGP_VERSION} \
     && go install github.com/osrg/gobgp/v3/cmd/gobgp@${GOBGP_VERSION}
 
-FROM python:3.12-alpine
+FROM python:3.14-alpine
 
 RUN apk add --no-cache \
       bash \
