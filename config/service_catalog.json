@@ -1,0 +1,637 @@
+[
+  {
+    "id": "x-twitter",
+    "title": "X / Twitter",
+    "description": "X.com, Twitter API, media/CDN domains.",
+    "category": "social",
+    "providers": [
+      {
+        "type": "geoip_plain",
+        "name": "metacubex-geoip-twitter",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/twitter.list",
+        "max_prefixes": 200
+      },
+      {
+        "type": "static_prefixes",
+        "name": "manual-known-x-ip",
+        "prefixes": [
+          "162.159.140.229/32"
+        ]
+      },
+      {
+        "type": "dns_domains",
+        "name": "x-twitter-domains",
+        "domains": [
+          "x.com",
+          "twitter.com",
+          "api.x.com",
+          "api.twitter.com",
+          "pbs.twimg.com",
+          "video.twimg.com",
+          "abs.twimg.com",
+          "ton.twitter.com"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "youtube-googlevideo",
+    "title": "YouTube / Google Video",
+    "description": "YouTube frontend, video CDN, thumbnails and API domains.",
+    "category": "video",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-youtube",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/youtube",
+        "max_domains": 30
+      },
+      {
+        "type": "ipranges_json",
+        "name": "google-official-ipranges-youtube-cdn",
+        "url": "https://www.gstatic.com/ipranges/goog.json",
+        "max_prefixes": 500
+      },
+      {
+        "type": "dns_domains",
+        "name": "youtube-domains",
+        "domains": [
+          "youtube.com",
+          "www.youtube.com",
+          "m.youtube.com",
+          "music.youtube.com",
+          "youtubei.googleapis.com",
+          "ytimg.com",
+          "i.ytimg.com",
+          "s.ytimg.com",
+          "googlevideo.com",
+          "redirector.googlevideo.com",
+          "manifest.googlevideo.com"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "telegram",
+    "title": "Telegram",
+    "description": "Telegram IP ranges from geoip source.",
+    "category": "messenger",
+    "providers": [
+      {
+        "type": "geoip_plain",
+        "name": "metacubex-geoip-telegram",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/telegram.list",
+        "max_prefixes": 500
+      }
+    ]
+  },
+  {
+    "id": "google",
+    "title": "Google",
+    "description": "Google IP ranges from geoip source. Use carefully because this may affect many Google services.",
+    "category": "platform",
+    "providers": [
+      {
+        "type": "ipranges_json",
+        "name": "google-official-ipranges-goog-json",
+        "url": "https://www.gstatic.com/ipranges/goog.json",
+        "max_prefixes": 500
+      }
+    ]
+  },
+  {
+    "id": "meta-facebook",
+    "title": "Meta / Facebook / Instagram",
+    "description": "Meta/Facebook IP ranges from geoip source.",
+    "category": "social",
+    "providers": [
+      {
+        "type": "geoip_plain",
+        "name": "metacubex-geoip-facebook",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/facebook.list",
+        "max_prefixes": 500
+      }
+    ]
+  },
+  {
+    "id": "openai",
+    "title": "OpenAI / ChatGPT / Codex",
+    "description": "OpenAI, ChatGPT, Codex, API, Sora, static assets and voice infrastructure.",
+    "category": "ai",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-openai",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/openai",
+        "max_domains": 100
+      },
+      {
+        "type": "dns_domains",
+        "name": "openai-core-domains",
+        "domains": [
+          "chat.com",
+          "chatgpt.com",
+          "chat.openai.com",
+          "ios.chat.openai.com",
+          "api.openai.com",
+          "platform.openai.com",
+          "auth.openai.com",
+          "openai.com",
+          "www.openai.com",
+          "oaistatic.com",
+          "cdn.oaistatic.com",
+          "oaistatsig.com",
+          "files.oaiusercontent.com",
+          "sora.com",
+          "www.sora.com",
+          "openai.com.cdn.cloudflare.net",
+          "openaiapi-site.azureedge.net",
+          "openaicom-api-bdcpf8c6d2e9atf6.z01.azurefd.net",
+          "openaicom.imgix.net",
+          "openaicomproductionae4b.blob.core.windows.net",
+          "production-openaicom-storage.azureedge.net",
+          "chatgpt.livekit.cloud",
+          "turn.livekit.cloud"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "anthropic",
+    "title": "Anthropic / Claude",
+    "description": "Anthropic, Claude, Claude Code, API, Console, Docs and website CDN.",
+    "category": "ai",
+    "providers": [
+      {
+        "type": "static_prefixes",
+        "name": "anthropic-official-api-inbound-ipv4",
+        "prefixes": [
+          "160.79.104.0/23"
+        ]
+      },
+      {
+        "type": "dns_domains",
+        "name": "anthropic-core-domains",
+        "domains": [
+          "anthropic.com",
+          "www.anthropic.com",
+          "api.anthropic.com",
+          "console.anthropic.com",
+          "docs.anthropic.com",
+          "platform.claude.com",
+          "claude.ai",
+          "www.claude.ai",
+          "claude.com",
+          "www.claude.com",
+          "clau.de",
+          "downloads.claude.ai",
+          "bridge.claudeusercontent.com",
+          "assets.claude.ai",
+          "support.claude.com",
+          "status.claude.com",
+          "servd-anthropic-website.b-cdn.net",
+          "raw.githubusercontent.com"
+        ]
+      },
+      {
+        "type": "dns_domains",
+        "name": "anthropic-legacy-updater-domains",
+        "domains": [
+          "storage.googleapis.com"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "docker",
+    "title": "Docker",
+    "description": "Docker Hub, registry and Docker infrastructure domains from geosite.",
+    "category": "dev",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-docker",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/docker",
+        "max_domains": 70
+      }
+    ]
+  },
+  {
+    "id": "npmjs",
+    "title": "npm",
+    "description": "npm registry and package delivery domains from geosite.",
+    "category": "dev",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-npmjs",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/npmjs",
+        "max_domains": 70
+      }
+    ]
+  },
+  {
+    "id": "notion",
+    "title": "Notion",
+    "description": "Notion workspace, API and asset domains from geosite.",
+    "category": "productivity",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-notion",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/notion",
+        "max_domains": 70
+      }
+    ]
+  },
+  {
+    "id": "dropbox",
+    "title": "Dropbox",
+    "description": "Dropbox sync, web and content domains from geosite.",
+    "category": "cloud",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-dropbox",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/dropbox",
+        "max_domains": 80
+      }
+    ]
+  },
+  {
+    "id": "discord",
+    "title": "Discord",
+    "description": "Discord app, API, voice, CDN and media domains.",
+    "category": "messenger",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-discord",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/discord",
+        "max_domains": 90
+      },
+      {
+        "type": "dns_domains",
+        "name": "discord-core-domains",
+        "domains": [
+          "discord.com",
+          "discord.gg",
+          "discord.media",
+          "discordapp.com",
+          "discordapp.net",
+          "discordcdn.com",
+          "gateway.discord.gg",
+          "media.discordapp.net",
+          "cdn.discordapp.com"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "linkedin",
+    "title": "LinkedIn",
+    "description": "LinkedIn web, API and media domains from geosite.",
+    "category": "social",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-linkedin",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/linkedin",
+        "max_domains": 80
+      }
+    ]
+  },
+  {
+    "id": "instagram",
+    "title": "Instagram",
+    "description": "Instagram web, API and media domains from geosite.",
+    "category": "social",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-instagram",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/instagram",
+        "max_domains": 90
+      }
+    ]
+  },
+  {
+    "id": "facebook",
+    "title": "Facebook",
+    "description": "Facebook web, API and media domains from geosite.",
+    "category": "social",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-facebook",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/facebook",
+        "max_domains": 90
+      }
+    ]
+  },
+  {
+    "id": "netflix",
+    "title": "Netflix",
+    "description": "Netflix streaming, API and CDN domains from geosite.",
+    "category": "video",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-netflix",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/netflix",
+        "max_domains": 100
+      }
+    ]
+  },
+  {
+    "id": "whatsapp",
+    "title": "WhatsApp",
+    "description": "WhatsApp web, API, media and messenger domains.",
+    "category": "messenger",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-whatsapp",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/whatsapp",
+        "max_domains": 80
+      },
+      {
+        "type": "dns_domains",
+        "name": "whatsapp-core-domains",
+        "domains": [
+          "web.whatsapp.com",
+          "whatsapp.com",
+          "whatsapp.net",
+          "wa.me",
+          "static.whatsapp.net",
+          "media.whatsapp.net",
+          "mmg.whatsapp.net"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "tiktok",
+    "title": "TikTok",
+    "description": "TikTok, ByteDance global and video CDN domains.",
+    "category": "video",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-tiktok",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/tiktok",
+        "max_domains": 120
+      },
+      {
+        "type": "dns_domains",
+        "name": "tiktok-core-domains",
+        "domains": [
+          "tiktok.com",
+          "www.tiktok.com",
+          "tiktokv.com",
+          "tiktokcdn.com",
+          "tiktokcdn-us.com",
+          "tiktokcdn-eu.com",
+          "byteoversea.com",
+          "musical.ly",
+          "ttlivecdn.com",
+          "ttwstatic.com"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reddit",
+    "title": "Reddit",
+    "description": "Reddit web, media, static and support domains.",
+    "category": "social",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-reddit",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/reddit",
+        "max_domains": 80
+      }
+    ]
+  },
+  {
+    "id": "vimeo",
+    "title": "Vimeo",
+    "description": "Vimeo video, livestream and CDN domains.",
+    "category": "video",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-vimeo",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/vimeo",
+        "max_domains": 120
+      }
+    ]
+  },
+  {
+    "id": "huggingface",
+    "title": "Hugging Face",
+    "description": "Hugging Face models, Spaces and CDN domains.",
+    "category": "ai",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-huggingface",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/huggingface",
+        "max_domains": 70
+      },
+      {
+        "type": "dns_domains",
+        "name": "huggingface-core-domains",
+        "domains": [
+          "huggingface.co",
+          "hf.co",
+          "hf.space",
+          "cdn-lfs.huggingface.co",
+          "cdn-lfs-us-1.huggingface.co",
+          "cdn-lfs-eu-1.huggingface.co"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "perplexity",
+    "title": "Perplexity",
+    "description": "Perplexity AI web, API-adjacent and asset domains.",
+    "category": "ai",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-perplexity",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/perplexity",
+        "max_domains": 80
+      }
+    ]
+  },
+  {
+    "id": "google-gemini",
+    "title": "Google Gemini",
+    "description": "Gemini, Bard and Google AI Studio domains. Uses narrow DNS domains to avoid routing all Google.",
+    "category": "ai",
+    "providers": [
+      {
+        "type": "dns_domains",
+        "name": "google-gemini-core-domains",
+        "domains": [
+          "gemini.google.com",
+          "bard.google.com",
+          "aistudio.google.com",
+          "generativelanguage.googleapis.com",
+          "alkalimakersuite-pa.clients6.google.com"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "cursor",
+    "title": "Cursor",
+    "description": "Cursor editor, update and AI service domains.",
+    "category": "dev",
+    "providers": [
+      {
+        "type": "dns_domains",
+        "name": "cursor-core-domains",
+        "domains": [
+          "cursor.com",
+          "www.cursor.com",
+          "api2.cursor.sh",
+          "api3.cursor.sh",
+          "repo42.cursor.sh",
+          "download.cursor.sh",
+          "updates.cursor.sh"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "slack",
+    "title": "Slack",
+    "description": "Slack workspace, messages, files and edge domains.",
+    "category": "productivity",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-slack",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/slack",
+        "max_domains": 100
+      }
+    ]
+  },
+  {
+    "id": "zoom",
+    "title": "Zoom",
+    "description": "Zoom meetings, web and account domains.",
+    "category": "productivity",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-zoom",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/zoom",
+        "max_domains": 80
+      }
+    ]
+  },
+  {
+    "id": "threads",
+    "title": "Threads",
+    "description": "Threads social network domains.",
+    "category": "social",
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-domain-list-threads",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/threads",
+        "max_domains": 60
+      }
+    ]
+  },
+  {
+    "id": "element-matrix",
+    "title": "Element / Matrix",
+    "description": "Автоматически найдено в V2Fly Geosite: geosite:matrix.",
+    "category": "messenger",
+    "auto_discovered": true,
+    "discovery": {
+      "source_name": "v2fly/domain-list-community",
+      "source_kind": "geosite",
+      "source_code": "matrix",
+      "source_url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/matrix",
+      "risk": {
+        "level": "targeted",
+        "label": "точный",
+        "tone": "ok",
+        "reason": "Похоже на конкретный сервис или бренд из Geosite."
+      },
+      "imported_at": "2026-06-20T04:29:50.332116+00:00"
+    },
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-geosite-element-matrix",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/matrix",
+        "max_domains": 100
+      }
+    ]
+  },
+  {
+    "id": "github-copilot",
+    "title": "Github Copilot",
+    "description": "Автоматически найдено в V2Fly Geosite: geosite:github-copilot.",
+    "category": "ai",
+    "auto_discovered": true,
+    "discovery": {
+      "source_name": "v2fly/domain-list-community",
+      "source_kind": "geosite",
+      "source_code": "github-copilot",
+      "source_url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/github-copilot",
+      "risk": {
+        "level": "targeted",
+        "label": "точный",
+        "tone": "ok",
+        "reason": "Похоже на конкретный сервис или бренд из Geosite."
+      },
+      "imported_at": "2026-06-20T05:12:00.827944+00:00"
+    },
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-geosite-github-copilot",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/github-copilot",
+        "max_domains": 100
+      }
+    ]
+  },
+  {
+    "id": "kinopub",
+    "title": "Kinopub",
+    "description": "Автоматически найдено в V2Fly Geosite: geosite:kinopub.",
+    "category": "service",
+    "auto_discovered": true,
+    "discovery": {
+      "source_name": "v2fly/domain-list-community",
+      "source_kind": "geosite",
+      "source_code": "kinopub",
+      "source_url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/kinopub",
+      "risk": {
+        "level": "targeted",
+        "label": "точный",
+        "tone": "ok",
+        "reason": "Похоже на конкретный сервис или бренд из Geosite."
+      },
+      "imported_at": "2026-06-22T15:16:41.518102+00:00"
+    },
+    "providers": [
+      {
+        "type": "geosite_plain",
+        "name": "v2fly-geosite-kinopub",
+        "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/kinopub",
+        "max_domains": 100
+      }
+    ]
+  }
+]
