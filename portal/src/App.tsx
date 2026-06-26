@@ -52,6 +52,8 @@ type PortalData = {
   history: UpdateHistoryResponse | null;
   services: ServicesResponse | null;
   serverResources: ServerResourcesResponse | null;
+  productUpdates: ProductUpdatesResponse | null;
+  jobs: JobsResponse | null;
 };
 
 type ServiceProvider = {
@@ -394,6 +396,33 @@ type JobStartResponse = {
   time?: string;
 };
 
+type SystemBackupItem = {
+  name: string;
+  size_bytes?: number;
+  mtime?: string;
+  created_at?: string;
+  trigger?: string;
+  product_version?: string;
+  product_channel?: string;
+  files_count?: number;
+  data_files_count?: number;
+  config_files_count?: number;
+  total_bytes?: number;
+  schema_version?: number;
+  restore_supported?: boolean;
+  warning?: string | null;
+};
+
+type SystemBackupsResponse = {
+  ok: boolean;
+  backups: SystemBackupItem[];
+  retention?: number;
+  max_bytes?: number;
+  scope?: string[];
+  excluded?: string[];
+  time?: string;
+};
+
 type ServiceSortMode = "az" | "za" | "enabled" | "routes-desc" | "routes-asc" | "issues";
 type CandidateSortMode = "new" | "existing" | "score" | "az" | "za";
 
@@ -501,11 +530,12 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
 ];
 
 const PRODUCT_VERSION = "0.1";
+const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
     id: "0.2.0-beta.1",
     version: "0.2.0-beta.1",
-    title: "0.2.0 beta",
+    title: "v0.2.0 beta",
     channel: "beta",
     status: "будущий канал",
     date: "после 0.1",
@@ -518,7 +548,7 @@ const UPDATE_VERSIONS = [
   {
     id: "0.1",
     version: "0.1",
-    title: "0.1 stable",
+    title: "v0.1 stable",
     channel: "stable",
     status: "текущая версия",
     date: "июнь 2026",
@@ -531,7 +561,7 @@ const UPDATE_VERSIONS = [
   {
     id: "0.0.9",
     version: "0.0.9",
-    title: "0.0.9 stable",
+    title: "v0.0.9 stable",
     channel: "stable",
     status: "предыдущая",
     date: "до 0.1",
@@ -541,6 +571,51 @@ const UPDATE_VERSIONS = [
     ]
   }
 ];
+
+function formatProductVersion(version?: string | null, channel?: string | null): string {
+  const normalizedVersion = (version || PRODUCT_VERSION).trim();
+  const versionLabel = normalizedVersion.startsWith("v") ? normalizedVersion : `v${normalizedVersion}`;
+  return channel ? `${versionLabel} ${channel}` : versionLabel;
+}
+
+function versionWeight(version?: string | null): number[] {
+  return (version || "")
+    .replace(/^v/i, "")
+    .replace(/[^0-9.].*$/, "")
+    .split(".")
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isFinite(part) ? part : 0));
+}
+
+function compareProductVersions(a?: string | null, b?: string | null): number {
+  const left = versionWeight(a);
+  const right = versionWeight(b);
+  const length = Math.max(left.length, right.length, 3);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] ?? 0) - (right[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+
+  return 0;
+}
+
+function productUpdateNotice(updates: ProductUpdatesResponse | null): ProductUpdateVersion | null {
+  if (!updates?.ok || !updates.manifest_url) return null;
+
+  const currentVersion = updates.current_version ?? PRODUCT_VERSION;
+  const versions = updates.versions ?? [];
+  const latestVersions = [
+    updates.latest?.stable ? versions.find((version) => version.version === updates.latest?.stable) ?? { version: updates.latest.stable, channel: "stable" } : null,
+    updates.latest?.beta ? versions.find((version) => version.version === updates.latest?.beta) ?? { version: updates.latest.beta, channel: "beta" } : null,
+  ].filter(Boolean) as ProductUpdateVersion[];
+
+  return [...latestVersions, ...versions]
+    .filter((version, index, all) => all.findIndex((item) => item.version === version.version) === index)
+    .filter((version) => compareProductVersions(version.version, currentVersion) > 0)
+    .sort((a, b) => compareProductVersions(b.version, a.version))
+    [0] ?? null;
+}
 
 async function downloadAuthenticatedFile(path: string, auth: AuthState, fallbackName: string): Promise<void> {
   const response = await fetch(`/backend${path}`, {
@@ -1483,6 +1558,311 @@ function TimeSettingsModal({
   );
 }
 
+function backupTriggerLabel(trigger?: string): string {
+  if (trigger === "manual") return "ручной";
+  if (trigger === "pre_restore") return "перед откатом";
+  return trigger || "не указан";
+}
+
+function BackupModal({
+  auth,
+  onClose,
+  onRefresh
+}: {
+  auth: AuthState;
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const [payload, setPayload] = useState<SystemBackupsResponse | null>(null);
+  const [jobs, setJobs] = useState<PortalJob[]>([]);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState("");
+  const [applyRoutes, setApplyRoutes] = useState(true);
+  const [busy, setBusy] = useState<"backup" | "restore" | "download" | "delete" | null>(null);
+  const [statusText, setStatusText] = useState<string | null>(null);
+  const [errorText, setErrorText] = useState<string | null>(null);
+
+  const loadBackups = useCallback(async () => {
+    const nextPayload = await apiFetch<SystemBackupsResponse>("/api/system/backups", auth);
+    setPayload(nextPayload);
+    setSelectedName((current) => {
+      if (current && nextPayload.backups.some((item) => item.name === current)) return current;
+      return nextPayload.backups[0]?.name ?? null;
+    });
+  }, [auth]);
+
+  const loadJobs = useCallback(async () => {
+    const nextJobs = await apiFetch<JobsResponse>("/api/jobs?limit=12", auth);
+    setJobs(nextJobs.jobs.filter((job) => job.kind === "system_backup" || job.kind === "system_restore"));
+  }, [auth]);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadBackups(), loadJobs()]);
+  }, [loadBackups, loadJobs]);
+
+  useEffect(() => {
+    refreshAll().catch((error) => setErrorText(error instanceof Error ? error.message : String(error)));
+  }, [refreshAll]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      refreshAll().catch(() => undefined);
+    }, 3500);
+
+    return () => window.clearInterval(timer);
+  }, [refreshAll]);
+
+  const activeJob = jobs.find((job) => jobIsActive(job));
+  const selectedBackup = payload?.backups.find((item) => item.name === selectedName) ?? null;
+  const restoreReady = Boolean(selectedBackup?.restore_supported && confirmation === "ВОССТАНОВИТЬ" && !activeJob && !busy);
+
+  const createBackup = async () => {
+    setBusy("backup");
+    setErrorText(null);
+    try {
+      await apiFetch<JobStartResponse>("/api/system/backups/job", auth, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      setStatusText("Создание бэкапа запущено в фоне.");
+      await refreshAll();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const restoreBackup = async () => {
+    if (!selectedBackup) return;
+
+    setBusy("restore");
+    setErrorText(null);
+    try {
+      await apiFetch<JobStartResponse>("/api/system/restore/job", auth, {
+        method: "POST",
+        body: JSON.stringify({
+          backup: selectedBackup.name,
+          confirmation,
+          apply_routes: applyRoutes
+        })
+      });
+      setStatusText("Откат запущен в фоне. Перед восстановлением будет создан safety-бэкап.");
+      setConfirmation("");
+      await refreshAll();
+      onRefresh();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const downloadBackup = async (backup: SystemBackupItem) => {
+    setBusy("download");
+    setErrorText(null);
+    try {
+      await downloadAuthenticatedFile(
+        `/api/system/backups/${encodeURIComponent(backup.name)}/download`,
+        auth,
+        backup.name
+      );
+      setStatusText("Бэкап скачан в браузер.");
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteBackup = async (backup: SystemBackupItem) => {
+    if (!confirm(`Удалить локальный бэкап "${backup.name}"? Это действие нельзя отменить через портал.`)) return;
+
+    setBusy("delete");
+    setErrorText(null);
+    try {
+      await apiFetch(`/api/system/backups/${encodeURIComponent(backup.name)}`, auth, {
+        method: "DELETE"
+      });
+      setStatusText(`Бэкап ${backup.name} удалён.`);
+      setConfirmation("");
+      await refreshAll();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <motion.div
+      className="modal-backdrop"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      onClick={onClose}
+    >
+      <motion.div
+        className="backup-modal"
+        initial={{ opacity: 0, y: 18, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.18 }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="panel-title backup-modal-title">
+          <div>
+            <h2>Бэкап и восстановление</h2>
+            <div className="panel-subtitle">
+              Архивируется пользовательское состояние: data/ и config/. Секреты .env, Docker images и код приложения не попадают в архив.
+            </div>
+          </div>
+          <button className="icon-button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="backup-meta-grid">
+          <div>
+            <span>Хранение</span>
+            <strong>{payload?.retention ?? "—"} последних</strong>
+          </div>
+          <div>
+            <span>
+              Лимит архива
+              <InfoTip
+                label="Как работает лимит архива"
+                text={`Один backup не может быть больше лимита. Старые backup-файлы автоматически удаляются сверх количества «Хранение». Текущие архивы лежат на VM в /opt/the333-bgp/data/system_backups.`}
+              />
+            </span>
+            <strong>{formatBytes(payload?.max_bytes)}</strong>
+          </div>
+          <div>
+            <span>Состав</span>
+            <strong>{payload?.scope?.join(" + ") || "data + config"}</strong>
+          </div>
+          <div>
+            <span>Всего бэкапов</span>
+            <strong>{payload?.backups.length ?? "—"}</strong>
+          </div>
+        </div>
+
+        {(statusText || errorText || activeJob) && (
+          <div className={`backup-status ${errorText ? "bad" : activeJob ? "warn" : "ok"}`}>
+            <span>{errorText ? "ошибка" : activeJob ? jobStatusLabel(activeJob.status) : "готово"}</span>
+            <strong>
+              {errorText || (activeJob ? `${activeJob.title ?? "Задача"}: ${jobSummaryText(activeJob)}` : statusText)}
+            </strong>
+          </div>
+        )}
+
+        <div className="backup-modal-grid">
+          <section className="backup-panel">
+            <div className="backup-panel-head">
+              <div>
+                <h3>Локальные бэкапы</h3>
+                <p>Список хранится на VM в data/system_backups.</p>
+              </div>
+              <div className="backup-panel-actions">
+                <button className="ghost-button" type="button" onClick={refreshAll} disabled={Boolean(busy)}>
+                  Обновить
+                </button>
+                <button className="primary-button" type="button" onClick={createBackup} disabled={Boolean(activeJob || busy)}>
+                  Создать бэкап
+                </button>
+              </div>
+            </div>
+
+            <div className="backup-list">
+              {(payload?.backups ?? []).length === 0 && (
+                <div className="backup-empty">Бэкапов пока нет. Создай первый архив перед рискованными изменениями.</div>
+              )}
+
+              {(payload?.backups ?? []).map((backup) => (
+                <button
+                  key={backup.name}
+                  className={`backup-row ${selectedName === backup.name ? "active" : ""}`}
+                  type="button"
+                  onClick={() => setSelectedName(backup.name)}
+                >
+                  <div>
+                    <strong>{backup.name}</strong>
+                    <span>
+                      {formatDate(backup.created_at || backup.mtime)} · {backupTriggerLabel(backup.trigger)} · {formatBytes(backup.size_bytes)}
+                    </span>
+                  </div>
+                  <div className="backup-row-meta">
+                    <span>{backup.files_count ?? "—"} файлов</span>
+                    <small>data {backup.data_files_count ?? "—"} · config {backup.config_files_count ?? "—"}</small>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="backup-panel restore-panel">
+            <div className="backup-panel-head">
+              <div>
+                <h3>Откат</h3>
+                <p>Перед восстановлением система автоматически создаёт safety-бэкап текущего состояния.</p>
+              </div>
+              {selectedBackup && (
+                <div className="backup-panel-actions">
+                  <button className="ghost-button" type="button" onClick={() => downloadBackup(selectedBackup)} disabled={Boolean(busy)}>
+                    Скачать zip
+                  </button>
+                  <button className="danger-button backup-delete-button" type="button" onClick={() => deleteBackup(selectedBackup)} disabled={Boolean(activeJob || busy)}>
+                    Удалить
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {selectedBackup ? (
+              <>
+                <div className="restore-target-card">
+                  <span>Выбранный архив</span>
+                  <strong>{selectedBackup.name}</strong>
+                  <small>
+                    {formatDate(selectedBackup.created_at || selectedBackup.mtime)} · версия {selectedBackup.product_version ?? "—"}
+                  </small>
+                </div>
+
+                {selectedBackup.warning && <div className="backup-warning">Архив читается с предупреждением: {selectedBackup.warning}</div>}
+                {!selectedBackup.restore_supported && <div className="backup-warning">Схема архива не поддерживается этой версией портала.</div>}
+
+                <label className="restore-check">
+                  <input
+                    type="checkbox"
+                    checked={applyRoutes}
+                    onChange={(event) => setApplyRoutes(event.target.checked)}
+                  />
+                  <span>После отката применить маршруты заново</span>
+                </label>
+
+                <div className="field">
+                  <label>Подтверждение отката</label>
+                  <input
+                    value={confirmation}
+                    onChange={(event) => setConfirmation(event.target.value)}
+                    placeholder="Введи ВОССТАНОВИТЬ"
+                  />
+                </div>
+
+                <button className="primary-button restore-button" type="button" onClick={restoreBackup} disabled={!restoreReady}>
+                  Восстановить выбранный бэкап
+                </button>
+              </>
+            ) : (
+              <div className="backup-empty">Выбери архив слева или создай новый бэкап.</div>
+            )}
+
+            <div className="footer-note">
+              Откат не меняет .env и пароль портала. Архивы можно удалить вручную по SSH из <code>/opt/the333-bgp/data/system_backups</code>.
+            </div>
+          </section>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function MetricCard({
   label,
   value,
@@ -1603,7 +1983,9 @@ function Dashboard({
   const ready = data.ready;
   const diagnostics = data.diagnostics as DashboardDiagnostics | null;
   const latestEvent = data.history?.history.slice(-1)[0] ?? null;
-  const recentEvents = data.history?.history.slice(-6).reverse() ?? [];
+  const portalEvents = buildPortalEvents(data);
+  const latestPortalEvent = portalEvents[0] ?? null;
+  const recentEvents = portalEvents.slice(0, 6);
   const lastStatus = diagnostics?.last_status;
   const services = data.services;
   const servicesCache = services?.cache;
@@ -1903,9 +2285,9 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
         />
         <MetricCard
           label="Последние события"
-          value={data.history?.count ?? 0}
-          note={latestEvent ? `последнее: ${formatDate(latestEvent.time)}` : "история пуста"}
-          tone={latestEvent?.ok === false ? "bad" : "blue"}
+          value={portalEvents.length}
+          note={latestPortalEvent ? `последнее: ${formatDate(latestPortalEvent.time ?? undefined)}` : "история пуста"}
+          tone={latestPortalEvent?.tone === "bad" ? "bad" : "blue"}
         />
       </div>
 
@@ -2036,36 +2418,36 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
             </span>
           </div>
 
-          <div className="ops-update-grid">
-            <div>
+          <div className="ops-update-list">
+            <div className="ops-update-row">
               <span>Время</span>
               <strong>{formatDate(latestEvent?.time ?? lastStatus?.updated_at ?? lastStatus?.time)}</strong>
             </div>
-            <div>
+            <div className="ops-update-row">
               <span>Запуск</span>
               <strong>{latestEvent ? triggerLabel(latestEvent.trigger) : "—"}</strong>
             </div>
-            <div>
+            <div className="ops-update-row">
               <span>Источник/режим</span>
               <strong>{selectedSource}</strong>
             </div>
-            <div>
+            <div className="ops-update-row">
               <span>Итоговый список</span>
               <strong>{routeValue(baseUpdateCount)}</strong>
             </div>
-            <div>
+            <div className="ops-update-row">
               <span>Маршруты модулей сервисов</span>
               <strong>{routeValue(moduleRoutesCount)}</strong>
             </div>
-            <div>
+            <div className="ops-update-row">
               <span>Опубликовано всего</span>
               <strong>{routeValue(publishedCount)}</strong>
             </div>
-            <div>
+            <div className="ops-update-row">
               <span>Добавлено</span>
               <strong>{routeValue(latestEvent?.added ?? lastStatus?.apply?.added)}</strong>
             </div>
-            <div>
+            <div className="ops-update-row">
               <span>Удалено</span>
               <strong>{routeValue(latestEvent?.deleted ?? lastStatus?.apply?.deleted)}</strong>
             </div>
@@ -2075,23 +2457,28 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
         <section className="panel-card compact-panel ops-card ops-events-card">
           <div className="panel-title">
             <h2>Последние события</h2>
-            <span className="pill">{data.history?.count ?? 0} записей</span>
+            <span className="pill">{portalEvents.length} событий</span>
           </div>
 
           <div className="list scroll-list ops-events-list">
-            {recentEvents.map((item, index) => (
-                <div className="list-row" key={`${item.time}-${index}`}>
-                  <div className="list-main">
-                  <div className="list-title">{triggerLabel(item.trigger)} · итоговый список {item.final_count ?? "—"}</div>
-                  <div className="list-subtitle">
-                    {formatDate(item.time)} · {historyRouteSetLabel(item)}
-                  </div>
+            {recentEvents.map((item) => (
+                <div className={`service-job-row ${item.tone}`} key={item.id}>
+                  <div className="service-job-main">
+                  <strong>{item.title}</strong>
+                  <span>{item.subtitle}</span>
                 </div>
-                <span className={`pill ${item.ok ? "ok" : "bad"}`}>
-                  {item.ok ? "успешно" : "ошибка"}
-                </span>
+
+                <div className="service-job-progress" aria-hidden="true">
+                  <span style={{ width: item.tone === "warn" ? "64%" : "100%" }} />
+                </div>
+
+                <div className="service-job-meta">
+                  <span className={`pill tiny ${item.tone}`}>{item.statusLabel}</span>
+                  <span>{item.summary}</span>
+                </div>
               </div>
             ))}
+            {!recentEvents.length && <div className="empty-state">Событий пока нет.</div>}
           </div>
         </section>
       </div>
@@ -3407,6 +3794,10 @@ function HistoryPage({ data }: { data: PortalData }) {
   const failCount = history.length - okCount;
   const latest = history[history.length - 1] ?? null;
   const changedCount = history.filter((item) => (item.added ?? 0) > 0 || (item.deleted ?? 0) > 0).length;
+  const projectEvents = (data.jobs?.jobs ?? [])
+    .map(jobToPortalEvent)
+    .sort((a, b) => portalEventTimestamp(b) - portalEventTimestamp(a))
+    .slice(0, limit);
 
   return (
     <motion.div className="dashboard" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
@@ -3417,65 +3808,99 @@ function HistoryPage({ data }: { data: PortalData }) {
         <MetricCard label="Ошибки" value={failCount} note="требуют внимания" tone={failCount > 0 ? "bad" : "ok"} />
       </div>
 
-      <div className="panel-card compact-panel history-panel">
-        <div className="panel-title history-panel-title">
-          <div>
-            <h2>История обновлений</h2>
-            <div className="panel-subtitle">
-              Показано {records.length} из {data.history?.count ?? 0} записей
-              {latest && <> · последнее: {formatDate(latest.time)}</>}
+      <div className="history-panels-grid">
+        <div className="panel-card compact-panel history-panel">
+          <div className="panel-title history-panel-title">
+            <div>
+              <h2>История обновлений маршрутов</h2>
+              <div className="panel-subtitle">
+                Показано {records.length} из {data.history?.count ?? 0} записей
+                {latest && <> · последнее: {formatDate(latest.time)}</>}
+              </div>
+            </div>
+
+            <div className="history-limit-switcher" aria-label="Количество записей истории">
+              {[10, 25, 50, 100].map((value) => (
+                <button
+                  key={value}
+                  className={limit === value ? "active" : ""}
+                  onClick={() => setLimit(value)}
+                >
+                  {value}
+                </button>
+              ))}
             </div>
           </div>
 
-          <div className="history-limit-switcher" aria-label="Количество записей истории">
-            {[10, 25, 50, 100].map((value) => (
-              <button
-                key={value}
-                className={limit === value ? "active" : ""}
-                onClick={() => setLimit(value)}
-              >
-                {value}
-              </button>
+          <div className="list scroll-list history-scroll-list">
+            {records.map((item, index) => (
+              <div className={`history-entry ${historyStatusTone(item)}`} key={`${item.time}-${index}`}>
+                <div className="history-entry-head">
+                  <div className="history-entry-main">
+                    <div className="history-entry-title">
+                      <span className={`history-trigger-pill ${historyTriggerClass(item.trigger)}`}>
+                        {triggerLabel(item.trigger)}
+                      </span>
+                      <strong>{item.final_count ?? "—"} маршрутов</strong>
+                    </div>
+                    <div className="history-entry-subtitle">
+                      {formatDate(item.time)} · {historyRouteSetLabel(item)}
+                    </div>
+                  </div>
+
+                  <span className={`history-status-pill ${item.ok ? "ok" : "bad"}`}>
+                    {item.ok ? "Успешно" : "Ошибка"}
+                    <InfoTip
+                      label={`Детали события ${triggerLabel(item.trigger)}`}
+                      text={historyEventHelp(item)}
+                    />
+                  </span>
+                </div>
+
+                <div className="history-change-row">
+                  <span className="history-change-chip add">+{item.added ?? "—"}</span>
+                  <span className="history-change-chip delete">-{item.deleted ?? "—"}</span>
+                  <span className="history-change-chip same">{item.unchanged ?? "—"} без изм.</span>
+                  <span className="history-change-chip duration">{formatHistoryDuration(item.duration_seconds)}</span>
+                  {item.mode && <span className="history-change-chip mode">режим {item.mode}</span>}
+                </div>
+
+                {item.error && <div className="history-error-text">{item.error}</div>}
+              </div>
             ))}
           </div>
         </div>
 
-        <div className="list scroll-list history-scroll-list">
-          {records.map((item, index) => (
-            <div className={`history-entry ${historyStatusTone(item)}`} key={`${item.time}-${index}`}>
-              <div className="history-entry-head">
-                <div className="history-entry-main">
-                  <div className="history-entry-title">
-                    <span className={`history-trigger-pill ${historyTriggerClass(item.trigger)}`}>
-                      {triggerLabel(item.trigger)}
-                    </span>
-                    <strong>{item.final_count ?? "—"} маршрутов</strong>
-                  </div>
-                  <div className="history-entry-subtitle">
-                    {formatDate(item.time)} · {historyRouteSetLabel(item)}
-                  </div>
+        <div className="panel-card compact-panel history-panel project-history-panel">
+          <div className="panel-title history-panel-title">
+            <div>
+              <h2>История событий портала</h2>
+              <div className="panel-subtitle">
+                Показано {projectEvents.length} из {data.jobs?.jobs.length ?? 0} задач и системных событий.
+              </div>
+            </div>
+          </div>
+
+          <div className="list scroll-list history-scroll-list">
+            {projectEvents.map((event) => (
+              <div className={`service-job-row history-project-event ${event.tone}`} key={event.id}>
+                <div className="service-job-main">
+                  <strong>{event.title}</strong>
+                  <span>{event.subtitle}</span>
                 </div>
 
-                <span className={`history-status-pill ${item.ok ? "ok" : "bad"}`}>
-                  {item.ok ? "Успешно" : "Ошибка"}
-                  <InfoTip
-                    label={`Детали события ${triggerLabel(item.trigger)}`}
-                    text={historyEventHelp(item)}
-                  />
-                </span>
-              </div>
+                <div className="service-job-progress" aria-hidden="true">
+                  <span style={{ width: event.tone === "warn" ? "64%" : "100%" }} />
+                </div>
 
-              <div className="history-change-row">
-                <span className="history-change-chip add">+{item.added ?? "—"}</span>
-                <span className="history-change-chip delete">-{item.deleted ?? "—"}</span>
-                <span className="history-change-chip same">{item.unchanged ?? "—"} без изм.</span>
-                <span className="history-change-chip duration">{formatHistoryDuration(item.duration_seconds)}</span>
-                {item.mode && <span className="history-change-chip mode">режим {item.mode}</span>}
+                <div className="service-job-meta">
+                  <span className={`pill tiny ${event.tone}`}>{event.statusLabel}</span>
+                  <span>{event.summary}</span>
+                </div>
               </div>
-
-              {item.error && <div className="history-error-text">{item.error}</div>}
-            </div>
-          ))}
+            ))}
+            {!projectEvents.length && <div className="empty-state">Системных событий пока нет.</div>}
+          </div>
         </div>
       </div>
     </motion.div>
@@ -3556,7 +3981,7 @@ function jobIsRefresh(job?: PortalJob): boolean {
 }
 
 function jobBelongsToTaskCenter(job: PortalJob): boolean {
-  return jobIsActive(job) || !jobIsRefresh(job);
+  return ["route_update", "service_apply_preview", "service_source_refresh", "service_candidates_refresh"].includes(job.kind ?? "");
 }
 
 function jobStatusLabel(status?: PortalJobStatus): string {
@@ -3594,7 +4019,74 @@ function jobSummaryText(job: PortalJob): string {
     return `итог ${summary.final_count ?? "—"} · +${summary.added ?? "—"} / -${summary.deleted ?? "—"}`;
   }
 
+  if (job.kind === "system_backup") {
+    return `файлов ${summary.files_count ?? "—"} · размер ${formatBytes(Number(summary.size_bytes ?? NaN))}`;
+  }
+
+  if (job.kind === "system_restore") {
+    return `восстановлено ${summary.restored_files_count ?? "—"} · safety-бэкап ${summary.pre_restore_backup ?? "—"}`;
+  }
+
   return job.stage ?? "—";
+}
+
+type PortalEvent = {
+  id: string;
+  title: string;
+  subtitle: string;
+  summary: string;
+  statusLabel: string;
+  tone: "ok" | "warn" | "bad";
+  time?: string | null;
+};
+
+function jobEventTime(job: PortalJob): string | null | undefined {
+  return job.finished_at || job.started_at || job.created_at;
+}
+
+function portalEventTimestamp(event: PortalEvent): number {
+  const value = Date.parse(event.time ?? "");
+  return Number.isFinite(value) ? value : 0;
+}
+
+function jobToPortalEvent(job: PortalJob): PortalEvent {
+  const time = jobEventTime(job);
+  const tone = jobTone(job.status);
+
+  return {
+    id: `job:${job.id}`,
+    title: job.title ?? job.kind ?? job.id,
+    subtitle: `${job.stage ?? jobStatusLabel(job.status)} · ${formatDate(time ?? undefined)}`,
+    summary: jobSummaryText(job),
+    statusLabel: jobStatusLabel(job.status),
+    tone,
+    time
+  };
+}
+
+function historyToPortalEvent(item: UpdateHistoryRecord, index: number): PortalEvent {
+  return {
+    id: `history:${item.time ?? index}:${index}`,
+    title: `${triggerLabel(item.trigger)} · итоговый список ${item.final_count ?? "—"}`,
+    subtitle: `${formatDate(item.time)} · ${historyRouteSetLabel(item)}`,
+    summary: `+${item.added ?? "—"} / -${item.deleted ?? "—"} · ${formatHistoryDuration(item.duration_seconds)}`,
+    statusLabel: item.ok ? "успешно" : "ошибка",
+    tone: item.ok ? "ok" : "bad",
+    time: item.time
+  };
+}
+
+function buildPortalEvents(data: PortalData): PortalEvent[] {
+  const jobEvents = (data.jobs?.jobs ?? [])
+    .filter((job) => job.kind !== "route_update" && job.kind !== "service_apply_preview")
+    .map(jobToPortalEvent);
+
+  const routeEvents = (data.history?.history ?? [])
+    .slice(-24)
+    .map(historyToPortalEvent);
+
+  return [...jobEvents, ...routeEvents]
+    .sort((a, b) => portalEventTimestamp(b) - portalEventTimestamp(a));
 }
 
 function serviceQualityProfile(service: ServiceCatalogItem, runtime?: ServiceRuntimeStat): { label: string; tone: "ok" | "warn" | "bad"; text: string } {
@@ -3977,17 +4469,18 @@ function ServicesPage({
     void Promise.all([loadServices(), loadJobs(), loadCandidates()]);
   }, [loadCandidates, loadJobs, loadServices]);
 
-  const activeJobCount = jobs.filter(jobIsActive).length;
+  const moduleJobs = jobs.filter(jobBelongsToTaskCenter);
+  const activeModuleJobCount = moduleJobs.filter(jobIsActive).length;
 
   useEffect(() => {
-    if (activeJobCount <= 0) return;
+    if (activeModuleJobCount <= 0) return;
 
     const timer = window.setInterval(() => {
       void Promise.all([loadJobs(), loadServices(), loadCandidates(), onRefresh()]);
     }, 2200);
 
     return () => window.clearInterval(timer);
-  }, [activeJobCount, loadCandidates, loadJobs, loadServices, onRefresh]);
+  }, [activeModuleJobCount, loadCandidates, loadJobs, loadServices, onRefresh]);
 
   const catalog = services?.catalog ?? [];
   const enabledCount = catalog.filter((service) => serviceEnabled(services, service.id)).length;
@@ -3998,7 +4491,7 @@ function ServicesPage({
   const sourceRefreshSources = useMemo(() => {
     return Object.values(services?.source_refresh?.sources ?? {}).sort((a, b) => a.label.localeCompare(b.label, "ru"));
   }, [services]);
-  const taskCenterJobs = jobs.filter(jobBelongsToTaskCenter);
+  const taskCenterJobs = moduleJobs;
   const getActiveJobByKey = useCallback((key: string) => jobs.find((job) => job.key === key && jobIsActive(job)), [jobs]);
   const normalizedServiceQuery = serviceQuery.trim().toLowerCase();
   const serviceCategories = useMemo(() => {
@@ -4270,7 +4763,7 @@ function ServicesPage({
   };
 
   const importCandidate = async (candidate: ServiceCandidate) => {
-    const importVerb = candidate.restorable ? "Вернуть" : "Добавить";
+    const importVerb = candidate.restorable ? "В каталог" : "Добавить";
 
     if (!confirm(`${importVerb} "${candidate.title ?? candidate.id}" в каталог модулей сервисов? Модуль будет добавлен выключенным, маршруты НЕ будут применены автоматически.`)) {
       setActionStatus("Добавление кандидата отменено.");
@@ -4536,8 +5029,8 @@ function ServicesPage({
               </div>
             </div>
 
-            <span className={`pill ${activeJobCount > 0 ? "warn" : "ok"}`}>
-              {activeJobCount > 0 ? `в работе: ${activeJobCount}` : "нет задач"}
+            <span className={`pill ${activeModuleJobCount > 0 ? "warn" : "ok"}`}>
+              {activeModuleJobCount > 0 ? `в работе: ${activeModuleJobCount}` : "нет задач"}
             </span>
 
             <div className="source-actions-toolbar">
@@ -4904,7 +5397,7 @@ function ServicesPage({
                       helpLabel="Что значит добавить найденный сервис"
                       helpText={SERVICE_CANDIDATE_IMPORT_HELP}
                     >
-                      {candidate.importable === false ? "В каталоге" : candidate.restorable ? "Вернуть" : "Добавить"}
+                      {candidate.importable === false ? "В каталоге" : candidate.restorable ? "В каталог" : "Добавить"}
                     </HelpButton>
                   </div>
                 </article>
@@ -5205,7 +5698,7 @@ function ServicesPage({
                 helpLabel="Что значит добавить найденный сервис"
                 helpText={SERVICE_CANDIDATE_IMPORT_HELP}
               >
-                {selectedCandidate.importable === false ? "Уже в каталоге" : selectedCandidate.restorable ? "Вернуть в каталог" : "Добавить в каталог"}
+                {selectedCandidate.importable === false ? "Уже в каталоге" : selectedCandidate.restorable ? "В каталог" : "Добавить в каталог"}
               </HelpButton>
             </div>
           </div>
@@ -5886,6 +6379,7 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
   const versions = updates?.versions?.length ? updates.versions : fallbackVersions;
   const selectedVersion = versions.find((version) => version.version === selectedVersionId) ?? versions[0];
   const currentVersion = updates?.current_version ?? PRODUCT_VERSION;
+  const currentChannel = updates?.current_channel ?? "stable";
   const updateEnabled = updates?.update_enabled === true;
 
   const loadUpdates = useCallback(async () => {
@@ -5945,7 +6439,7 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
         </div>
         <div className="updates-current-card">
           <span>Текущая версия</span>
-          <strong>{currentVersion}</strong>
+          <strong>{formatProductVersion(currentVersion, currentChannel)}</strong>
           <small>
             {updates?.manifest_url ? `manifest: ${updates.manifest_url}` : "manifest GitHub ещё не задан в .env"}
           </small>
@@ -5978,7 +6472,7 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
                   onChange={() => setSelectedVersionId(version.version)}
                 />
                 <span>
-                  <strong>{version.title ?? version.version}</strong>
+                  <strong>{version.title ?? formatProductVersion(version.version, version.channel)}</strong>
                   <small>{version.date} · {version.status}</small>
                 </span>
                 <em className={`pill tiny ${version.channel === "beta" ? "warn" : "ok"}`}>
@@ -6035,15 +6529,25 @@ function MikroTikPage({ data }: { data: PortalData }) {
   const neighborRows = parseGobgpNeighbor(data.diagnostics?.gobgp_neighbor);
   const safeEnv = data.diagnostics?.safe_env ?? {};
   const serviceAs = String(safeEnv.LOCAL_AS ?? "64500");
-  const serviceIp = String(safeEnv.BGP_NEXTHOP ?? "192.168.1.111");
+  const serviceIp = String(safeEnv.THE333_BIND_IP ?? window.location.hostname ?? safeEnv.ROUTER_ID ?? safeEnv.BGP_NEXTHOP ?? "192.168.1.111");
   const routerAs = neighborRows[0]?.asn || "65455";
   const routerId = neighborRows[0]?.peer || "192.168.1.1";
   const defaultCommunity = String(safeEnv.BGP_COMMUNITY ?? `${serviceAs}:500`);
 
   const bgpSetup = [
-    "# RouterOS v7. Минимальное подключение MikroTik к The333 BGP.",
-    `# Проверь значения перед вставкой: local AS MikroTik=${routerAs}, service AS=${serviceAs}, service IP=${serviceIp}.`,
-    `/routing/bgp/connection/add name=the333-bgp remote.address=${serviceIp} remote.as=${serviceAs} local.role=ebgp as=${routerAs} router-id=${routerId} address-families=ip disabled=no`,
+    "# RouterOS v7. Подключение MikroTik к The333 BGP.",
+    `# Проверь значения перед вставкой: ASN MikroTik=${routerAs}, ASN сервиса=${serviceAs}, IP сервиса=${serviceIp}.`,
+    `:local the333Instance "the333-bgp"`,
+    `:if ([:len [/routing/bgp/instance/find where name=$the333Instance]] = 0) do={`,
+    `  /routing/bgp/instance/add name=$the333Instance as=${routerAs} router-id=${routerId}`,
+    `} else={`,
+    `  /routing/bgp/instance/set [find where name=$the333Instance] as=${routerAs} router-id=${routerId}`,
+    `}`,
+    `:if ([:len [/routing/bgp/connection/find where name="the333-bgp"]] = 0) do={`,
+    `  /routing/bgp/connection/add name="the333-bgp" instance=$the333Instance remote.address=${serviceIp} remote.as=${serviceAs} local.role=ebgp address-families=ip disabled=no`,
+    `} else={`,
+    `  /routing/bgp/connection/set [find where name="the333-bgp"] instance=$the333Instance remote.address=${serviceIp} remote.as=${serviceAs} local.role=ebgp address-families=ip disabled=no`,
+    `}`,
   ].join("\n");
 
   const bgpCheck = [
@@ -6061,12 +6565,41 @@ function MikroTikPage({ data }: { data: PortalData }) {
     `/interface/wireguard/peers/add interface=the333-awg public-key="PUBLIC_KEY" endpoint-address=ENDPOINT_ADDRESS endpoint-port=ENDPOINT_PORT allowed-address=0.0.0.0/0 persistent-keepalive=25`,
     "",
     "# После проверки VPN-туннеля добавь BGP-подключение к The333 BGP:",
-    `/routing/bgp/connection/add name=the333-bgp remote.address=${serviceIp} remote.as=${serviceAs} local.role=ebgp as=${routerAs} router-id=${routerId} address-families=ip disabled=no`,
+    bgpSetup,
   ].join("\n");
 
   const copyText = async (label: string, text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      let copied = false;
+      let clipboardError: unknown = null;
+
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        } catch (error) {
+          clipboardError = error;
+        }
+      }
+
+      if (!copied) {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.top = "0";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, text.length);
+        copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+
+      if (!copied) {
+        throw clipboardError instanceof Error ? clipboardError : new Error("copy failed");
+      }
       setCopyStatus(`${label}: скопировано.`);
     } catch {
       setCopyStatus(`${label}: не удалось скопировать автоматически.`);
@@ -6103,27 +6636,34 @@ function MikroTikPage({ data }: { data: PortalData }) {
           <div>
             <h2>Как подключить MikroTik</h2>
             <div className="panel-subtitle">
-              Страница даёт команды под текущий стенд. Перед вставкой проверь IP сервиса, ASN сервиса и ASN MikroTik.
+              Страница даёт команды под текущий стенд. IP сервиса берётся из backend ENV или текущего адреса портала, ASN — из диагностики BGP.
             </div>
           </div>
           <span className="pill warn">RouterOS v7</span>
         </div>
 
+        <div className="mikrotik-risk-warning">
+          <strong>ВНИМАНИЕ !!!</strong>
+          <span>
+            Производя настройки на Вашем оборудовании MikroTik - Вы делаете это НА СВОЙ СТРАХ И РИСК ! Портал и автор не несут ответственности, а информация дана только для общего понимания по настройке оборудования !!!
+          </span>
+        </div>
+
         <div className="community-quick-guide mikrotik-steps">
           <div>
             <span>1</span>
-            <strong>Скопируй BGP-команду</strong>
-            <small>создаёт eBGP-подключение к The333 BGP</small>
+            <strong>Проверь значения</strong>
+            <small>IP сервиса, ASN сервиса и ASN MikroTik должны соответствовать твоей сети</small>
           </div>
           <div>
             <span>2</span>
-            <strong>Проверь сессию</strong>
-            <small>статус должен перейти в Established</small>
+            <strong>Скопируй команды</strong>
+            <small>они создают или обновляют BGP instance и eBGP connection</small>
           </div>
           <div>
             <span>3</span>
-            <strong>Проверь маршруты</strong>
-            <small>MikroTik должен увидеть BGP-маршруты от сервиса</small>
+            <strong>Проверь сессию</strong>
+            <small>статус должен перейти в Established, затем появятся BGP-маршруты</small>
           </div>
         </div>
       </section>
@@ -6159,6 +6699,7 @@ function AppShell({
   portalTimeLabel,
   timeZone,
   onOpenTimeSettings,
+  onOpenBackup,
   onLogout
 }: {
   activePage: ActivePage;
@@ -6168,11 +6709,22 @@ function AppShell({
   portalTimeLabel: string;
   timeZone: string;
   onOpenTimeSettings: () => void;
+  onOpenBackup: () => void;
   onLogout: () => void;
 }) {
   const pageTitle = activePage === "updates" ? "Обновления" : navItems.find((item) => item.id === activePage)?.title ?? "Дашборд";
   const safeEnv = data.diagnostics?.safe_env ?? {};
   const localAs = String(safeEnv.LOCAL_AS ?? "—");
+  const updateNotice = productUpdateNotice(data.productUpdates);
+  const currentProductVersion = formatProductVersion(
+    data.productUpdates?.current_version ?? PRODUCT_VERSION,
+    data.productUpdates?.current_channel ?? "stable"
+  );
+  const updateNoticeLabel = updateNotice
+    ? `+NEW ${formatProductVersion(updateNotice.version, updateNotice.channel)}`
+    : data.productUpdates?.manifest_url
+      ? "актуально"
+      : "manifest не задан";
 
   return (
     <div className="app shell">
@@ -6252,7 +6804,7 @@ function AppShell({
           </div>
 
           <button
-            className={`sidebar-update-button ${activePage === "updates" ? "active" : ""}`}
+            className={`sidebar-update-button ${activePage === "updates" ? "active" : ""} ${updateNotice ? "has-update" : ""}`}
             type="button"
             onClick={() => setActivePage("updates")}
             title="Открыть страницу обновлений портала"
@@ -6261,8 +6813,22 @@ function AppShell({
               <IconRefresh size={16} stroke={2} />
               Обновления
             </span>
-            <strong>{PRODUCT_VERSION}</strong>
-            <small>stable / beta</small>
+            <strong>{currentProductVersion}</strong>
+            <small>{updateNoticeLabel}</small>
+          </button>
+
+          <button
+            className="sidebar-backup-button"
+            type="button"
+            onClick={onOpenBackup}
+            title="Создать бэкап или восстановить состояние data/config"
+          >
+            <span>
+              <IconDownload size={16} stroke={2} />
+              Бэкап
+            </span>
+            <strong>data / config</strong>
+            <small>создать / откатить</small>
           </button>
         </div>
       </aside>
@@ -6299,6 +6865,9 @@ function AppShell({
             <span>Disk</span>
             <strong>{formatPercent(data.serverResources?.disk.used_percent)}</strong>
           </div>
+          <button className="mobile-backup-button" type="button" onClick={onOpenBackup}>
+            Бэкап
+          </button>
         </div>
 
         <div className="topbar page-heading-row">
@@ -6337,28 +6906,48 @@ export default function App() {
     sources: null,
     history: null,
     services: null,
-    serverResources: null
+    serverResources: null,
+    productUpdates: null,
+    jobs: null
   });
   const [loginError, setLoginError] = useState<string | null>(null);
   const [actionText, setActionText] = useState<string | null>(null);
   const [timeZone, setTimeZoneState] = useState(() => getStoredPortalTimeZone());
   const [timeSettingsOpen, setTimeSettingsOpen] = useState(false);
+  const [backupModalOpen, setBackupModalOpen] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const productUpdatesRef = useRef<ProductUpdatesResponse | null>(null);
+  const productUpdateCheckedAtRef = useRef(0);
 
   const loadData = useCallback(async () => {
     if (!auth) return;
 
     try {
-      const [ready, diagnostics, sources, history, services, serverResources] = await Promise.all([
+      const [ready, diagnostics, sources, history, services, serverResources, jobs] = await Promise.all([
         apiFetch<ReadyResponse>("/ready", auth),
         apiFetch<DiagnosticsResponse>("/api/diagnostics", auth),
         apiFetch<SourcesResponse>("/api/sources", auth),
         apiFetch<UpdateHistoryResponse>("/api/update-history", auth),
         apiFetch<ServicesResponse>("/api/services", auth),
-        apiFetch<ServerResourcesResponse>("/api/server-resources", auth)
+        apiFetch<ServerResourcesResponse>("/api/server-resources", auth),
+        apiFetch<JobsResponse>("/api/jobs?limit=30", auth)
       ]);
 
-      setData({ ready, diagnostics, sources, history, services, serverResources });
+      let productUpdates = productUpdatesRef.current;
+      const now = Date.now();
+
+      if (!productUpdates || now - productUpdateCheckedAtRef.current > PRODUCT_UPDATE_CHECK_INTERVAL_MS) {
+        try {
+          productUpdates = await apiFetch<ProductUpdatesResponse>("/api/product/updates", auth);
+          productUpdatesRef.current = productUpdates;
+        } catch {
+          productUpdates = productUpdatesRef.current;
+        } finally {
+          productUpdateCheckedAtRef.current = now;
+        }
+      }
+
+      setData({ ready, diagnostics, sources, history, services, serverResources, productUpdates, jobs });
       setLoginError(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -6546,6 +7135,7 @@ export default function App() {
         portalTimeLabel={portalTimeLabel}
         timeZone={timeZone}
         onOpenTimeSettings={() => setTimeSettingsOpen(true)}
+        onOpenBackup={() => setBackupModalOpen(true)}
         onLogout={onLogout}
       >
         {page}
@@ -6556,6 +7146,14 @@ export default function App() {
           timeZone={timeZone}
           onChange={setTimeZone}
           onClose={() => setTimeSettingsOpen(false)}
+        />
+      )}
+
+      {backupModalOpen && (
+        <BackupModal
+          auth={auth}
+          onClose={() => setBackupModalOpen(false)}
+          onRefresh={loadData}
         />
       )}
     </>

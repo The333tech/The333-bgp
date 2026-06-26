@@ -8,19 +8,20 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import threading
 import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 
@@ -55,6 +56,11 @@ JOB_HISTORY_MAX_ITEMS = int(os.getenv("JOB_HISTORY_MAX_ITEMS", "200"))
 COMMUNITY_PROFILES_FILE = DATA_DIR / "community_profiles.json"
 SCHEMA_STATE_FILE = DATA_DIR / "schema_state.json"
 DATA_SCHEMA_VERSION = "0.1"
+SYSTEM_BACKUP_DIR = DATA_DIR / "system_backups"
+SYSTEM_RESTORE_STAGING_DIR = DATA_DIR / ".restore_staging"
+SYSTEM_BACKUP_RETENTION = int(os.getenv("SYSTEM_BACKUP_RETENTION", "20"))
+SYSTEM_BACKUP_MAX_BYTES = int(os.getenv("SYSTEM_BACKUP_MAX_BYTES", str(128 * 1024 * 1024)))
+SYSTEM_BACKUP_SCHEMA_VERSION = 1
 
 BGP_COMMUNITY = os.getenv("BGP_COMMUNITY", "65432:500")
 BGP_NEXTHOP = os.getenv("BGP_NEXTHOP", os.getenv("ROUTER_ID", "192.168.1.111"))
@@ -62,6 +68,7 @@ LOCAL_AS = os.getenv("LOCAL_AS", "64500")
 PEER_AS = os.getenv("PEER_AS", "65455")
 PEER_ADDRESS = os.getenv("PEER_ADDRESS", "192.168.1.1")
 ROUTER_ID = os.getenv("ROUTER_ID", "192.168.1.111")
+THE333_BIND_IP = os.getenv("THE333_BIND_IP", ROUTER_ID).strip() or ROUTER_ID
 GOBGP_API_HOST = os.getenv("GOBGP_API_HOST", "127.0.0.1")
 GOBGP_API_PORT = int(os.getenv("GOBGP_API_PORT", "50051"))
 
@@ -232,7 +239,7 @@ def bundled_update_manifest() -> dict[str, Any]:
         "versions": [
             {
                 "version": version,
-                "title": f"{version} stable",
+                "title": f"v{version} stable",
                 "channel": "stable",
                 "status": "установлена",
                 "date": "2026-06",
@@ -1648,6 +1655,34 @@ def summarize_job_result(kind: str, result: dict[str, Any]) -> dict[str, Any]:
             "time": result.get("time"),
         }
 
+    if kind == "system_backup":
+        return {
+            "ok": bool(result.get("ok", False)),
+            "backup_name": result.get("backup_name"),
+            "created_at": result.get("created_at"),
+            "size_bytes": result.get("size_bytes"),
+            "files_count": result.get("files_count"),
+            "data_files_count": result.get("data_files_count"),
+            "config_files_count": result.get("config_files_count"),
+            "time": result.get("time"),
+        }
+
+    if kind == "system_restore":
+        update = result.get("update", {}) if isinstance(result.get("update"), dict) else {}
+        apply_data = update.get("apply", {}) if isinstance(update.get("apply"), dict) else {}
+        meta = update.get("meta", {}) if isinstance(update.get("meta"), dict) else {}
+        prefix_summary = update.get("prefix_summary", {}) if isinstance(update.get("prefix_summary"), dict) else {}
+        return {
+            "ok": bool(result.get("ok", False)),
+            "restored_from": result.get("restored_from"),
+            "pre_restore_backup": result.get("pre_restore_backup"),
+            "restored_files_count": result.get("restored_files_count"),
+            "final_count": meta.get("final_count_with_services") or prefix_summary.get("count"),
+            "added": apply_data.get("added"),
+            "deleted": apply_data.get("deleted"),
+            "time": result.get("time"),
+        }
+
     if kind == "service_source_refresh":
         return {
             "ok": bool(result.get("ok", False)),
@@ -1779,6 +1814,409 @@ def run_product_update_command(channel: str, version: str | None = None) -> dict
         "duration_seconds": round(time.time() - started, 3),
         "time": now_iso(),
     }
+
+
+def path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def system_backup_skip_path(path: Path) -> bool:
+    if path_is_relative_to(path, SYSTEM_BACKUP_DIR):
+        return True
+    if path_is_relative_to(path, SYSTEM_RESTORE_STAGING_DIR):
+        return True
+    if path.resolve() == JOBS_FILE.resolve():
+        return True
+    return False
+
+
+def collect_system_backup_files() -> tuple[list[tuple[Path, str]], int, int, int]:
+    files: list[tuple[Path, str]] = []
+    total_bytes = 0
+    data_files_count = 0
+    config_files_count = 0
+
+    for root_name, root in (("data", DATA_DIR), ("config", CONFIG_DIR)):
+        root.mkdir(parents=True, exist_ok=True)
+
+        for path in root.rglob("*"):
+            if system_backup_skip_path(path):
+                continue
+
+            if path.is_symlink():
+                continue
+
+            if not path.is_file():
+                continue
+
+            size = path.stat().st_size
+            total_bytes += size
+            if total_bytes > SYSTEM_BACKUP_MAX_BYTES:
+                raise RuntimeError(
+                    f"backup is too large: {total_bytes} > SYSTEM_BACKUP_MAX_BYTES={SYSTEM_BACKUP_MAX_BYTES}"
+                )
+
+            relative = path.relative_to(root).as_posix()
+            arcname = str(PurePosixPath(root_name) / relative)
+            files.append((path, arcname))
+            if root_name == "data":
+                data_files_count += 1
+            else:
+                config_files_count += 1
+
+    return files, total_bytes, data_files_count, config_files_count
+
+
+def prune_system_backups() -> None:
+    if SYSTEM_BACKUP_RETENTION <= 0 or not SYSTEM_BACKUP_DIR.exists():
+        return
+
+    backups = sorted(
+        [item for item in SYSTEM_BACKUP_DIR.glob("*.zip") if item.is_file()],
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+
+    for item in backups[SYSTEM_BACKUP_RETENTION:]:
+        try:
+            item.unlink()
+        except Exception:
+            pass
+
+
+def create_system_backup(trigger: str = "manual", reason: str | None = None) -> dict[str, Any]:
+    started = time.time()
+    SYSTEM_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+    files, total_bytes, data_files_count, config_files_count = collect_system_backup_files()
+    created_at = now_iso()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    backup_path = SYSTEM_BACKUP_DIR / f"the333-bgp-backup-{stamp}.zip"
+    if backup_path.exists():
+        backup_path = SYSTEM_BACKUP_DIR / f"the333-bgp-backup-{stamp}-{uuid.uuid4().hex[:8]}.zip"
+
+    manifest = {
+        "schema_version": SYSTEM_BACKUP_SCHEMA_VERSION,
+        "app": APP_NAME,
+        "product_version": read_product_version(),
+        "product_channel": PRODUCT_CHANNEL,
+        "created_at": created_at,
+        "trigger": trigger,
+        "reason": reason,
+        "scope": ["data", "config"],
+        "excluded": [
+            "data/system_backups",
+            "data/.restore_staging",
+            "data/jobs.json",
+            ".env",
+            "Docker images",
+            "application code",
+        ],
+        "files_count": len(files),
+        "data_files_count": data_files_count,
+        "config_files_count": config_files_count,
+        "total_bytes": total_bytes,
+        "max_bytes": SYSTEM_BACKUP_MAX_BYTES,
+    }
+
+    tmp_path = backup_path.with_suffix(".zip.tmp")
+    with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        for path, arcname in files:
+            archive.write(path, arcname)
+
+    tmp_path.replace(backup_path)
+    prune_system_backups()
+
+    return {
+        "ok": True,
+        "backup_name": backup_path.name,
+        "path": str(backup_path),
+        "created_at": created_at,
+        "size_bytes": backup_path.stat().st_size,
+        "files_count": len(files),
+        "data_files_count": data_files_count,
+        "config_files_count": config_files_count,
+        "total_bytes": total_bytes,
+        "duration_seconds": round(time.time() - started, 3),
+        "time": now_iso(),
+    }
+
+
+def system_backup_zip_is_symlink(info: zipfile.ZipInfo) -> bool:
+    unix_mode = info.external_attr >> 16
+    return (unix_mode & 0o170000) == 0o120000
+
+
+def validate_system_backup_zip(backup_path: Path) -> tuple[dict[str, Any], list[zipfile.ZipInfo]]:
+    if not backup_path.exists() or not backup_path.is_file():
+        raise HTTPException(status_code=404, detail=f"backup not found: {backup_path.name}")
+
+    try:
+        archive = zipfile.ZipFile(backup_path, mode="r")
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="backup archive is not a valid zip")
+
+    with archive:
+        names = set(archive.namelist())
+        if "manifest.json" not in names:
+            raise HTTPException(status_code=400, detail="backup manifest.json is missing")
+
+        try:
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="backup manifest.json is invalid")
+
+        if int(manifest.get("schema_version", 0) or 0) != SYSTEM_BACKUP_SCHEMA_VERSION:
+            raise HTTPException(status_code=400, detail="unsupported backup schema_version")
+
+        entries: list[zipfile.ZipInfo] = []
+        total_size = 0
+
+        for info in archive.infolist():
+            name = info.filename
+            if name == "manifest.json" or name.endswith("/"):
+                continue
+
+            pure = PurePosixPath(name)
+            if pure.is_absolute() or ".." in pure.parts:
+                raise HTTPException(status_code=400, detail=f"unsafe backup path: {name}")
+
+            if not pure.parts or pure.parts[0] not in {"data", "config"}:
+                raise HTTPException(status_code=400, detail=f"unsupported backup path: {name}")
+
+            if system_backup_zip_is_symlink(info):
+                raise HTTPException(status_code=400, detail=f"symlink entries are not allowed: {name}")
+
+            if name == "data/jobs.json":
+                continue
+
+            total_size += int(info.file_size)
+            if total_size > SYSTEM_BACKUP_MAX_BYTES:
+                raise HTTPException(status_code=400, detail="backup uncompressed size exceeds limit")
+
+            entries.append(info)
+
+        return manifest, entries
+
+
+def safe_system_backup_path(name: str) -> Path:
+    backup_name = Path(str(name or "")).name
+    if not backup_name.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="backup name must be a .zip file")
+
+    path = SYSTEM_BACKUP_DIR / backup_name
+    if not path_is_relative_to(path, SYSTEM_BACKUP_DIR):
+        raise HTTPException(status_code=400, detail="invalid backup path")
+    return path
+
+
+def read_system_backup_manifest(path: Path) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(path, mode="r") as archive:
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            return manifest if isinstance(manifest, dict) else {}
+    except Exception as e:
+        return {"warning": str(e)}
+
+
+def list_system_backups() -> list[dict[str, Any]]:
+    SYSTEM_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backups: list[dict[str, Any]] = []
+
+    for path in sorted(SYSTEM_BACKUP_DIR.glob("*.zip"), key=lambda item: item.stat().st_mtime, reverse=True):
+        manifest = read_system_backup_manifest(path)
+        stat = path.stat()
+        backups.append(
+            {
+                "name": path.name,
+                "size_bytes": stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                "created_at": manifest.get("created_at"),
+                "trigger": manifest.get("trigger"),
+                "product_version": manifest.get("product_version"),
+                "product_channel": manifest.get("product_channel"),
+                "files_count": manifest.get("files_count"),
+                "data_files_count": manifest.get("data_files_count"),
+                "config_files_count": manifest.get("config_files_count"),
+                "total_bytes": manifest.get("total_bytes"),
+                "schema_version": manifest.get("schema_version"),
+                "restore_supported": manifest.get("schema_version") == SYSTEM_BACKUP_SCHEMA_VERSION,
+                "warning": manifest.get("warning"),
+            }
+        )
+
+    return backups
+
+
+def clear_restore_root(root: Path, preserve_names: set[str] | None = None) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    preserve_names = preserve_names or set()
+
+    for item in root.iterdir():
+        if item.name in preserve_names:
+            continue
+        if item.is_dir() and not item.is_symlink():
+            shutil.rmtree(item)
+        else:
+            item.unlink(missing_ok=True)
+
+
+def extract_system_backup_to_stage(backup_path: Path, stage_dir: Path, entries: list[zipfile.ZipInfo]) -> None:
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(backup_path, mode="r") as archive:
+        for info in entries:
+            target = stage_dir / PurePosixPath(info.filename)
+            if not path_is_relative_to(target, stage_dir):
+                raise HTTPException(status_code=400, detail=f"unsafe backup path: {info.filename}")
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info, mode="r") as source, target.open("wb") as destination:
+                shutil.copyfileobj(source, destination)
+
+
+def copy_staged_root(stage_root: Path, target_root: Path) -> int:
+    copied = 0
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    if not stage_root.exists():
+        return copied
+
+    for item in stage_root.rglob("*"):
+        if not item.is_file():
+            continue
+
+        relative = item.relative_to(stage_root)
+        target = target_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+        copied += 1
+
+    return copied
+
+
+def restore_system_backup(backup_name: str, apply_routes: bool = True) -> dict[str, Any]:
+    started = time.time()
+    backup_path = safe_system_backup_path(backup_name)
+    manifest, entries = validate_system_backup_zip(backup_path)
+    stage_dir = SYSTEM_RESTORE_STAGING_DIR / uuid.uuid4().hex
+
+    try:
+        extract_system_backup_to_stage(backup_path, stage_dir, entries)
+        pre_restore = create_system_backup(trigger="pre_restore", reason=f"before restoring {backup_path.name}")
+
+        clear_restore_root(DATA_DIR, preserve_names={"system_backups", ".restore_staging", "jobs.json"})
+        clear_restore_root(CONFIG_DIR)
+
+        copied_data = copy_staged_root(stage_dir / "data", DATA_DIR)
+        copied_config = copy_staged_root(stage_dir / "config", CONFIG_DIR)
+
+        run_data_migrations()
+        ensure_sources_file()
+        ensure_community_profiles_file()
+        ensure_service_state_file()
+
+        update_result = None
+        if apply_routes:
+            update_result = update_now(False, "system_restore", allow_large=True)
+
+        return {
+            "ok": True,
+            "restored_from": backup_path.name,
+            "restored_created_at": manifest.get("created_at"),
+            "pre_restore_backup": pre_restore.get("backup_name"),
+            "restored_files_count": copied_data + copied_config,
+            "restored_data_files_count": copied_data,
+            "restored_config_files_count": copied_config,
+            "apply_routes": apply_routes,
+            "update": update_result,
+            "duration_seconds": round(time.time() - started, 3),
+            "time": now_iso(),
+        }
+    finally:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir, ignore_errors=True)
+
+
+@app.get("/api/system/backups")
+async def api_system_backups(_: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": True,
+            "backups": list_system_backups(),
+            "retention": SYSTEM_BACKUP_RETENTION,
+            "max_bytes": SYSTEM_BACKUP_MAX_BYTES,
+            "scope": ["data", "config"],
+            "excluded": [".env", "Docker images", "application code", "data/jobs.json"],
+            "time": now_iso(),
+        }
+    )
+
+
+@app.post("/api/system/backups/job")
+async def api_system_backup_job(_: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse(
+        start_background_job(
+            kind="system_backup",
+            key="system_backup",
+            title="Создание бэкапа системы",
+            target=lambda: create_system_backup(trigger="manual"),
+            payload={"scope": ["data", "config"]},
+        )
+    )
+
+
+@app.get("/api/system/backups/{backup_name}/download")
+async def api_system_backup_download(backup_name: str, _: str = Depends(require_auth)) -> FileResponse:
+    backup_path = safe_system_backup_path(backup_name)
+    validate_system_backup_zip(backup_path)
+    return FileResponse(
+        backup_path,
+        media_type="application/zip",
+        filename=backup_path.name,
+    )
+
+
+@app.delete("/api/system/backups/{backup_name}")
+async def api_system_backup_delete(backup_name: str, _: str = Depends(require_auth)) -> JSONResponse:
+    backup_path = safe_system_backup_path(backup_name)
+    validate_system_backup_zip(backup_path)
+    backup_path.unlink()
+    return JSONResponse({"ok": True, "deleted": backup_path.name, "time": now_iso()})
+
+
+@app.post("/api/system/restore/job")
+async def api_system_restore_job(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    backup_name = str(payload.get("backup", "") or "").strip()
+    confirmation = str(payload.get("confirmation", "") or "").strip()
+    apply_routes = bool(payload.get("apply_routes", True))
+
+    if not backup_name:
+        raise HTTPException(status_code=400, detail="backup is required")
+
+    if confirmation != "ВОССТАНОВИТЬ":
+        raise HTTPException(status_code=400, detail="confirmation must be ВОССТАНОВИТЬ")
+
+    backup_path = safe_system_backup_path(backup_name)
+    validate_system_backup_zip(backup_path)
+
+    return JSONResponse(
+        start_background_job(
+            kind="system_restore",
+            key="system_restore",
+            title="Восстановление из бэкапа",
+            target=lambda: restore_system_backup(backup_name, apply_routes=apply_routes),
+            payload={"backup": backup_name, "apply_routes": apply_routes},
+        )
+    )
 
 
 @app.get("/api/product/version")
@@ -2216,6 +2654,7 @@ def build_diagnostics_payload() -> dict[str, Any]:
             "PEER_AS": PEER_AS,
             "PEER_ADDRESS": PEER_ADDRESS,
             "ROUTER_ID": ROUTER_ID,
+            "THE333_BIND_IP": THE333_BIND_IP,
             "SERVICE_ROUTES_ENABLED": SERVICE_ROUTES_ENABLED,
             "SERVICE_DNS_CACHE_GRACE_SECONDS": SERVICE_DNS_CACHE_GRACE_SECONDS,
             "SERVICE_GEOSITE_MAX_DOMAINS_PER_PROVIDER": SERVICE_GEOSITE_MAX_DOMAINS_PER_PROVIDER,
