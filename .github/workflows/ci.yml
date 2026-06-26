@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release tree
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Check release tree
+        run: ./scripts/release-check.sh
+
+      - name: Compile backend
+        run: python3 -m py_compile app/main.py
+
+      - name: Install Python audit tool
+        run: python3 -m pip install --user pip-audit
+
+      - name: Audit Python dependencies
+        run: python3 -m pip_audit -r requirements.txt
+
+      - name: Build portal
+        working-directory: portal
+        run: |
+          npm ci
+          npm run build
+          npm audit --omit=dev --audit-level=moderate
+
+      - name: Prepare Docker Compose env
+        run: cp .env.example .env
+
+      - name: Validate Docker Compose
+        run: docker compose -f docker-compose.yml -f docker-compose.portal.yml config >/tmp/the333-compose.yml
+
+      - name: Build Docker images
+        run: docker compose -f docker-compose.yml -f docker-compose.portal.yml build

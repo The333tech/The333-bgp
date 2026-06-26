@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="The333-BGP">
+  <defs>
+    <linearGradient id="bg" x1="88" y1="4" x2="430" y2="508" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff3b0b"/>
+      <stop offset=".55" stop-color="#ff6b00"/>
+      <stop offset="1" stop-color="#ffa300"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="72" fill="url(#bg)"/>
+
+  <g fill="none" stroke="#070707" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M156 264h-28M388 264h-28M176 296l-24 24M336 192l24-24"/>
+
+    <polygon points="260 156 368 264 260 372 152 264" fill="#ff7900"/>
+    <circle cx="260" cy="264" r="46"/>
+    <path d="M235 232c-23 25-18 67 11 87 24 17 57 15 79-5"/>
+    <path d="M251 256c8 17 21 29 39 34"/>
+
+    <polygon points="44 382 156 270 248 362 136 474" fill="#ff8b00"/>
+    <path d="M82 344l92 92M120 306l92 92M90 428l112-112"/>
+
+    <polygon points="272 150 382 40 468 126 358 236" fill="#ff8b00"/>
+    <path d="M309 113l86 86M346 76l86 86M321 211l110-110"/>
+
+    <path d="M328 332l42 42"/>
+    <path d="M374 342l44 44"/>
+    <path d="M371 374c-15 15-15 39 0 54s39 15 54 0 15-39 0-54"/>
+
+    <path d="M98 173c39 30 88 27 116-3 25-26 24-64 4-94l-120 97Z" fill="#ff8b00"/>
+    <path d="M115 169c24 10 53 9 78-3"/>
+    <circle cx="116" cy="116" r="20"/>
+    <path d="M116 73v-15M116 174v-15M73 116H58M174 116h-15M86 86 74 74M146 86l12-12"/>
+  </g>
+</svg>

@@ -1,0 +1,24 @@
+﻿{
+  "product": "The333-BGP",
+  "latest": {
+    "stable": "0.1",
+    "beta": null
+  },
+  "versions": [
+    {
+      "version": "0.1",
+      "title": "v0.1 stable",
+      "channel": "stable",
+      "status": "текущая версия",
+      "date": "2026-06",
+      "recommended": true,
+      "archive_url": "https://github.com/The333tech/The333-bgp/archive/refs/heads/main.tar.gz",
+      "sha256": "",
+      "changelog": [
+        "Первая публичная версия.",
+        "Портал управления BGP, источниками, модулями сервисов и Community.",
+        "Установка одной командой, резервные копии и обновление через портал."
+      ]
+    }
+  ]
+}

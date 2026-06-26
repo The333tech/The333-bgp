@@ -1,0 +1,78 @@
+services:
+  the333-gobgp-core:
+    build:
+      context: .
+      args:
+        GOBGP_VERSION: v3.37.0
+    container_name: the333-gobgp-core
+    user: "${PUID}:${PGID}"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      THE333_ROLE: gobgp
+    ports:
+      - "${THE333_BIND_IP:-192.168.1.111}:179:1179/tcp"
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "gobgp -u 127.0.0.1 -p 50051 global >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  the333-bgp-backend:
+    build:
+      context: .
+      args:
+        GOBGP_VERSION: v3.37.0
+    container_name: the333-bgp-backend
+    user: "${PUID}:${PGID}"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      THE333_ROLE: backend
+      GOBGP_API_HOST: the333-gobgp-core
+      GOBGP_API_PORT: "50051"
+      HOST_UPDATER_URL: http://the333-host-updater:8091
+    depends_on:
+      - the333-gobgp-core
+      - the333-host-updater
+    ports:
+      - "${THE333_BIND_IP:-192.168.1.111}:8088:8088/tcp"
+    volumes:
+      - ./data:/data
+      - ./config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  the333-host-updater:
+    build:
+      context: .
+      args:
+        GOBGP_VERSION: v3.37.0
+    container_name: the333-host-updater
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      THE333_ROLE: updater
+      UPDATE_HOST: 0.0.0.0
+      UPDATE_PORT: "8091"
+      THE333_PROJECT_DIR: /opt/the333-bgp
+    volumes:
+      - ./:/opt/the333-bgp
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8091/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
