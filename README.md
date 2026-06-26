@@ -35,7 +35,7 @@ BGP:     IP_VM:179
 Login:   admin
 ```
 
-Пароль задаётся при установке. Если оставить поле пустым, установщик сгенерирует сильный пароль и сохранит его в `/opt/the333-bgp/.env`.
+Пароль задаётся при установке. Минимум — **8 символов**. Если оставить поле пустым, установщик сгенерирует сильный пароль и сохранит его hash в `/opt/the333-bgp/.env`.
 
 ## Что внутри
 
@@ -84,23 +84,22 @@ The333-BGP рассчитан на запуск в доверенной лока
 
 ## Восстановление пароля
 
-Пароль хранится в `/opt/the333-bgp/.env`:
+Новые установки хранят hash пароля в `/opt/the333-bgp/.env`:
 
 ```env
 WEB_USER=admin
-WEB_PASSWORD=...
+WEB_PASSWORD=
+WEB_PASSWORD_HASH=pbkdf2_sha256:...
 ```
 
 Смена пароля на VM:
 
 ```bash
 cd /opt/the333-bgp
-cp .env .env.backup-$(date +%Y%m%d-%H%M%S)
-sed -i 's/^WEB_PASSWORD=.*/WEB_PASSWORD=НОВЫЙ_СИЛЬНЫЙ_ПАРОЛЬ/' .env
-docker compose -f docker-compose.yml -f docker-compose.portal.yml up -d --no-deps the333-bgp-backend
+./scripts/the333bgp.sh set-password
 ```
 
-GoBGP core при этом перезапускать не нужно.
+Команда создаёт backup `.env`, записывает новый hash и перезапускает только backend. GoBGP core при этом перезапускать не нужно.
 
 ## Документация
 

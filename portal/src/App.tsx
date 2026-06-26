@@ -11,6 +11,7 @@ import {
   IconCheck,
   IconCopy,
   IconDatabase,
+  IconDownload,
   IconEdit,
   IconHistory,
   IconLayoutDashboard,
@@ -540,6 +541,31 @@ const UPDATE_VERSIONS = [
     ]
   }
 ];
+
+async function downloadAuthenticatedFile(path: string, auth: AuthState, fallbackName: string): Promise<void> {
+  const response = await fetch(`/backend${path}`, {
+    headers: {
+      Authorization: `Basic ${btoa(`${auth.username}:${auth.password}`)}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename="([^"]+)"/);
+  const filename = match?.[1] ?? fallbackName;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 const DEFAULT_TIME_ZONE = "Asia/Krasnoyarsk";
 
@@ -1336,7 +1362,7 @@ function LoginScreen({
         </form>
 
         <div className="footer-note">
-          Забыл пароль? Измени <code>WEB_PASSWORD</code> в <code>/opt/the333-bgp/.env</code>.
+          Забыл пароль? Сбрось его через <code>scripts/the333bgp.sh set-password</code> на VM.
           <button className="inline-link-button" type="button" onClick={() => setShowRecovery(true)}>
             Показать команды
           </button>
@@ -1365,12 +1391,10 @@ function LoginScreen({
               <button className="icon-button" onClick={() => setShowRecovery(false)}>×</button>
             </div>
             <pre className="code-snippet">{`cd /opt/the333-bgp
-cp .env .env.backup-$(date +%Y%m%d-%H%M%S)
-sed -i 's/^WEB_PASSWORD=.*/WEB_PASSWORD=НОВЫЙ_СИЛЬНЫЙ_ПАРОЛЬ/' .env
-docker compose -f docker-compose.yml -f docker-compose.portal.yml up -d --no-deps the333-bgp-backend`}</pre>
+./scripts/the333bgp.sh set-password`}</pre>
             <div className="footer-note">
-              После смены пароля нажми «Выйти» в портале и зайди снова с новым паролем.
-              GoBGP core при этом перезапускать не нужно.
+              Команда создаст backup `.env`, запишет новый hash пароля и перезапустит только backend.
+              GoBGP core при этом не перезапускается.
             </div>
           </motion.div>
         </motion.div>
@@ -3250,10 +3274,18 @@ function RoutesPage({ auth }: { auth: AuthState }) {
   );
 }
 
-function DiagnosticsPage({ data }: { data: PortalData }) {
+function DiagnosticsPage({ data, auth }: { data: PortalData; auth: AuthState | null }) {
   const neighborRows = parseGobgpNeighbor(data.diagnostics?.gobgp_neighbor);
   const advertisedCount = data.ready?.advertised_count ?? data.diagnostics?.advertised_routes_summary?.count ?? "—";
   const bgpCommunity = String(data.diagnostics?.safe_env?.BGP_COMMUNITY ?? "—");
+  const handleDownloadBundle = async () => {
+    if (!auth) return;
+    try {
+      await downloadAuthenticatedFile("/api/diagnostics/bundle", auth, "the333-bgp-diagnostics.zip");
+    } catch (error) {
+      window.alert(`Не удалось скачать диагностику: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
 
   return (
     <motion.div className="dashboard" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
@@ -3356,7 +3388,10 @@ function DiagnosticsPage({ data }: { data: PortalData }) {
               Низкоуровневый вывод GoBGP без обработки. Нужен для диагностики, когда человеческих карточек выше недостаточно.
             </div>
           </div>
-          <span className="pill">отладка</span>
+          <button className="small-action-button" type="button" onClick={() => void handleDownloadBundle()}>
+            <IconDownload size={15} stroke={2.2} />
+            Диагностика ZIP
+          </button>
         </div>
         <div className="code-box">{data.diagnostics?.gobgp_global ?? "Нет данных"}</div>
       </div>
@@ -6327,7 +6362,14 @@ export default function App() {
       setLoginError(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        setLoginError("Неверный логин или пароль Basic Auth.");
+        setLoginError("Неверный пароль или доступ временно ограничен.");
+        clearAuth();
+        setAuth(null);
+        return;
+      }
+
+      if (error instanceof ApiError && error.status === 429) {
+        setLoginError("Слишком много попыток входа. Подожди несколько минут и попробуй снова.");
         clearAuth();
         setAuth(null);
         return;
@@ -6478,7 +6520,7 @@ export default function App() {
       if (!auth) return <PlaceholderPage title="Комьюнити" />;
       return <CommunitiesPage auth={auth} onRefresh={loadData} />;
     }
-    if (activePage === "diagnostics") return <DiagnosticsPage data={data} />;
+    if (activePage === "diagnostics") return <DiagnosticsPage data={data} auth={auth} />;
     if (activePage === "mikrotik") return <MikroTikPage data={data} />;
     if (activePage === "history") return <HistoryPage data={data} />;
     if (activePage === "updates") {

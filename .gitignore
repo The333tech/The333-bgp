@@ -13,6 +13,7 @@
 /portal/node_modules/
 /portal/dist/
 /portal/.vite/
+*.tsbuildinfo
 
 # Python cache/test artifacts.
 __pycache__/

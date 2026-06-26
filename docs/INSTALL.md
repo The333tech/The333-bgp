@@ -60,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/The333tech/ИМЯ_РЕПОЗИТО�
 | IP MikroTik/BGP peer | IP MikroTik |
 | ASN MikroTik/BGP peer | ASN MikroTik |
 | BGP community по умолчанию | Метка маршрутов по умолчанию |
-| Пароль портала | Логин фиксированный `admin`; пароль можно оставить пустым, будет сгенерирован |
+| Пароль портала | Логин фиксированный `admin`; минимум 8 символов; можно оставить пустым, будет сгенерирован |
 | GitHub update manifest URL | Можно оставить пустым до публикации GitHub |
 
 ## 5. Автоматическое определение IP
@@ -132,7 +132,8 @@ PEER_AS=65455
 BGP_COMMUNITY=65432:500
 
 WEB_USER=admin
-WEB_PASSWORD=...
+WEB_PASSWORD=
+WEB_PASSWORD_HASH=pbkdf2_sha256:...
 ```
 
 Не публикуй `.env` в GitHub.
@@ -145,22 +146,23 @@ WEB_PASSWORD=...
 admin
 ```
 
-Пользователь вводит только пароль. Пароль хранится в `.env`:
+Пользователь вводит только пароль. Новые установки хранят hash пароля в `.env`:
 
 ```env
-WEB_PASSWORD=...
+WEB_PASSWORD=
+WEB_PASSWORD_HASH=pbkdf2_sha256:...
 ```
+
+Минимальная длина пароля — **8 символов**. Если при установке оставить пароль пустым, installer сгенерирует сильный пароль автоматически.
 
 Смена или восстановление пароля на VM:
 
 ```bash
 cd /opt/the333-bgp
-cp .env .env.backup-$(date +%Y%m%d-%H%M%S)
-sed -i 's/^WEB_PASSWORD=.*/WEB_PASSWORD=НОВЫЙ_СИЛЬНЫЙ_ПАРОЛЬ/' .env
-docker compose -f docker-compose.yml -f docker-compose.portal.yml up -d --no-deps the333-bgp-backend
+./scripts/the333bgp.sh set-password
 ```
 
-GoBGP core при этом не перезапускается.
+Команда создаёт backup `.env`, записывает новый hash пароля и перезапускает только backend. GoBGP core при этом не перезапускается.
 
 ## 10. Запуск и проверка
 
@@ -325,7 +327,8 @@ docker compose -f docker-compose.yml -f docker-compose.portal.yml ps
 
 ```bash
 source .env
-curl -u "$WEB_USER:$WEB_PASSWORD" "http://$THE333_BIND_IP:8090/backend/ready"
+THE333_PORTAL_PASSWORD="пароль_портала" \
+  curl -u "$WEB_USER:$THE333_PORTAL_PASSWORD" "http://$THE333_BIND_IP:8090/backend/ready"
 ```
 
 Логи:

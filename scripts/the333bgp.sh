@@ -24,6 +24,8 @@ usage() {
   cat <<'USAGE'
 Usage:
   scripts/the333bgp.sh status
+  scripts/the333bgp.sh doctor
+  scripts/the333bgp.sh set-password
   scripts/the333bgp.sh backup
   scripts/the333bgp.sh check-update [--manifest URL] [--channel stable|beta]
   scripts/the333bgp.sh update [--manifest URL] [--channel stable|beta] [--version VERSION] [--non-interactive] [--dry-run]
@@ -40,10 +42,20 @@ need_cmd() {
 
 load_env() {
   if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    local restore_nounset="false"
+    case "$-" in
+      *u*)
+        restore_nounset="true"
+        set +u
+        ;;
+    esac
     set -a
     # shellcheck disable=SC1091
     source "${PROJECT_DIR}/.env"
     set +a
+    if [[ "${restore_nounset}" == "true" ]]; then
+      set -u
+    fi
     MANIFEST_URL="${MANIFEST_URL:-${PRODUCT_UPDATE_MANIFEST_URL:-}}"
   fi
 }
@@ -89,8 +101,101 @@ status() {
     source .env
     set +a
     local ready_host="${THE333_BIND_IP:-${ROUTER_ID:-${BGP_NEXTHOP:-127.0.0.1}}}"
-    curl -sS --fail-with-body -u "${WEB_USER}:${WEB_PASSWORD}" "http://${ready_host}:8090/backend/ready" || true
+    local ready_password="${THE333_PORTAL_PASSWORD:-${WEB_PASSWORD:-}}"
+    if [[ -n "${ready_password}" ]]; then
+      curl -sS --fail-with-body -u "${WEB_USER:-admin}:${ready_password}" "http://${ready_host}:8090/backend/ready" || true
+      printf '\n'
+    else
+      log "Ready API auth check skipped: plaintext WEB_PASSWORD is not stored. Set THE333_PORTAL_PASSWORD temporarily if needed."
+    fi
+  fi
+}
+
+make_password_hash() {
+  local password="$1"
+  printf '%s' "${password}" | python3 -c '
+import binascii
+import hashlib
+import os
+import sys
+
+password = sys.stdin.buffer.read()
+iterations = 260000
+salt = os.urandom(16)
+digest = hashlib.pbkdf2_hmac("sha256", password, salt, iterations)
+print("pbkdf2_sha256:%d:%s:%s" % (
+    iterations,
+    binascii.hexlify(salt).decode("ascii"),
+    binascii.hexlify(digest).decode("ascii"),
+))
+'
+}
+
+set_password() {
+  need_cmd python3
+  cd "${PROJECT_DIR}"
+  [[ -f .env ]] || fail ".env not found in ${PROJECT_DIR}"
+
+  local password password_again password_hash
+  if [[ -n "${THE333_NEW_PASSWORD:-}" ]]; then
+    password="${THE333_NEW_PASSWORD}"
+    password_again="${THE333_NEW_PASSWORD}"
+  else
+    read -r -s -p "New portal password: " password
     printf '\n'
+    read -r -s -p "Repeat portal password: " password_again
+    printf '\n'
+  fi
+
+  [[ "${password}" == "${password_again}" ]] || fail "passwords do not match"
+  [[ "${#password}" -ge 8 ]] || fail "password must be at least 8 characters"
+
+  password_hash="$(make_password_hash "${password}")"
+  cp .env ".env.backup-before-password-change-$(date +%Y%m%d-%H%M%S)"
+
+  python3 - ".env" "${password_hash}" <<'PY'
+from pathlib import Path
+import sys
+
+env_path = Path(sys.argv[1])
+password_hash = sys.argv[2]
+lines = env_path.read_text(encoding="utf-8").splitlines()
+out = []
+seen_password = False
+seen_hash = False
+
+for line in lines:
+    if line.startswith("WEB_PASSWORD="):
+        out.append("WEB_PASSWORD=")
+        seen_password = True
+    elif line.startswith("WEB_PASSWORD_HASH="):
+        out.append(f"WEB_PASSWORD_HASH={password_hash}")
+        seen_hash = True
+    else:
+        out.append(line)
+
+if not seen_password:
+    out.append("WEB_PASSWORD=")
+if not seen_hash:
+    out.append(f"WEB_PASSWORD_HASH={password_hash}")
+
+env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+
+  chmod 600 .env
+  log "Password hash updated in .env. Restarting backend only..."
+  compose up -d --no-deps --force-recreate the333-bgp-backend
+}
+
+doctor() {
+  cd "${PROJECT_DIR}"
+  log "Running local diagnostics..."
+  status
+
+  if [[ -x scripts/release-check.sh ]]; then
+    scripts/release-check.sh
+  else
+    log "scripts/release-check.sh not found; skipping release tree check"
   fi
 }
 
@@ -143,6 +248,10 @@ download_release() {
   archive_url="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("archive_url") or "").strip())')"
   sha="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("sha256") or "").strip())')"
   [[ -n "${archive_url}" ]] || fail "selected version has no archive_url"
+  [[ "${archive_url}" == https://* ]] || fail "archive_url must use https"
+  if [[ -z "${sha}" && "${THE333_ALLOW_UNSIGNED_UPDATE:-false}" != "true" ]]; then
+    fail "selected version has no sha256. Refusing unsigned update. Set THE333_ALLOW_UNSIGNED_UPDATE=true only for local testing."
+  fi
 
   tmp="$(mktemp -d)"
   archive="${tmp}/release.tar.gz"
@@ -265,6 +374,14 @@ main() {
     status)
       parse_common_args "$@"
       status
+      ;;
+    doctor)
+      parse_common_args "$@"
+      doctor
+      ;;
+    set-password)
+      parse_common_args "$@"
+      set_password
       ;;
     backup)
       parse_common_args "$@"
