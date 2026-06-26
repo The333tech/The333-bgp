@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS gobgp-builder
+FROM golang:1.26-alpine AS gobgp-builder
 
 ARG GOBGP_VERSION=v3.37.0
 
