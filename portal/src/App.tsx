@@ -492,7 +492,7 @@ const iconProps = {
 const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> = [
   { id: "dashboard", title: "Дашборд", icon: <IconLayoutDashboard {...iconProps} /> },
   { id: "sources", title: "Источники маршрутов", icon: <IconDatabase {...iconProps} /> },
-  { id: "services", title: "Сервисные модули", icon: <IconApps {...iconProps} /> },
+  { id: "services", title: "Модули сервисов", icon: <IconApps {...iconProps} /> },
   { id: "routes", title: "Маршруты", icon: <IconRoute {...iconProps} /> },
   { id: "communities", title: "Комьюнити", icon: <IconShieldCheck {...iconProps} /> },
   { id: "diagnostics", title: "Подключения", icon: <IconStethoscope {...iconProps} /> },
@@ -524,7 +524,7 @@ const UPDATE_VERSIONS = [
     date: "июнь 2026",
     changelog: [
       "Production-подготовленная версия 0.1.",
-      "Портал управления источниками, сервисными модулями, Community-профилями, маршрутами и диагностикой.",
+      "Портал управления источниками, модулями сервисов, Community-профилями, маршрутами и диагностикой.",
       "Каркас установки и безопасного обновления через GitHub manifest."
     ]
   },
@@ -537,7 +537,7 @@ const UPDATE_VERSIONS = [
     date: "до 0.1",
     changelog: [
       "Ранняя рабочая сборка портала.",
-      "Базовая маршрутизация, GoBGP и первые сервисные модули."
+      "Базовая маршрутизация, GoBGP и первые модули сервисов."
     ]
   }
 ];
@@ -858,30 +858,30 @@ const MANUAL_UPDATE_HELP = `Ручное обновление:
 4. Добавляет/удаляет маршруты в GoBGP;
 5. Обновляет последний удачный набор и историю обновлений.`;
 
-const SERVICE_PREVIEW_HELP = `Предпросмотр сервисных модулей:
-1. Перечитывает включённые сервисные модули;
-2. Считает итоговый набор маршрутов сервисных модулей;
+const SERVICE_PREVIEW_HELP = `Предпросмотр маршрутов модулей сервисов:
+1. Перечитывает включённые модули сервисов;
+2. Считает итоговый набор маршрутов модулей сервисов;
 3. Сравнивает его с текущими опубликованными маршрутами;
 4. Показывает добавление, удаление и итоговое количество маршрутов;
 5. НЕ меняет GoBGP RIB;
 6. НЕ меняет маршруты на MikroTik.`;
 
-const SERVICE_APPLY_HELP = `Применить сервисные модули:
+const SERVICE_APPLY_HELP = `Применение маршрутов модулей сервисов:
 1. Запускает backend /update;
-2. Собирает базовые маршруты и включённые маршруты сервисных модулей;
+2. Собирает базовые маршруты и включённые маршруты модулей сервисов;
 3. Выполняет safety-check;
 4. Добавляет/удаляет маршруты в GoBGP;
 5. После BGP MikroTik получает изменения автоматически.
 Важно: перед нажатием желательно сделать «Предпросмотр применения».`;
 
-const SERVICE_TOGGLE_HELP = `Включить/выключить сервисный модуль:
+const SERVICE_TOGGLE_HELP = `Включить/выключить модуль сервиса:
 1. Меняет только service_state.json;
 2. НЕ применяет маршруты автоматически;
 3. Для публикации изменений открой блок «Центр задач»;
 4. Нажми «Предпросмотр маршрутов модулей», затем «Применить маршруты модулей».`;
 
-const SERVICE_RESOLVE_HELP = `Предпросмотр одного сервисного модуля:
-1. Считает маршруты только выбранного сервисного модуля;
+const SERVICE_RESOLVE_HELP = `Предпросмотр одного модуля сервиса:
+1. Считает маршруты только выбранного модуля сервиса;
 2. Показывает провайдеры, предупреждения и первые маршруты;
 3. НЕ включает модуль;
 4. НЕ применяет маршруты.`;
@@ -893,7 +893,7 @@ const SERVICE_SOURCE_AUTO_HELP = `Автообновление данных мо
 4. GoBGP RIB не меняется от самого переключателя.`;
 
 const SERVICE_SOURCE_REFRESH_HELP = `Обновить данные вручную:
-1. Прямо сейчас проверяет включённые сервисные модули;
+1. Прямо сейчас проверяет включённые модули сервисов;
 2. Перечитывает провайдеры выбранного типа;
 3. Показывает количество проверенных сервисов, маршрутов, ошибок и предупреждений;
 4. НЕ применяет маршруты в GoBGP.`;
@@ -906,14 +906,14 @@ const SERVICE_CANDIDATE_REFRESH_HELP = `Обновить каталог найд
 5. НЕ меняет GoBGP RIB.`;
 
 const SERVICE_CANDIDATE_IMPORT_HELP = `Добавить найденный сервис:
-1. Создаёт или восстанавливает сервисный модуль в service_catalog.json;
+1. Создаёт или восстанавливает модуль сервиса в service_catalog.json;
 2. Если модуль был исключён, возвращает его с прежними провайдерами;
 3. Добавляет модуль выключенным;
 4. Маршруты НЕ применяются автоматически;
 5. Для публикации нужно включить модуль, затем сделать предпросмотр и применение маршрутов.`;
 
 const COMMUNITY_PREVIEW_HELP = `Предпросмотр Community:
-1. Считает базовые источники и сервисные модули;
+1. Считает базовые источники и модули сервисов;
 2. Добавляет маршруты включённых профилей с Large Community;
 3. Показывает сколько маршрутов получит дополнительные теги;
 4. НЕ меняет GoBGP RIB.`;
@@ -1728,10 +1728,10 @@ error=${latestEvent?.error ?? lastStatus?.error ?? "ошибка не указа
 2. Включён ли хотя бы один нужный источник.`
     },
     {
-      label: "Сервисные модули",
+      label: "Модули сервисов",
       detail: `${activeModuleCount}/${totalModuleCount} включено`,
       tone: failedServices.length > 0 ? "bad" : "ok",
-      help: failedServices.length > 0 ? `Сервисные модули:
+      help: failedServices.length > 0 ? `Модули сервисов:
 Источник данных: /api/services cache.service_stats
 Ошибок: ${failedServices.length}
 
@@ -1739,7 +1739,7 @@ error=${latestEvent?.error ?? lastStatus?.error ?? "ошибка не указа
 ${failedServices.map((service) => `- ${service.title ?? service.id}: ${service.error}`).join("\n")}
 
 Что проверить:
-1. Вкладку Сервисные модули.
+1. Вкладку Модули сервисов.
 2. Предпросмотр проблемного модуля.
 3. DNS/HTTP-доступность его провайдеров.` : undefined
     }
@@ -1766,10 +1766,10 @@ ${readyErrors.map((error) => `- ${error}`).join("\n")}
 
   if (broadRiskModules.length > 0) {
     statusItems.push({
-      label: "Широкие сервисные модули",
+      label: "Широкие модули сервисов",
       detail: broadRiskModules.map((service) => service.title ?? service.id).join(", "),
       tone: "warn",
-      help: `Широкие сервисные модули:
+      help: `Широкие модули сервисов:
 Источник данных: /api/services cache.service_stats
 
 Включены:
@@ -1790,7 +1790,7 @@ ${broadRiskModules.map((service) => `- ${service.title ?? service.id}`).join("\n
   const workingStatusLabel = workingStatusItems.length === 1 ? "не требует внимания" : "не требуют внимания";
   const attentionStatusLabel = attentionIssueCount === 1 ? "требует внимания" : "требуют внимания";
   const broadRiskTitle = broadRiskModules.map((service) => service.title ?? service.id).join(", ");
-  const broadRiskHelp = `Широкие сервисные модули:
+  const broadRiskHelp = `Широкие модули сервисов:
 Источник данных: /api/services cache.service_stats
 
 Включены:
@@ -1896,7 +1896,7 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
           help={SOURCES_HELP}
         />
         <MetricCard
-          label="Сервисные модули"
+          label="Модули сервисов"
           value={`${activeModuleCount}/${totalModuleCount}`}
           note="активный каталог"
           tone={failedServices.length > 0 ? "bad" : "ok"}
@@ -1986,7 +1986,7 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
 
         <section className="panel-card compact-panel ops-card ops-active-modules-card">
           <div className="panel-title">
-            <h2>Активные сервисные модули</h2>
+            <h2>Активные модули сервисов</h2>
             <span className="pill">
               {activeModuleCount}/{totalModuleCount}
             </span>
@@ -2004,7 +2004,7 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
                 </span>
               </div>
             )) : (
-              <div className="empty-state">Нет данных по активным сервисным модулям.</div>
+              <div className="empty-state">Нет данных по активным модулям сервисов.</div>
             )}
           </div>
 
@@ -2012,13 +2012,13 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
             <div className="ops-warning-strip">
               <InfoTip
                 className="ops-status-row-tip ops-warning-tip"
-                label="Что требует внимания: широкие сервисные модули"
+                label="Что требует внимания: широкие модули сервисов"
                 text={broadRiskHelp}
               >
                 <span className="ops-attention-row warn">
                   <span className="ops-attention-dot" aria-hidden="true" />
                   <span className="ops-attention-main">
-                    <strong>Широкие сервисные модули</strong>
+                    <strong>Широкие модули сервисов</strong>
                     <span className="ops-attention-detail">{broadRiskTitle}</span>
                   </span>
                   <span className="ops-attention-help" aria-hidden="true">i</span>
@@ -2054,7 +2054,7 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
               <strong>{routeValue(baseUpdateCount)}</strong>
             </div>
             <div>
-              <span>Маршруты сервисных модулей</span>
+              <span>Маршруты модулей сервисов</span>
               <strong>{routeValue(moduleRoutesCount)}</strong>
             </div>
             <div>
@@ -2613,13 +2613,13 @@ const DEFAULT_ROUTE_SETS: Array<{
   },
   {
     kind: "service",
-    label: "Маршруты сервисных модулей",
-    description: "Текущие маршруты включённых сервисных модулей."
+    label: "Маршруты модулей сервисов",
+    description: "Текущие маршруты включённых модулей сервисов."
   },
   {
     kind: "service_last_good",
-    label: "Сервисные модули: последний удачный",
-    description: "Последний удачный набор сервисных модулей."
+    label: "Модули сервисов: последний удачный",
+    description: "Последний удачный набор модулей сервисов."
   }
 ];
 
@@ -4272,7 +4272,7 @@ function ServicesPage({
   const importCandidate = async (candidate: ServiceCandidate) => {
     const importVerb = candidate.restorable ? "Вернуть" : "Добавить";
 
-    if (!confirm(`${importVerb} "${candidate.title ?? candidate.id}" в каталог сервисных модулей? Модуль будет добавлен выключенным, маршруты НЕ будут применены автоматически.`)) {
+    if (!confirm(`${importVerb} "${candidate.title ?? candidate.id}" в каталог модулей сервисов? Модуль будет добавлен выключенным, маршруты НЕ будут применены автоматически.`)) {
       setActionStatus("Добавление кандидата отменено.");
       setCandidateNotice(makeNotice("info", "Добавление кандидата отменено."));
       return;
@@ -4280,8 +4280,8 @@ function ServicesPage({
 
     try {
       setBusyAction(`candidate-import:${candidate.id}`);
-      setActionStatus(`${candidate.restorable ? "Возвращаю" : "Добавляю"} ${candidate.title ?? candidate.id} в каталог сервисных модулей...`);
-      setCandidateNotice(makeNotice("warn", `${candidate.restorable ? "Возвращаю" : "Добавляю"} ${candidate.title ?? candidate.id} в каталог сервисных модулей...`));
+      setActionStatus(`${candidate.restorable ? "Возвращаю" : "Добавляю"} ${candidate.title ?? candidate.id} в каталог модулей сервисов...`);
+      setCandidateNotice(makeNotice("warn", `${candidate.restorable ? "Возвращаю" : "Добавляю"} ${candidate.title ?? candidate.id} в каталог модулей сервисов...`));
 
       const payload = await apiFetch<ServiceCandidateImportResponse>("/api/services/candidates/import", auth, {
         method: "POST",
@@ -4313,7 +4313,7 @@ function ServicesPage({
   };
 
   const removeServiceFromCatalog = async (service: ServiceCatalogItem) => {
-    if (!confirm(`Исключить "${service.title ?? service.id}" из каталога сервисных модулей? Модуль будет перенесён в «Найденные сервисы», GoBGP RIB не изменится до отдельного применения маршрутов.`)) {
+    if (!confirm(`Исключить "${service.title ?? service.id}" из каталога модулей сервисов? Модуль будет перенесён в «Найденные сервисы», GoBGP RIB не изменится до отдельного применения маршрутов.`)) {
       setActionStatus("Исключение модуля отменено.");
       setCatalogNotice(makeNotice("info", "Исключение модуля отменено."));
       return;
@@ -4378,8 +4378,8 @@ function ServicesPage({
   const loadApplyPreview = async () => {
     try {
       setBusyAction("apply-preview");
-      setActionStatus("Считаю предпросмотр применения для всех включённых сервисных модулей...");
-      setTaskCenterNotice(makeNotice("warn", "Считаю предпросмотр применения для всех включённых сервисных модулей..."));
+      setActionStatus("Считаю предпросмотр применения для всех включённых модулей сервисов...");
+      setTaskCenterNotice(makeNotice("warn", "Считаю предпросмотр применения для всех включённых модулей сервисов..."));
 
       const payload = await apiFetch<ServiceApplyPreviewResponse>("/api/services/apply-preview", auth);
       setApplyPreview(payload);
@@ -4476,10 +4476,10 @@ function ServicesPage({
     <motion.div className="dashboard services-page" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
       <div className="service-top-grid">
         <div className="compact-summary-grid service-top-summary-grid">
-          <MetricCard label="Сервисных модулей" value={catalog.length} note="каталог сервисных модулей" />
+          <MetricCard label="Модулей сервисов" value={catalog.length} note="каталог модулей сервисов" />
           <MetricCard label="Включено" value={`${enabledCount}/${catalog.length}`} note="выбрано пользователем" tone="ok" />
           <MetricCard
-            label="Маршруты сервисных модулей"
+            label="Маршруты модулей сервисов"
             value={applyPreview?.services?.route_count ?? cacheRouteCount ?? "—"}
             note={applyPreview ? "после предпросмотра" : "расчёт без применения"}
             tone="blue"
@@ -4495,9 +4495,9 @@ function ServicesPage({
         <div className="panel-card compact-panel service-runtime-panel">
           <div className="panel-title">
             <div>
-              <h2>Текущий расчёт сервисных модулей</h2>
+              <h2>Текущий расчёт модулей сервисов</h2>
               <div className="panel-subtitle">
-                Это расчёт backend без применения маршрутов. Он помогает понять, что дадут включённые сервисные модули прямо сейчас.
+                Это расчёт backend без применения маршрутов. Он помогает понять, что дадут включённые модули сервисов прямо сейчас.
               </div>
             </div>
             <span className={`pill ${cache?.ok === false ? "bad" : "ok"}`}>
@@ -4545,7 +4545,7 @@ function ServicesPage({
                 className="ghost-button"
                 disabled={busyAction === "apply-preview"}
                 onClick={loadApplyPreview}
-                helpLabel="Что делает предпросмотр применения сервисных модулей"
+                helpLabel="Что делает предпросмотр применения модулей сервисов"
                 helpText={SERVICE_PREVIEW_HELP}
               >
                 Предпросмотр маршрутов модулей
@@ -4555,7 +4555,7 @@ function ServicesPage({
                 className="primary-button"
                 disabled={busyAction === "apply-update" || Boolean(activeApplyJob)}
                 onClick={applyUpdate}
-                helpLabel="Что делает применение маршрутов сервисных модулей"
+                helpLabel="Что делает применение маршрутов модулей сервисов"
                 helpText={SERVICE_APPLY_HELP}
               >
                 Применить маршруты модулей
@@ -4623,7 +4623,7 @@ function ServicesPage({
                 <strong>{applyPreview.base?.count ?? "—"}</strong>
               </div>
               <div>
-                <span>Маршруты сервисных модулей</span>
+                <span>Маршруты модулей сервисов</span>
                 <strong>{applyPreview.services?.route_count ?? "—"}</strong>
               </div>
               <div>
@@ -4665,7 +4665,7 @@ function ServicesPage({
             <div>
               <h2>Обновление данных модулей</h2>
               <div className="panel-subtitle">
-                Geosite и GeoIP/IP ranges обновляют исходные данные, из которых сервисные модули считают маршруты. Само обновление не меняет GoBGP RIB.
+                Geosite и GeoIP/IP ranges обновляют исходные данные, из которых модули сервисов считают маршруты. Само обновление не меняет GoBGP RIB.
               </div>
             </div>
           </div>
@@ -4866,7 +4866,7 @@ function ServicesPage({
                     </span>
                   </div>
 
-                  <div className="service-compact-description">{candidate.description ?? "Кандидат сервисного модуля из Geosite."}</div>
+                  <div className="service-compact-description">{candidate.description ?? "Кандидат модуля сервиса из Geosite."}</div>
 
                   <div className="service-meta-row service-compact-meta">
                     <span className={`pill tiny service-category-pill ${serviceCategoryClass(candidate.category)}`}>
@@ -4923,7 +4923,7 @@ function ServicesPage({
       <div className="panel-card compact-panel service-catalog-panel">
         <div className="panel-title">
           <div>
-            <h2>Каталог сервисных модулей</h2>
+            <h2>Каталог модулей сервисов</h2>
             <div className="panel-subtitle">
               Поиск, фильтрация по типу и компактный список модулей. Подробные провайдеры и маршруты открываются через «Параметры».
             </div>
@@ -5110,7 +5110,7 @@ function ServicesPage({
 
         {!filteredCatalog.length && (
           <div className="route-empty-state service-empty-state">
-            По текущему поиску и фильтрам сервисные модули не найдены.
+            По текущему поиску и фильтрам модули сервисов не найдены.
           </div>
         )}
       </div>
@@ -5513,7 +5513,7 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
       setActionStatus(
         payload.deduplicated
           ? "Применение уже выполняется в фоне."
-          : "Применение запущено в фоне. Статус смотри в «Сервисные модули» → «Центр задач»."
+          : "Применение запущено в фоне. Статус смотри в «Модули сервисов» → «Центр задач»."
       );
     } catch (error) {
       setActionStatus(error instanceof Error ? error.message : String(error));
@@ -5560,7 +5560,7 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
           <div>
             <h2>Профили BGP Community</h2>
             <div className="panel-subtitle">
-              Профиль помечает выбранные источники и сервисные модули отдельной BGP-меткой. По этой метке клиент MikroTik сможет получать нужный набор маршрутов.
+              Профиль помечает выбранные источники и модули сервисов отдельной BGP-меткой. По этой метке клиент MikroTik сможет получать нужный набор маршрутов.
             </div>
           </div>
           <span className="pill">default {data?.default_community ?? "—"}</span>
@@ -5616,7 +5616,7 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
           <div>
             <span>2</span>
             <strong>Выбери состав</strong>
-            <small>отметь источники и сервисные модули для этого набора</small>
+            <small>отметь источники и модули сервисов для этого набора</small>
           </div>
           <div>
             <span>3</span>
@@ -5756,7 +5756,7 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
               <div>
                 <h2>{profiles.some((profile) => profile.id === draft.id) ? "Параметры профиля" : "Новый профиль"}</h2>
                 <div className="panel-subtitle">
-                  Выбери источники и сервисные модули, которые получат этот community.
+                  Выбери источники и модули сервисов, которые получат этот community.
                 </div>
               </div>
               <button className="icon-button" type="button" onClick={() => setEditorOpen(false)} aria-label="Закрыть редактор">
@@ -5823,7 +5823,7 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
               </div>
 
               <div className="community-selector-panel">
-                <h3>Сервисные модули</h3>
+                <h3>Модули сервисов</h3>
                 <div className="community-selector-list">
                   {serviceCatalog.map((service) => (
                     <label className="community-selector-row" key={service.id}>
@@ -6508,7 +6508,7 @@ export default function App() {
     }
 
     if (activePage === "services") {
-      if (!auth) return <PlaceholderPage title="Сервисные модули" />;
+      if (!auth) return <PlaceholderPage title="Модули сервисов" />;
       return <ServicesPage auth={auth} onRefresh={loadData} />;
     }
 

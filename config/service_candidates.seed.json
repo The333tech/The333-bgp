@@ -1765,7 +1765,7 @@
       "description": "Meta/Facebook IP ranges from geoip source.",
       "category": "social",
       "source_kind": "catalog",
-      "source_name": "каталог сервисных модулей",
+      "source_name": "каталог модулей сервисов",
       "source_code": "meta-facebook",
       "source_url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/facebook.list",
       "provider": {
@@ -1934,7 +1934,7 @@
       "description": "X.com, Twitter API, media/CDN domains.",
       "category": "social",
       "source_kind": "catalog",
-      "source_name": "каталог сервисных модулей",
+      "source_name": "каталог модулей сервисов",
       "source_code": "x-twitter",
       "source_url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/twitter.list",
       "provider": {

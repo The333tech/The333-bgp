@@ -239,7 +239,7 @@ def bundled_update_manifest() -> dict[str, Any]:
                 "recommended": True,
                 "changelog": [
                     "Первая production-подготовленная версия 0.1.",
-                    "Портал управления BGP-маршрутами, источниками, сервисными модулями и Community-профилями.",
+                    "Портал управления BGP-маршрутами, источниками, модулями сервисов и Community-профилями.",
                     "Каркас безопасной установки и обновления через GitHub manifest.",
                 ],
             }
@@ -4194,13 +4194,13 @@ def service_catalog_item_candidate(
         "id": service_id,
         "title": service.get("title") or candidate_title_from_code(source_code),
         "description": service.get("description") or (
-            "Исключённый сервисный модуль. Можно вернуть в каталог без потери провайдеров."
+            "Исключённый модуль сервиса. Можно вернуть в каталог без потери провайдеров."
             if restorable
-            else "Сервисный модуль уже находится в каталоге."
+            else "Модуль сервиса уже находится в каталоге."
         ),
         "category": category,
         "source_kind": "restorable" if restorable else "catalog",
-        "source_name": "исключённые модули" if restorable else "каталог сервисных модулей",
+        "source_name": "исключённые модули" if restorable else "каталог модулей сервисов",
         "source_code": source_code,
         "source_url": source_url,
         "provider": first_provider,
