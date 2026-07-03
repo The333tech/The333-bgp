@@ -1,0 +1,44 @@
+[
+  {
+    "name": "manual-extra",
+    "enabled": false,
+    "type": "static",
+    "description": "Ручные дополнительные домены, IP-адреса и CIDR.",
+    "prefixes": []
+  },
+  {
+    "name": "antifilter-download-allyouneed",
+    "enabled": false,
+    "type": "url",
+    "description": "Готовый список маршрутов antifilter.download allyouneed.lst.",
+    "url": "https://antifilter.download/list/allyouneed.lst"
+  },
+  {
+    "name": "antifilter-network-ipsmart",
+    "enabled": false,
+    "type": "url",
+    "description": "Готовый список маршрутов antifilter.network ipsmart.lst.",
+    "url": "https://antifilter.network/download/ipsmart.lst"
+  },
+  {
+    "name": "runetfreedom-geoip-ru-blocked",
+    "enabled": false,
+    "type": "url",
+    "description": "RunetFreedom GeoIP: широкий список заблокированных в РФ IP/CIDR. Включать только после предпросмотра.",
+    "url": "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geoip/release/text/ru-blocked.txt"
+  },
+  {
+    "name": "runetfreedom-geoip-re-filter",
+    "enabled": false,
+    "type": "url",
+    "description": "RunetFreedom GeoIP: умеренный список re:filter IP/CIDR.",
+    "url": "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geoip/release/text/re-filter.txt"
+  },
+  {
+    "name": "runetfreedom-geoip-community",
+    "enabled": false,
+    "type": "url",
+    "description": "RunetFreedom GeoIP: дополнительный community-список IP/CIDR.",
+    "url": "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geoip/release/text/ru-blocked-community.txt"
+  }
+]

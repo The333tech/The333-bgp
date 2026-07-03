@@ -1,0 +1,8 @@
+*
+
+!VERSION
+!requirements.txt
+!app/
+!app/**
+!docker/
+!docker/**

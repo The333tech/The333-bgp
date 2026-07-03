@@ -1,0 +1,27 @@
+{
+  "product": "The333-BGP",
+  "latest": {
+    "stable": null,
+    "beta": "0.78"
+  },
+  "versions": [
+    {
+      "version": "0.78",
+      "title": "v0.78 beta",
+      "channel": "beta",
+      "status": "текущая beta",
+      "date": "2026-07-09",
+      "recommended": true,
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.78/the333-bgp-v0.78.tar.gz",
+      "sha256": "",
+      "changelog": [
+        "Beta-релиз перед stable-релизом; проект находится в активной разработке.",
+        "GoBGP обновлён до 4.7.0; core/backend проверены на новой версии.",
+        "Backend переведён на Python 3.14 hash-locked runtime, portal на Node 24/nginx 1.30.",
+        "Добавлены session auth, TLS-вариант, host-updater isolation, route transaction rollback и проверки внешних источников.",
+        "Supply-chain: digest-pinned base images, pinned GitHub Actions, SBOM, attestations и CVE gates.",
+        "Экспериментальный docker-awg candidate вынесен отдельно и собирается из официальных AmneziaWG upstream-компонентов."
+      ]
+    }
+  ]
+}

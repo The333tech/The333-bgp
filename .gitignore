@@ -1,0 +1,42 @@
+# Secrets and local overrides.
+.env
+.env.*
+!.env.example
+
+# Runtime state.
+/data/
+/backups/
+/logs/
+*.log
+
+# Frontend build/dependencies.
+/portal/node_modules/
+/portal/dist/
+/portal/.vite/
+*.tsbuildinfo
+
+# Python cache/test artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local diagnostics captured during development.
+/apply-preview-*.json
+/final-*.json
+/preflight-*.json
+/ready-*.json
+/resolve-*.json
+/services-*.json
+/services.*.json
+/update-*.json
+!/update-manifest.json
+!/update-manifest.example.json
+/service_catalog.current.json
+
+# OS/editor noise.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

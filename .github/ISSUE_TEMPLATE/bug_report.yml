@@ -1,0 +1,60 @@
+name: Сообщить об ошибке
+description: Воспроизводимый сбой установки, портала, BGP или обновления
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Не публикуй пароль портала, содержимое `.env`, updater token и другие секреты.
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: Версия из футера портала или файла VERSION.
+      placeholder: v0.78 beta
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Окружение
+      description: ОС VM, версия Docker, модель MikroTik и версия RouterOS.
+      placeholder: Ubuntu 24.04, Docker 28.x, MikroTik RB5009, RouterOS 7.x
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как воспроизвести
+      description: Перечисли точные действия от исходного состояния до ошибки.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактическое поведение
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Диагностика
+      description: Приложи релевантные строки `./scripts/the333bgp.sh doctor` или логов без секретов.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Проверка перед отправкой
+      options:
+        - label: Я удалил из текста пароли, токены и приватные данные.
+          required: true
+        - label: Я проверил, что аналогичная issue ещё не создана.
+          required: true

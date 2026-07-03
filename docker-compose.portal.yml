@@ -1,0 +1,32 @@
+services:
+  the333-portal:
+    image: "the333-bgp-portal:${PRODUCT_VERSION:-dev}"
+    build:
+      context: ./portal
+      args:
+        PRODUCT_VERSION: "${PRODUCT_VERSION:-dev}"
+        VCS_REF: "${VCS_REF:-unknown}"
+    container_name: the333-portal
+    init: true
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    pids_limit: 128
+    mem_limit: 256m
+    tmpfs:
+      - /var/cache/nginx:size=32m,mode=0755
+      - /var/run:size=4m,mode=0755
+      - /tmp:size=16m,mode=1777
+    ports:
+      - "${THE333_BIND_IP:-${ROUTER_ID:?THE333_BIND_IP or ROUTER_ID must be set}}:8090:80"
+    depends_on:
+      - the333-bgp-backend

@@ -1,0 +1,48 @@
+[Unit]
+Description=The333-BGP host updater
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=@PROJECT_DIR@/.env
+Environment=THE333_PROJECT_DIR=@PROJECT_DIR@
+Environment=HOST_UPDATER_SOCKET=/run/the333-bgp/updater.sock
+Environment=HOME=/run/the333-bgp/home
+Group=@PROJECT_GID@
+WorkingDirectory=@PROJECT_DIR@
+ExecStart=/usr/bin/python3 @PROJECT_DIR@/scripts/host-updater.py --socket /run/the333-bgp/updater.sock
+Restart=always
+RestartSec=2s
+TimeoutStopSec=20s
+UMask=0077
+RuntimeDirectory=the333-bgp
+RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=yes
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+ReadWritePaths=@PROJECT_DIR@ /run/the333-bgp -/run/docker.sock -/var/run/docker.sock
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

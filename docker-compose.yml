@@ -1,0 +1,83 @@
+services:
+  the333-gobgp-core:
+    image: "the333-bgp-core:${PRODUCT_VERSION:-dev}"
+    build:
+      context: .
+      dockerfile: docker/gobgp.Dockerfile
+      args:
+        GOBGP_VERSION: v4.7.0
+        PRODUCT_VERSION: "${PRODUCT_VERSION:-dev}"
+        VCS_REF: "${VCS_REF:-unknown}"
+    container_name: the333-gobgp-core
+    user: "${PUID}:${PGID}"
+    init: true
+    restart: unless-stopped
+    # RFC 4724 helper mode is triggered only when the TCP session disappears
+    # without a BGP Cease notification. GoBGP is stateless and replayed by backend.
+    stop_signal: SIGKILL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 512m
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    env_file:
+      - .env
+    ports:
+      - "${THE333_BIND_IP:-${ROUTER_ID:?THE333_BIND_IP or ROUTER_ID must be set}}:179:1179/tcp"
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "gobgp -u 127.0.0.1 -p 50051 global >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  the333-bgp-backend:
+    image: "the333-bgp-backend:${PRODUCT_VERSION:-dev}"
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+      args:
+        GOBGP_VERSION: v4.7.0
+        PRODUCT_VERSION: "${PRODUCT_VERSION:-dev}"
+        VCS_REF: "${VCS_REF:-unknown}"
+    container_name: the333-bgp-backend
+    user: "${PUID}:${PGID}"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 768m
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    env_file:
+      - .env
+    environment:
+      GOBGP_API_HOST: the333-gobgp-core
+      GOBGP_API_PORT: "50051"
+      HOST_UPDATER_SOCKET: /run/the333-bgp/updater.sock
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on:
+      - the333-gobgp-core
+    ports:
+      - "${THE333_BIND_IP:-${ROUTER_ID:?THE333_BIND_IP or ROUTER_ID must be set}}:8088:8088/tcp"
+    volumes:
+      - ./data:/data
+      - ./config:/config
+      - ${HOST_UPDATER_RUN_DIR:-/run/the333-bgp}:/run/the333-bgp:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8088/health\", timeout=3)' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
