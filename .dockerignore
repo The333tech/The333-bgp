@@ -1,0 +1,8 @@
+*
+
+!Dockerfile
+!VERSION
+!entrypoint.sh
+!requirements.txt
+!app/
+!app/**

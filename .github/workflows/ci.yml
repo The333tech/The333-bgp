@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release tree
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Check release tree
+        run: ./scripts/release-check.sh
+
+      - name: Compile backend
+        run: python3 -m py_compile app/main.py
+
+      - name: Install backend dependencies
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Run backend and release metadata tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Install Python audit tool
+        run: python3 -m pip install --user pip-audit
+
+      - name: Audit Python dependencies
+        run: python3 -m pip_audit -r requirements.txt
+
+      - name: Build portal
+        working-directory: portal
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npm audit --omit=dev --audit-level=moderate
+
+      - name: Exercise installer preflight
+        env:
+          THE333_BIND_IP: 192.168.1.10
+          LOCAL_AS: "64512"
+          ROUTER_ID: 192.168.1.10
+          BGP_NEXTHOP: 192.168.1.10
+          PEER_ADDRESS: 192.168.1.1
+          PEER_AS: "65455"
+          BGP_COMMUNITY: "64512:500"
+          WEB_PASSWORD: ci-test-password
+        run: bash install.sh --dry-run --non-interactive
+
+      - name: Prepare Docker Compose env
+        run: cp .env.example .env
+
+      - name: Validate Docker Compose
+        run: docker compose -f docker-compose.yml -f docker-compose.portal.yml config >/tmp/the333-compose.yml
+
+      - name: Build Docker images
+        run: docker compose -f docker-compose.yml -f docker-compose.portal.yml build

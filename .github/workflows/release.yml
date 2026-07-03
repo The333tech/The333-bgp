@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and release tree
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          ./scripts/release-check.sh
+
+      - name: Run backend tests and dependency audit
+        run: |
+          python3 -m pip install -r requirements.txt pip-audit
+          python3 -m unittest discover -s tests -v
+          python3 -m pip_audit -r requirements.txt
+
+      - name: Build and audit portal
+        working-directory: portal
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npm audit --omit=dev --audit-level=moderate
+
+      - name: Build release assets
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          archive="the333-bgp-v${version}.tar.gz"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="The333-bgp-v${version}/" --output="dist/${archive}" HEAD
+          sha="$(sha256sum "dist/${archive}" | awk '{print $1}')"
+          printf '%s  %s\n' "${sha}" "${archive}" > dist/SHA256SUMS
+          python3 - "${version}" "${archive}" "${sha}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          version, archive, sha256 = sys.argv[1:]
+          source = Path("update-manifest.json")
+          manifest = json.loads(source.read_text(encoding="utf-8"))
+          release_url = f"https://github.com/The333tech/The333-bgp/releases/download/v{version}/{archive}"
+
+          matches = [item for item in manifest.get("versions", []) if str(item.get("version")) == version]
+          if len(matches) != 1:
+              raise SystemExit(f"manifest must contain exactly one entry for version {version}")
+
+          matches[0]["archive_url"] = release_url
+          matches[0]["sha256"] = sha256
+          Path("dist/update-manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          gh release create "v${version}" \
+            dist/the333-bgp-v${version}.tar.gz \
+            dist/update-manifest.json \
+            dist/SHA256SUMS \
+            --verify-tag \
+            --latest \
+            --title "The333-BGP v${version}" \
+            --notes-file CHANGELOG.md

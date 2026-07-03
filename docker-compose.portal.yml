@@ -1,0 +1,10 @@
+services:
+  the333-portal:
+    build:
+      context: ./portal
+    container_name: the333-portal
+    restart: unless-stopped
+    ports:
+      - "${THE333_BIND_IP:-${ROUTER_ID:?THE333_BIND_IP or ROUTER_ID must be set}}:8090:80"
+    depends_on:
+      - the333-bgp-backend

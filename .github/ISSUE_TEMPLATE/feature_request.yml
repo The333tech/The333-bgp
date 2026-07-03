@@ -1,0 +1,24 @@
+name: Предложить улучшение
+description: Новая возможность или улучшение существующего сценария
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какая задача сейчас не решается
+      description: Опиши пользовательский сценарий и ограничение текущей версии.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Предлагаемое решение
+      description: Опиши ожидаемое поведение без привязки к конкретной реализации, если это возможно.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Рассмотренные альтернативы
