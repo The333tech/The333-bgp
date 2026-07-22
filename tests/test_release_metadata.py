@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 import unittest
@@ -234,6 +235,13 @@ class ReleaseMetadataTests(unittest.TestCase):
 
     def test_grype_exception_is_narrow_and_version_scoped(self) -> None:
         config = (ROOT / ".grype.yaml").read_text(encoding="utf-8")
+        backend_tree = ast.parse((ROOT / "app" / "main.py").read_text(encoding="utf-8"))
+        imported_modules: set[str] = set()
+        for node in ast.walk(backend_tree):
+            if isinstance(node, ast.Import):
+                imported_modules.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_modules.add(node.module)
 
         self.assertEqual(config.count("- vulnerability:"), 1)
         self.assertIn("vulnerability: CVE-2026-15308", config)
@@ -241,6 +249,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("version: 3.14.6", config)
         self.assertIn("type: binary", config)
         self.assertIn("neither imports nor", config)
+        self.assertFalse(any(name == "html" or name.startswith("html.") for name in imported_modules))
 
     def test_github_actions_are_pinned_and_release_is_attested(self) -> None:
         workflow_dir = ROOT / ".github" / "workflows"
