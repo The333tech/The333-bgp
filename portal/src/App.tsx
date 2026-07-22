@@ -542,22 +542,22 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.82b";
+const PRODUCT_VERSION = "0.82.1b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.82b",
-    version: "0.82b",
-    title: "v0.82b",
+    id: "0.82.1b",
+    version: "0.82.1b",
+    title: "v0.82.1b",
     channel: "beta",
     status: "текущая версия",
     date: "июль 2026",
     changelog: [
-      "Durable-задачи обновления и полный автоматический rollback состояния.",
-      "Проверяемые release-архивы, безопасная распаковка и идемпотентная миграция .env.",
-      "Опциональные GTSM/TCP MD5 для BGP, изоляция Docker-сетей и runtime smoke-тесты.",
-      "Настройка автообновления маршрутов и автоматических бэкапов из портала без перезапуска контейнеров.",
-      "Uptime основных контейнеров, скачивание наборов маршрутов и точные RouterOS-команды для Community-профилей."
+      "Дополнительная защита host-updater от выхода файловых операций за доверенный каталог.",
+      "Обновлённые совместимые backend/frontend зависимости и SHA-pinned GitHub Actions.",
+      "CodeQL, CI, dependency audit и release-проверки без открытых предупреждений.",
+      "Сохранена непрерывность GoBGP: обновление portal/backend не перезапускает routing-core.",
+      "Уточнённая политика Dependabot без автоматического перехода с LTS на Current runtime."
     ]
   }
 ];
