@@ -13,8 +13,8 @@
   "dependencies": {
     "@tabler/icons-react": "3.45.0",
     "motion": "12.42.2",
-    "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@types/react": "19.2.17",
