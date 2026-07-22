@@ -138,7 +138,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertNotIn("gobgpd /usr/local/bin/gobgpd", backend)
         self.assertNotIn("python", gobgp.lower())
         self.assertNotIn("VCS_REF", core_service)
-        self.assertIn('org.opencontainers.image.revision="${GOBGP_REVISION}"', gobgp)
+        self.assertIn('org.opencontainers.image.revision="${GOBGP_REF}"', gobgp)
         self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", gobgp)
         portal_dockerfile = (ROOT / "portal" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("apk upgrade --no-cache", portal_dockerfile)
@@ -203,6 +203,43 @@ class ReleaseMetadataTests(unittest.TestCase):
                 with self.subTest(dockerfile=dockerfile.name, label=label):
                     self.assertIn(label, content)
 
+    def test_gobgp_build_is_commit_pinned_and_uses_patched_modules(self) -> None:
+        build_script = (ROOT / "docker" / "build-gobgp.sh").read_text(encoding="utf-8")
+        dockerfiles = [
+            (ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8"),
+            (ROOT / "docker" / "gobgp.Dockerfile").read_text(encoding="utf-8"),
+        ]
+        expected_values = [
+            "GOBGP_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3",
+            "GOBGP_X_NET_VERSION=v0.56.0",
+            "GOBGP_X_SYS_VERSION=v0.46.0",
+            "GOBGP_X_TEXT_VERSION=v0.39.0",
+            "GOBGP_GRPC_VERSION=v1.82.1",
+        ]
+
+        for dockerfile in dockerfiles:
+            for value in expected_values:
+                with self.subTest(value=value):
+                    self.assertIn(value, dockerfile)
+            self.assertIn("COPY docker/build-gobgp.sh", dockerfile)
+            self.assertNotIn("go install github.com/osrg/gobgp", dockerfile)
+
+        self.assertIn('test "$(git -C /src/gobgp rev-parse HEAD)" = "${GOBGP_REF}"', build_script)
+        self.assertIn('"golang.org/x/net@${GOBGP_X_NET_VERSION}"', build_script)
+        self.assertIn('"google.golang.org/grpc@${GOBGP_GRPC_VERSION}"', build_script)
+        self.assertIn("go mod verify", build_script)
+        self.assertIn("-mod=readonly", build_script)
+
+    def test_grype_exception_is_narrow_and_version_scoped(self) -> None:
+        config = (ROOT / ".grype.yaml").read_text(encoding="utf-8")
+
+        self.assertEqual(config.count("- vulnerability:"), 1)
+        self.assertIn("vulnerability: CVE-2026-15308", config)
+        self.assertIn("name: python", config)
+        self.assertIn("version: 3.14.6", config)
+        self.assertIn("type: binary", config)
+        self.assertIn("neither imports nor", config)
+
     def test_github_actions_are_pinned_and_release_is_attested(self) -> None:
         workflow_dir = ROOT / ".github" / "workflows"
         for workflow in workflow_dir.glob("*.yml"):
@@ -219,7 +256,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Attest release SBOM", release)
         self.assertIn("Scan release SBOM", release)
         self.assertIn("the333-bgp.spdx.json", release)
-        self.assertIn("Scan release SBOM for fixable Critical vulnerabilities", release)
+        self.assertIn("Scan release SBOM for fixable High/Critical vulnerabilities", release)
+        self.assertIn("GRYPE_VERSION: v0.112.0", release)
+        self.assertIn("severity-cutoff: high", release)
+        self.assertIn("grype-version: ${{ env.GRYPE_VERSION }}", release)
         self.assertIn("output-format: table", release)
         self.assertIn('if gh release view "${tag}"', release)
         self.assertIn("Published release assets are immutable", release)
@@ -250,9 +290,11 @@ class ReleaseMetadataTests(unittest.TestCase):
         ci = (workflow_dir / "ci.yml").read_text(encoding="utf-8")
         self.assertEqual(ci.count("anchore/scan-action@"), 3)
         self.assertEqual(ci.count("only-fixed: true"), 3)
-        self.assertEqual(ci.count("severity-cutoff: critical"), 3)
+        self.assertEqual(ci.count("severity-cutoff: high"), 3)
+        self.assertEqual(ci.count("grype-version: ${{ env.GRYPE_VERSION }}"), 3)
         self.assertEqual(ci.count("output-format: table"), 3)
-        self.assertNotIn("severity-cutoff: high", ci)
+        self.assertIn("GRYPE_VERSION: v0.112.0", ci)
+        self.assertNotIn("severity-cutoff: critical", ci)
 
         codeql = (workflow_dir / "codeql.yml").read_text(encoding="utf-8")
         self.assertIn("build-mode: none", codeql)
@@ -327,10 +369,12 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("linux/arm/v7", workflow)
         self.assertIn("--self-test", workflow)
         self.assertIn("Generate image SPDX SBOM", workflow)
-        self.assertIn("Scan candidate for fixable Critical vulnerabilities", workflow)
-        self.assertIn("severity-cutoff: critical", workflow)
+        self.assertIn("Scan candidate for fixable High/Critical vulnerabilities", workflow)
+        self.assertIn("GRYPE_VERSION: v0.112.0", workflow)
+        self.assertIn("severity-cutoff: high", workflow)
+        self.assertIn("grype-version: ${{ env.GRYPE_VERSION }}", workflow)
         self.assertIn("output-format: table", workflow)
-        self.assertNotIn("severity-cutoff: high", workflow)
+        self.assertNotIn("severity-cutoff: critical", workflow)
         self.assertIn("docker deploy extras requirements.in", installer)
         self.assertIn("docker deploy extras requirements.in", controller)
 

@@ -19,9 +19,9 @@
         "CodeQL, CI, secret scanning, push protection и release attestations проверены без открытых предупреждений.",
         "FastAPI, HTTPX2, Tabler Icons и Vite обновлены до совместимых проверенных выпусков.",
         "nginx обновлён до актуального stable 1.30.4; portal остаётся на Node.js 24 LTS.",
-        "GitHub Actions по-прежнему закреплены полными commit SHA.",
+        "GitHub Actions закреплены полными commit SHA; CI и Release блокируют исправимые High/Critical CVE через Grype 0.112.0.",
         "Dependabot группирует minor/patch updates и не предлагает Current runtime как production LTS.",
-        "GoBGP 4.7.0 core revision r5 переведена на Alpine 3.24; BGP continuity повторно проверена на рабочей VM."
+        "GoBGP 4.7.0 core revision r5 переведена на Alpine 3.24 и собирается из точного commit с исправленными x/net, x/sys, x/text и grpc; BGP continuity повторно проверена на рабочей VM."
       ]
     },
     {

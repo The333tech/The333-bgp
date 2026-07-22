@@ -15,6 +15,9 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  GRYPE_VERSION: v0.112.0
+
 jobs:
   build:
     name: Build ${{ matrix.name }} candidate
@@ -69,15 +72,16 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Scan candidate for fixable Critical vulnerabilities
+      - name: Scan candidate for fixable High/Critical vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           sbom: dist/docker-awg/docker-awg-${{ matrix.name }}.spdx.json
           fail-build: true
-          severity-cutoff: critical
+          severity-cutoff: high
           only-fixed: true
           output-format: table
           cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
 
       - name: Calculate checksum
         run: |

@@ -12,6 +12,9 @@ permissions:
   contents: write
   id-token: write
 
+env:
+  GRYPE_VERSION: v0.112.0
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -116,15 +119,16 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Scan release SBOM for fixable Critical vulnerabilities
+      - name: Scan release SBOM for fixable High/Critical vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           sbom: dist/the333-bgp.spdx.json
           fail-build: true
-          severity-cutoff: critical
+          severity-cutoff: high
           only-fixed: true
           output-format: table
           cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
 
       - name: Calculate release checksums
         run: |
