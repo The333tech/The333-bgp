@@ -9,6 +9,9 @@ ARG AWG_GO_TAG=v0.2.19
 ARG AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d
 ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
+ARG AWG_X_CRYPTO_VERSION=v0.53.0
+ARG AWG_X_NET_VERSION=v0.56.0
+ARG AWG_X_SYS_VERSION=v0.46.0
 
 RUN apk add --no-cache \
       bash=5.3.9-r1 \
@@ -22,7 +25,14 @@ RUN git clone --depth 1 --branch "${AWG_GO_TAG}" \
     && test "$(git -C /src/amneziawg-go rev-parse HEAD)" = "${AWG_GO_REF}" \
     && git clone --depth 1 --branch "${AWG_TOOLS_TAG}" \
       https://github.com/amnezia-vpn/amneziawg-tools.git /src/amneziawg-tools \
-    && test "$(git -C /src/amneziawg-tools rev-parse HEAD)" = "${AWG_TOOLS_REF}"
+    && test "$(git -C /src/amneziawg-tools rev-parse HEAD)" = "${AWG_TOOLS_REF}" \
+    && cd /src/amneziawg-go \
+    && go get \
+      "golang.org/x/crypto@${AWG_X_CRYPTO_VERSION}" \
+      "golang.org/x/net@${AWG_X_NET_VERSION}" \
+      "golang.org/x/sys@${AWG_X_SYS_VERSION}" \
+    && go mod tidy \
+    && go mod verify
 
 RUN goarm="" \
     && if [ "${TARGETARCH}" = "arm" ]; then goarm="${TARGETVARIANT#v}"; fi \
@@ -37,6 +47,9 @@ ARG AWG_GO_TAG=v0.2.19
 ARG AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d
 ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
+ARG AWG_X_CRYPTO_VERSION=v0.53.0
+ARG AWG_X_NET_VERSION=v0.56.0
+ARG AWG_X_SYS_VERSION=v0.46.0
 
 LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
       org.opencontainers.image.description="Reproducible AmneziaWG userspace gateway candidate for RouterOS containers" \
@@ -44,7 +57,7 @@ LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
       org.opencontainers.image.documentation="https://github.com/The333tech/The333-bgp/tree/main/extras/docker-awg" \
       org.opencontainers.image.licenses="GPL-2.0-only AND MIT" \
       org.opencontainers.image.version="${AWG_GO_TAG}+tools.${AWG_TOOLS_TAG}" \
-      org.opencontainers.image.revision="awg-go:${AWG_GO_REF};awg-tools:${AWG_TOOLS_REF}"
+      org.opencontainers.image.revision="awg-go:${AWG_GO_REF};awg-tools:${AWG_TOOLS_REF};x-crypto:${AWG_X_CRYPTO_VERSION};x-net:${AWG_X_NET_VERSION};x-sys:${AWG_X_SYS_VERSION}"
 
 RUN apk add --no-cache \
       bash=5.3.9-r1 \

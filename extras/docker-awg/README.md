@@ -9,6 +9,7 @@
 - `amneziawg-go v0.2.19`, commit `1cc94272ca8e9e223a5fe76382f5880f09d3c12d`;
 - `amneziawg-tools v1.0.20260618-2`, commit `61e741780e8465a67a7d7fb6cffe14a8a15d624a`;
 - `golang:1.26.5-alpine3.24` и `alpine:3.24` по OCI digest;
+- уязвимые транзитивные Go-модули upstream заменяются на явно закреплённые совместимые версии и проходят `go mod verify`;
 - direct Alpine packages по точным версиям.
 
 Поддерживаемые build targets: `linux/arm/v7`, `linux/arm64` и `linux/amd64`.

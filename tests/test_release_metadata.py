@@ -317,6 +317,10 @@ class ReleaseMetadataTests(unittest.TestCase):
 
         self.assertIn("AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d", dockerfile)
         self.assertIn("AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a", dockerfile)
+        self.assertIn("AWG_X_CRYPTO_VERSION=v0.53.0", dockerfile)
+        self.assertIn("AWG_X_NET_VERSION=v0.56.0", dockerfile)
+        self.assertIn("AWG_X_SYS_VERSION=v0.46.0", dockerfile)
+        self.assertIn("go mod verify", dockerfile)
         self.assertEqual(dockerfile.count("@sha256:"), 2)
         self.assertNotIn("COPY awg0.conf", dockerfile)
         self.assertNotIn("cat \"${config}\"", entrypoint)
