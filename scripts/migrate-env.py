@@ -131,7 +131,7 @@ def main() -> int:
         "REMOTE_FETCH_MAX_BYTES": "16777216",
         "REMOTE_FETCH_MAX_REDIRECTS": "5",
         "REMOTE_FETCH_CACHE_GRACE_SECONDS": "86400",
-        "GOBGP_CORE_IMAGE_VERSION": "4.7.0-r4",
+        "GOBGP_CORE_IMAGE_VERSION": "4.7.0-r5",
         "BGP_PEER_MODE": peer_mode,
         "BGP_DOCKER_BRIDGE_HOPS": "1",
         "BGP_TTL_SECURITY_ENABLED": "false",
@@ -179,7 +179,7 @@ def main() -> int:
 
     missing = [key for key in defaults if key not in seen]
     if missing:
-        updated.extend(["", "# Product/runtime defaults added by v0.82b migration."])
+        updated.extend(["", "# Product/runtime defaults managed by The333-BGP migration."])
         updated.extend(f"{key}={defaults[key]}" for key in missing)
 
     write_atomic(env_path, "\n".join(updated) + "\n")

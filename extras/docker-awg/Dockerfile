@@ -1,5 +1,5 @@
-ARG GO_IMAGE=golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc
-ARG ALPINE_IMAGE=alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
+ARG GO_IMAGE=golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
+ARG ALPINE_IMAGE=alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 FROM ${GO_IMAGE} AS builder
 
@@ -9,20 +9,30 @@ ARG AWG_GO_TAG=v0.2.19
 ARG AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d
 ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
+ARG AWG_X_CRYPTO_VERSION=v0.53.0
+ARG AWG_X_NET_VERSION=v0.56.0
+ARG AWG_X_SYS_VERSION=v0.46.0
 
 RUN apk add --no-cache \
-      bash=5.3.3-r1 \
-      build-base=0.5-r3 \
-      git=2.52.0-r0 \
-      linux-headers=6.16.12-r0 \
-      make=4.4.1-r3
+      bash=5.3.9-r1 \
+      build-base=0.5-r4 \
+      git=2.54.0-r0 \
+      linux-headers=7.0.0-r1 \
+      make=4.4.1-r4
 
 RUN git clone --depth 1 --branch "${AWG_GO_TAG}" \
       https://github.com/amnezia-vpn/amneziawg-go.git /src/amneziawg-go \
     && test "$(git -C /src/amneziawg-go rev-parse HEAD)" = "${AWG_GO_REF}" \
     && git clone --depth 1 --branch "${AWG_TOOLS_TAG}" \
       https://github.com/amnezia-vpn/amneziawg-tools.git /src/amneziawg-tools \
-    && test "$(git -C /src/amneziawg-tools rev-parse HEAD)" = "${AWG_TOOLS_REF}"
+    && test "$(git -C /src/amneziawg-tools rev-parse HEAD)" = "${AWG_TOOLS_REF}" \
+    && cd /src/amneziawg-go \
+    && go get \
+      "golang.org/x/crypto@${AWG_X_CRYPTO_VERSION}" \
+      "golang.org/x/net@${AWG_X_NET_VERSION}" \
+      "golang.org/x/sys@${AWG_X_SYS_VERSION}" \
+    && go mod tidy \
+    && go mod verify
 
 RUN goarm="" \
     && if [ "${TARGETARCH}" = "arm" ]; then goarm="${TARGETVARIANT#v}"; fi \
@@ -37,6 +47,9 @@ ARG AWG_GO_TAG=v0.2.19
 ARG AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d
 ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
+ARG AWG_X_CRYPTO_VERSION=v0.53.0
+ARG AWG_X_NET_VERSION=v0.56.0
+ARG AWG_X_SYS_VERSION=v0.46.0
 
 LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
       org.opencontainers.image.description="Reproducible AmneziaWG userspace gateway candidate for RouterOS containers" \
@@ -44,14 +57,14 @@ LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
       org.opencontainers.image.documentation="https://github.com/The333tech/The333-bgp/tree/main/extras/docker-awg" \
       org.opencontainers.image.licenses="GPL-2.0-only AND MIT" \
       org.opencontainers.image.version="${AWG_GO_TAG}+tools.${AWG_TOOLS_TAG}" \
-      org.opencontainers.image.revision="awg-go:${AWG_GO_REF};awg-tools:${AWG_TOOLS_REF}"
+      org.opencontainers.image.revision="awg-go:${AWG_GO_REF};awg-tools:${AWG_TOOLS_REF};x-crypto:${AWG_X_CRYPTO_VERSION};x-net:${AWG_X_NET_VERSION};x-sys:${AWG_X_SYS_VERSION}"
 
 RUN apk add --no-cache \
-      bash=5.3.3-r1 \
+      bash=5.3.9-r1 \
       ca-certificates=20260611-r0 \
-      iproute2=6.17.0-r0 \
-      iptables=1.8.11-r1 \
-      iptables-legacy=1.8.11-r1 \
+      iproute2=7.0.0-r0 \
+      iptables=1.8.13-r0 \
+      iptables-legacy=1.8.13-r0 \
       openresolv=3.17.4-r0 \
     && mkdir -p /etc/amnezia/amneziawg /usr/share/licenses/amneziawg-go /usr/share/licenses/amneziawg-tools \
     && rm -f /usr/sbin/iptables /usr/sbin/ip6tables \

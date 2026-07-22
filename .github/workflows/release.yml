@@ -12,6 +12,9 @@ permissions:
   contents: write
   id-token: write
 
+env:
+  GRYPE_VERSION: v0.112.0
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -22,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout tag
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -34,7 +37,7 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24"
           cache: npm
@@ -116,15 +119,16 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Scan release SBOM for fixable Critical vulnerabilities
+      - name: Scan release SBOM for fixable High/Critical vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           sbom: dist/the333-bgp.spdx.json
           fail-build: true
-          severity-cutoff: critical
+          severity-cutoff: high
           only-fixed: true
           output-format: table
           cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
 
       - name: Calculate release checksums
         run: |
@@ -133,13 +137,13 @@ jobs:
 
       - name: Attest release provenance
         if: github.event.repository.private == false
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-checksums: dist/SHA256SUMS
 
       - name: Attest release SBOM
         if: github.event.repository.private == false
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-path: dist/the333-bgp-v*.tar.gz
           sbom-path: dist/the333-bgp.spdx.json

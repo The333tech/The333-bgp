@@ -1,6 +1,12 @@
 name: Build docker-awg candidate
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "extras/docker-awg/**"
+      - ".github/workflows/docker-awg.yml"
   workflow_dispatch:
 
 permissions:
@@ -8,6 +14,9 @@ permissions:
   attestations: write
   contents: read
   id-token: write
+
+env:
+  GRYPE_VERSION: v0.112.0
 
 jobs:
   build:
@@ -26,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
@@ -63,15 +72,16 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Scan candidate for fixable Critical vulnerabilities
+      - name: Scan candidate for fixable High/Critical vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           sbom: dist/docker-awg/docker-awg-${{ matrix.name }}.spdx.json
           fail-build: true
-          severity-cutoff: critical
+          severity-cutoff: high
           only-fixed: true
           output-format: table
           cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
 
       - name: Calculate checksum
         run: |
@@ -82,14 +92,14 @@ jobs:
             > "docker-awg-${{ matrix.name }}.sha256"
 
       - name: Attest candidate provenance
-        if: github.event.repository.private == false
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        if: github.event_name == 'workflow_dispatch' && github.event.repository.private == false
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-checksums: dist/docker-awg/docker-awg-${{ matrix.name }}.sha256
 
       - name: Attest candidate SBOM
-        if: github.event.repository.private == false
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        if: github.event_name == 'workflow_dispatch' && github.event.repository.private == false
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-path: dist/docker-awg/docker-awg-${{ matrix.name }}.tar
           sbom-path: dist/docker-awg/docker-awg-${{ matrix.name }}.spdx.json
