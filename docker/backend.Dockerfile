@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS gobgp-builder
+FROM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS gobgp-builder
 
 ARG GOBGP_VERSION=v4.7.0
 
@@ -6,7 +6,7 @@ RUN apk add --no-cache ca-certificates git \
     && go install github.com/osrg/gobgp/v4/cmd/gobgpd@${GOBGP_VERSION} \
     && go install github.com/osrg/gobgp/v4/cmd/gobgp@${GOBGP_VERSION}
 
-FROM python:3.14.6-alpine3.23@sha256:b165067c5afc37fa5608a3c05609cc3d51aafd808a30fbfd822ee594fef55ad4
+FROM python:3.14.6-alpine3.24@sha256:26730869004e2b9c4b9ad09cab8625e81d256d1ce97e72df5520e806b1709f92
 
 ARG PRODUCT_VERSION=dev
 ARG VCS_REF=unknown
