@@ -179,7 +179,7 @@ def main() -> int:
 
     missing = [key for key in defaults if key not in seen]
     if missing:
-        updated.extend(["", "# Product/runtime defaults added by v0.82b migration."])
+        updated.extend(["", "# Product/runtime defaults managed by The333-BGP migration."])
         updated.extend(f"{key}={defaults[key]}" for key in missing)
 
     write_atomic(env_path, "\n".join(updated) + "\n")
