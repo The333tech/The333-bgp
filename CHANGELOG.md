@@ -7,7 +7,7 @@
 - Публичный CodeQL повторно прошёл без открытых alerts; CI, secret scanning, push protection, Dependabot security updates и release attestations проверены на GitHub.
 - Backend зависимости обновлены до FastAPI `0.139.2` и HTTPX2 `2.7.0` с полным hash-lock; portal обновлён до React `19.2.8`, Tabler Icons `3.45.0`, Vite `8.1.5` и Vite React plugin `6.0.4`.
 - Runtime portal остаётся на Node.js 24 LTS; nginx обновлён внутри stable-линейки до `1.30.4`, а все Alpine-based build/runtime stages — до Alpine `3.24`; базовые образы закреплены immutable multi-arch digest, ревизия GoBGP core поднята до `4.7.0-r5`.
-- SHA-pinned GitHub Actions, включая CodeQL, attest, checkout, setup-node, QEMU, Buildx и Docker build, обновлены до проверенных совместимых выпусков; `docker-awg` собирается в PR для arm/v7, arm64 и amd64 с Alpine 3.24 package pins и patched Go-модулями без известных исправимых Critical CVE.
+- SHA-pinned GitHub Actions, включая Node 24-based checkout, CodeQL, attest, setup-node, QEMU, Buildx и Docker build, обновлены до проверенных совместимых выпусков; `docker-awg` собирается в PR для arm/v7, arm64 и amd64 с Alpine 3.24 package pins и patched Go-модулями без известных исправимых Critical CVE.
 - Dependabot группирует minor/patch updates по экосистемам; переходы на major runtime и nginx mainline не предлагаются как обычное автоматическое обновление.
 - GoBGP остаётся на актуальной проверенной версии `v4.7.0`; перезапуск host-updater на рабочей VM не прервал BGP-сессию, а global RIB и advertised routes сохранили одинаковые `16483` маршрута.
 
