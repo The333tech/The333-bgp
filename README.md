@@ -5,7 +5,7 @@
 The333-BGP поднимает GoBGP speaker на Linux VM, собирает маршруты из источников и модулей сервисов, дедуплицирует/агрегирует их и публикует в MikroTik через BGP. Управление идёт через веб-портал: источники маршрутов, модули сервисов, Community-профили, диагностика, история, резервные копии, обновления и пошаговый помощник MikroTik.
 
 <p align="center">
-  <a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.82.1b-8e44ad?style=flat-square"></a>
+  <a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.82.2b-8e44ad?style=flat-square"></a>
   <a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a>
   <a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a>
@@ -24,7 +24,7 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 </p>
 
 > [!NOTE]
-> **v0.82.1b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Текущий рабочий стенд на отдельной VM в локальной сети успешно публикует маршруты в MikroTik больше месяца; тесты, документация и сценарии установки продолжают дорабатываться.
+> **v0.82.2b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Текущий рабочий стенд на отдельной VM в локальной сети успешно публикует маршруты в MikroTik больше месяца; тесты, документация и сценарии установки продолжают дорабатываться.
 
 ## Требования
 

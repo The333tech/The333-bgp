@@ -542,17 +542,19 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.82.1b";
+const PRODUCT_VERSION = "0.82.2b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.82.1b",
-    version: "0.82.1b",
-    title: "v0.82.1b",
+    id: "0.82.2b",
+    version: "0.82.2b",
+    title: "v0.82.2b",
     channel: "beta",
     status: "текущая версия",
     date: "июль 2026",
     changelog: [
+      "Обновление стало транзакционным на всех этапах и автоматически восстанавливает согласованный backup при раннем сбое.",
+      "Встроенные каталоги заменяются атомарно, включая установки с root-владельцем старых файлов.",
       "Дополнительная защита host-updater от выхода файловых операций за доверенный каталог.",
       "Обновлённые совместимые backend/frontend зависимости и SHA-pinned GitHub Actions.",
       "CodeQL, CI, dependency audit и release-проверки без открытых предупреждений.",
