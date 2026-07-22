@@ -16,7 +16,10 @@ class CriticalStateIntegrityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "sources.json"
             path.write_text("{broken", encoding="utf-8")
-            with patch.object(main, "SOURCES_FILE", path):
+            with (
+                patch.object(main, "DATA_DIR", Path(temp_dir)),
+                patch.object(main, "SOURCES_FILE", path),
+            ):
                 with self.assertRaisesRegex(RuntimeError, "invalid JSON state file"):
                     main.read_sources_config()
             self.assertEqual(path.read_text(encoding="utf-8"), "{broken")
@@ -25,7 +28,10 @@ class CriticalStateIntegrityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "service_state.json"
             path.write_text('{"version":1,"services":[]}', encoding="utf-8")
-            with patch.object(main, "SERVICE_STATE_FILE", path):
+            with (
+                patch.object(main, "DATA_DIR", Path(temp_dir)),
+                patch.object(main, "SERVICE_STATE_FILE", path),
+            ):
                 with self.assertRaisesRegex(RuntimeError, "services must be a JSON object"):
                     main.read_service_state()
 
