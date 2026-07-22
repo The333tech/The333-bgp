@@ -1,0 +1,57 @@
+name: Attest public release
+
+on:
+  public:
+  workflow_dispatch:
+
+permissions:
+  artifact-metadata: write
+  attestations: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: attest-public-release
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    name: Attest latest release
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download latest release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=1" --jq '.[0].tag_name // empty')"
+          printf '%s\n' "${tag}" | grep -Eq '^v[0-9][0-9A-Za-z.-]*$'
+          mkdir -p dist
+          gh release download "${tag}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir dist \
+            --pattern SHA256SUMS \
+            --pattern 'the333-bgp-v*.tar.gz' \
+            --pattern the333-bgp.spdx.json \
+            --pattern update-manifest.json
+          printf 'RELEASE_TAG=%s\n' "${tag}" >> "${GITHUB_ENV}"
+
+      - name: Verify release checksums
+        run: |
+          cd dist
+          test "$(find . -maxdepth 1 -type f -name 'the333-bgp-v*.tar.gz' | wc -l)" -eq 1
+          sha256sum --check SHA256SUMS
+
+      - name: Attest release provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Attest release SBOM
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: dist/the333-bgp-v*.tar.gz
+          sbom-path: dist/the333-bgp.spdx.json
+
+      - name: Write summary
+        run: printf 'Attested release `%s`.\n' "${RELEASE_TAG}" >> "${GITHUB_STEP_SUMMARY}"

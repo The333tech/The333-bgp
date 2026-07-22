@@ -2,6 +2,7 @@ name: CodeQL
 
 on:
   workflow_dispatch:
+  public:
   pull_request:
   push:
     branches:
