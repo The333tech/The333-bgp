@@ -925,7 +925,7 @@ stop_runtime_for_rollback() {
 
 build_update_images() {
   local readiness_mode="${1:-strict}"
-  local core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r4}"
+  local core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
   if [[ "${readiness_mode}" == "legacy" ]]; then
     log "Rollback: выполняется полная сборка предыдущего runtime."
     compose build

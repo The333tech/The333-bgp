@@ -1,12 +1,12 @@
 services:
   the333-gobgp-core:
-    image: "the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r4}"
+    image: "the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
     build:
       context: .
       dockerfile: docker/gobgp.Dockerfile
       args:
         GOBGP_VERSION: v4.7.0
-        GOBGP_CORE_IMAGE_VERSION: "${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r4}"
+        GOBGP_CORE_IMAGE_VERSION: "${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
     container_name: the333-gobgp-core
     user: "${PUID}:${PGID}"
     init: true

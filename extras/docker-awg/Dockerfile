@@ -11,11 +11,11 @@ ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
 
 RUN apk add --no-cache \
-      bash=5.3.3-r1 \
-      build-base=0.5-r3 \
-      git=2.52.0-r0 \
-      linux-headers=6.16.12-r0 \
-      make=4.4.1-r3
+      bash=5.3.9-r1 \
+      build-base=0.5-r4 \
+      git=2.54.0-r0 \
+      linux-headers=7.0.0-r1 \
+      make=4.4.1-r4
 
 RUN git clone --depth 1 --branch "${AWG_GO_TAG}" \
       https://github.com/amnezia-vpn/amneziawg-go.git /src/amneziawg-go \
@@ -47,11 +47,11 @@ LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
       org.opencontainers.image.revision="awg-go:${AWG_GO_REF};awg-tools:${AWG_TOOLS_REF}"
 
 RUN apk add --no-cache \
-      bash=5.3.3-r1 \
+      bash=5.3.9-r1 \
       ca-certificates=20260611-r0 \
-      iproute2=6.17.0-r0 \
-      iptables=1.8.11-r1 \
-      iptables-legacy=1.8.11-r1 \
+      iproute2=7.0.0-r0 \
+      iptables=1.8.13-r0 \
+      iptables-legacy=1.8.13-r0 \
       openresolv=3.17.4-r0 \
     && mkdir -p /etc/amnezia/amneziawg /usr/share/licenses/amneziawg-go /usr/share/licenses/amneziawg-tools \
     && rm -f /usr/sbin/iptables /usr/sbin/ip6tables \

@@ -81,7 +81,7 @@ class EnvMigrationTests(unittest.TestCase):
                 migrated,
             )
             self.assertIn("BGP_TCP_MD5_CONFIGURED=true", migrated)
-            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r4", migrated)
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=2", migrated)
             self.assertIn("BGP_TTL_SECURITY_ENABLED=true", migrated)
             self.assertNotIn("BGP_TCP_MD5_KEY=", migrated)
@@ -125,7 +125,7 @@ class EnvMigrationTests(unittest.TestCase):
             self.assertIn("THE333_BIND_IP=192.168.1.10", migrated)
             self.assertIn("BGP_TTL_SECURITY_ENABLED=false", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=1", migrated)
-            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r4", migrated)
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", migrated)
 
     @unittest.skipUnless(os.name == "posix", "ownership semantics require POSIX")
     def test_migration_preserves_env_owner_and_group_with_strict_mode(self) -> None:

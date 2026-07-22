@@ -139,7 +139,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertNotIn("python", gobgp.lower())
         self.assertNotIn("VCS_REF", core_service)
         self.assertIn('org.opencontainers.image.revision="${GOBGP_REVISION}"', gobgp)
-        self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r4", gobgp)
+        self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", gobgp)
         portal_dockerfile = (ROOT / "portal" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("apk upgrade --no-cache", portal_dockerfile)
         self.assertIn("user[[:space:]]", portal_dockerfile)
