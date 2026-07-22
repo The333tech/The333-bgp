@@ -52,6 +52,7 @@ required_files=(
   ".gitignore"
   "LICENSE"
   "README.md"
+  "CONTRIBUTING.md"
   "SECURITY.md"
   "VERSION"
   "CHANGELOG.md"
@@ -72,6 +73,8 @@ required_files=(
   "requirements.in"
   "app/main.py"
   "scripts/host-updater.py"
+  "scripts/extract-release.py"
+  "scripts/migrate-env.py"
   "portal/Dockerfile"
   "portal/.dockerignore"
   "portal/nginx.conf"
@@ -99,13 +102,16 @@ source_required_files=(
   ".github/workflows/docker-awg.yml"
   ".github/workflows/release.yml"
   "tests/test_auth_sessions.py"
+  "tests/test_background_jobs.py"
   "tests/test_catalog_migration.py"
   "tests/test_host_updater.py"
   "tests/test_installer_upgrade_flow.py"
   "tests/test_release_metadata.py"
   "tests/test_remote_fetch_security.py"
   "tests/test_route_transaction.py"
+  "tests/test_release_archive_and_env_migration.py"
   "tests/test_security_helpers.py"
+  "tests/test_state_integrity.py"
 )
 
 cd "${ROOT}"
@@ -126,6 +132,8 @@ if [[ -d .git && "${THE333_REQUIRE_TRACKED_RELEASE_FILES:-false}" == "true" ]]; 
   for file in "${required_files[@]}" "${source_required_files[@]}"; do
     git ls-files --error-unmatch "${file}" >/dev/null 2>&1 \
       || fail "required release file is not tracked by Git: ${file}"
+  done
+  for file in "${required_files[@]}"; do
     export_attr="$(git check-attr export-ignore -- "${file}" | awk -F': ' '{print $3}')"
     [[ "${export_attr}" != "set" ]] \
       || fail "required release file is excluded from git archive by export-ignore: ${file}"
@@ -160,7 +168,7 @@ if grep -RIn \
   fail "forbidden placeholder or old control name found"
 fi
 
-"${PYTHON_BIN}" -m py_compile app/main.py scripts/host-updater.py
+"${PYTHON_BIN}" -m py_compile app/main.py scripts/host-updater.py scripts/extract-release.py scripts/migrate-env.py
 bash -n install.sh
 bash -n docker/gobgp-entrypoint.sh
 bash -n docker/backend-entrypoint.sh

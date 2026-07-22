@@ -8,15 +8,15 @@ RUN apk add --no-cache ca-certificates git \
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
-ARG PRODUCT_VERSION=dev
-ARG VCS_REF=unknown
+ARG GOBGP_CORE_IMAGE_VERSION=4.7.0-r4
+ARG GOBGP_REVISION=v4.7.0
 
 LABEL org.opencontainers.image.title="The333-BGP Core" \
       org.opencontainers.image.description="Hardened GoBGP routing core for The333-BGP" \
       org.opencontainers.image.source="https://github.com/The333tech/The333-bgp" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.version="${PRODUCT_VERSION}" \
-      org.opencontainers.image.revision="${VCS_REF}"
+      org.opencontainers.image.version="${GOBGP_CORE_IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${GOBGP_REVISION}"
 
 RUN apk add --no-cache ca-certificates tzdata \
     && update-ca-certificates

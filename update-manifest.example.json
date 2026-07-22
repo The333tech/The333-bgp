@@ -2,16 +2,38 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.78"
+    "beta": "0.82b"
   },
   "versions": [
+    {
+      "version": "0.82b",
+      "title": "v0.82b",
+      "channel": "beta",
+      "status": "текущая beta",
+      "date": "2026-07-12",
+      "recommended": true,
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82b/the333-bgp-v0.82b.tar.gz",
+      "sha256": "",
+      "changelog": [
+        "Durable-задачи обновления и полный автоматический rollback.",
+        "Согласованный update-бэкап с автоматическим восстановлением Backend без перезапуска GoBGP.",
+        "Проверяемые release-архивы и безопасная распаковка.",
+        "Изоляция Docker/BGP, опциональная GTSM и secret-файл TCP MD5.",
+        "Настройка автообновления маршрутов без рестарта контейнеров.",
+        "Автоматические бэкапы по изменениям с расписанием и retention.",
+        "Uptime основных контейнеров через защищённый host-updater.",
+        "Скачивание маршрутов и RouterOS v7 Large Community фильтры.",
+        "Техническая диагностика GoBGP с подробностями BGP-соседа и сверкой маршрутов.",
+        "Компактные настройки автоматических бэкапов в нижней части модального окна."
+      ]
+    },
     {
       "version": "0.78",
       "title": "v0.78 beta",
       "channel": "beta",
-      "status": "текущая beta",
+      "status": "предыдущая beta",
       "date": "2026-07-09",
-      "recommended": true,
+      "recommended": false,
       "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.78/the333-bgp-v0.78.tar.gz",
       "sha256": "",
       "changelog": [

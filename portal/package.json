@@ -1,6 +1,6 @@
 {
   "name": "the333-portal",
-  "version": "0.78.0",
+  "version": "0.82.0-beta",
   "private": true,
   "description": "The333 Portal UI for The333-BGP",
   "type": "module",
@@ -21,6 +21,6 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
     "typescript": "7.0.2",
-    "vite": "8.1.3"
+    "vite": "8.1.4"
   }
 }

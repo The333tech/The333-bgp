@@ -6,11 +6,22 @@ set -eu
 : "${BGP_LISTEN_PORT:=1179}"
 : "${PEER_ADDRESS:=192.168.1.1}"
 : "${PEER_AS:=65455}"
+: "${BGP_PEER_MODE:=direct}"
+: "${BGP_DOCKER_BRIDGE_HOPS:=1}"
 : "${BGP_MULTIHOP_TTL:=10}"
+: "${BGP_TTL_SECURITY_ENABLED:=false}"
+: "${BGP_TTL_SECURITY_MIN:=255}"
+: "${BGP_TCP_MD5_KEY:=}"
+: "${BGP_TCP_MD5_KEY_FILE:=/run/secrets/bgp_tcp_md5}"
 : "${BGP_GRACEFUL_RESTART:=true}"
 : "${BGP_GRACEFUL_RESTART_TIME:=300}"
 : "${BGP_REJECT_INBOUND_ROUTES:=true}"
 : "${GOBGP_CONFIG_VALIDATE_ONLY:=false}"
+: "${GOBGP_STATE_DIR:=/state}"
+
+if [ -f "${BGP_TCP_MD5_KEY_FILE}" ]; then
+  IFS= read -r BGP_TCP_MD5_KEY < "${BGP_TCP_MD5_KEY_FILE}" || BGP_TCP_MD5_KEY=""
+fi
 
 CONFIG_FILE=/tmp/gobgpd.toml
 CONFIG_TMP=/tmp/gobgpd.toml.tmp
@@ -56,13 +67,31 @@ validate_boolean() {
 validate_uint_range LOCAL_AS "${LOCAL_AS}" 1 4294967295
 validate_uint_range PEER_AS "${PEER_AS}" 1 4294967295
 validate_uint_range BGP_LISTEN_PORT "${BGP_LISTEN_PORT}" 1 65535
+validate_uint_range BGP_DOCKER_BRIDGE_HOPS "${BGP_DOCKER_BRIDGE_HOPS}" 0 254
 validate_uint_range BGP_MULTIHOP_TTL "${BGP_MULTIHOP_TTL}" 1 255
+validate_uint_range BGP_TTL_SECURITY_MIN "${BGP_TTL_SECURITY_MIN}" 1 255
 validate_uint_range BGP_GRACEFUL_RESTART_TIME "${BGP_GRACEFUL_RESTART_TIME}" 1 4095
 validate_ipv4 ROUTER_ID "${ROUTER_ID}"
 validate_ipv4 PEER_ADDRESS "${PEER_ADDRESS}"
 validate_boolean BGP_GRACEFUL_RESTART "${BGP_GRACEFUL_RESTART}"
 validate_boolean BGP_REJECT_INBOUND_ROUTES "${BGP_REJECT_INBOUND_ROUTES}"
 validate_boolean GOBGP_CONFIG_VALIDATE_ONLY "${GOBGP_CONFIG_VALIDATE_ONLY}"
+validate_boolean BGP_TTL_SECURITY_ENABLED "${BGP_TTL_SECURITY_ENABLED}"
+case "${BGP_PEER_MODE}" in
+  direct|multihop) ;;
+  *) fail "BGP_PEER_MODE must be direct or multihop" ;;
+esac
+if [ -n "${BGP_TCP_MD5_KEY}" ]; then
+  [ "${#BGP_TCP_MD5_KEY}" -le 80 ] || fail "BGP_TCP_MD5_KEY must be at most 80 characters"
+  case "${BGP_TCP_MD5_KEY}" in
+    *[!A-Za-z0-9._+-]*) fail "BGP_TCP_MD5_KEY contains unsupported characters" ;;
+  esac
+fi
+case "${GOBGP_STATE_DIR}" in
+  /*) ;;
+  *) fail "GOBGP_STATE_DIR must be an absolute path" ;;
+esac
+mkdir -p "${GOBGP_STATE_DIR}"
 
 cat > "${CONFIG_TMP}" <<CFG
 [global.config]
@@ -88,11 +117,38 @@ cat >> "${CONFIG_TMP}" <<CFG
     neighbor-address = "${PEER_ADDRESS}"
     peer-as = ${PEER_AS}
     admin-down = true
+CFG
 
+if [ -n "${BGP_TCP_MD5_KEY}" ]; then
+  cat >> "${CONFIG_TMP}" <<CFG
+    auth-password = "${BGP_TCP_MD5_KEY}"
+CFG
+fi
+
+if [ "${BGP_PEER_MODE}" = "multihop" ]; then
+  cat >> "${CONFIG_TMP}" <<CFG
   [neighbors.ebgp-multihop.config]
     enabled = true
     multihop-ttl = ${BGP_MULTIHOP_TTL}
+CFG
+elif [ "${BGP_TTL_SECURITY_ENABLED}" = "true" ]; then
+  cat >> "${CONFIG_TMP}" <<CFG
+  [neighbors.ttl-security.config]
+    enabled = true
+    ttl-min = ${BGP_TTL_SECURITY_MIN}
+CFG
+elif [ "${BGP_DOCKER_BRIDGE_HOPS}" -gt 0 ]; then
+  direct_transport_ttl=$((BGP_DOCKER_BRIDGE_HOPS + 1))
+  cat >> "${CONFIG_TMP}" <<CFG
+  # The peer is directly connected to the Docker host. GoBGP needs one extra
+  # TTL hop for each bridge namespace between this container and the LAN.
+  [neighbors.ebgp-multihop.config]
+    enabled = true
+    multihop-ttl = ${direct_transport_ttl}
+CFG
+fi
 
+cat >> "${CONFIG_TMP}" <<CFG
   [[neighbors.afi-safis]]
     [neighbors.afi-safis.config]
       afi-safi-name = "ipv4-unicast"
@@ -130,7 +186,7 @@ fi
 
 chmod 600 "${CONFIG_TMP}"
 mv -f "${CONFIG_TMP}" "${CONFIG_FILE}"
-rm -f /data/gobgpd.toml
+rm -f "${GOBGP_STATE_DIR}/gobgpd.toml"
 
 gobgpd -d -f "${CONFIG_FILE}" || fail "generated GoBGP configuration is invalid"
 if [ "${GOBGP_CONFIG_VALIDATE_ONLY}" = "true" ]; then
@@ -138,9 +194,9 @@ if [ "${GOBGP_CONFIG_VALIDATE_ONLY}" = "true" ]; then
   exit 0
 fi
 
-cat /proc/sys/kernel/random/uuid > /data/gobgp_generation.tmp
-chmod 600 /data/gobgp_generation.tmp
-mv -f /data/gobgp_generation.tmp /data/gobgp_generation
+cat /proc/sys/kernel/random/uuid > "${GOBGP_STATE_DIR}/gobgp_generation.tmp"
+chmod 600 "${GOBGP_STATE_DIR}/gobgp_generation.tmp"
+mv -f "${GOBGP_STATE_DIR}/gobgp_generation.tmp" "${GOBGP_STATE_DIR}/gobgp_generation"
 
 printf '[gobgp] Starting gobgpd with graceful-restart=%s...\n' "${BGP_GRACEFUL_RESTART}"
 if [ "${BGP_GRACEFUL_RESTART}" = "true" ]; then

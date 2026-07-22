@@ -12,6 +12,10 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build and publish release
@@ -87,6 +91,21 @@ jobs:
               encoding="utf-8",
           )
           PY
+          python3 - "${version}" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          match = re.search(
+              rf"(?ms)^##\s+{re.escape(version)}(?:\s|$).*?(?=^##\s+|\Z)",
+              changelog,
+          )
+          if not match:
+              raise SystemExit(f"CHANGELOG.md has no section for {version}")
+          Path("dist/RELEASE_NOTES.md").write_text(match.group(0).strip() + "\n", encoding="utf-8")
+          PY
 
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
@@ -146,7 +165,6 @@ jobs:
           )"
           title="The333-BGP v${version}"
           if [ "${channel}" = "beta" ]; then
-            title="${title} beta"
             release_state=(--prerelease)
           else
             release_state=(--latest)
@@ -159,15 +177,11 @@ jobs:
           )
 
           if gh release view "${tag}" >/dev/null 2>&1; then
-            gh release upload "${tag}" "${assets[@]}" --clobber
-            gh release edit "${tag}" \
-              "${release_state[@]}" \
-              --title "${title}" \
-              --notes-file CHANGELOG.md
-          else
-            gh release create "${tag}" "${assets[@]}" \
-              --verify-tag \
-              "${release_state[@]}" \
-              --title "${title}" \
-              --notes-file CHANGELOG.md
+            echo "Release ${tag} already exists. Published release assets are immutable." >&2
+            exit 1
           fi
+          gh release create "${tag}" "${assets[@]}" \
+            --verify-tag \
+            "${release_state[@]}" \
+            --title "${title}" \
+            --notes-file dist/RELEASE_NOTES.md

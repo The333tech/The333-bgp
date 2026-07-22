@@ -3,13 +3,15 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
 
 os.environ.setdefault("WEB_PASSWORD", "unit-test-password")
 
-from app.main import safe_backup_archive_parts, safe_existing_named_child_path  # noqa: E402
+import app.main as main  # noqa: E402
+from app.main import route_set_definition, safe_backup_archive_parts, safe_existing_named_child_path  # noqa: E402
 
 
 class SafePathTests(unittest.TestCase):
@@ -65,6 +67,29 @@ class SafePathTests(unittest.TestCase):
         for unsafe in ("../data/sources.json", "/etc/passwd", "data/../../etc/passwd"):
             with self.subTest(unsafe=unsafe), self.assertRaises(HTTPException):
                 safe_backup_archive_parts(unsafe)
+
+    def test_route_download_kind_uses_fixed_allowlist(self) -> None:
+        self.assertEqual(route_set_definition("advertised")["label"], "Опубликованные")
+
+        for unsafe in ("../../etc/passwd", "/etc/passwd", "custom-routes"):
+            with self.subTest(unsafe=unsafe), self.assertRaises(HTTPException) as raised:
+                route_set_definition(unsafe)
+            self.assertEqual(raised.exception.status_code, 400)
+
+    def test_gobgp_neighbor_detail_uses_valid_configured_peer_only(self) -> None:
+        with (
+            patch.object(main, "PEER_ADDRESS", "192.0.2.1"),
+            patch.object(main, "gobgp_text", return_value="neighbor details\n") as gobgp_text,
+        ):
+            self.assertEqual(main.gobgp_neighbor_detail(), "neighbor details\n")
+            gobgp_text.assert_called_once_with(["neighbor", "192.0.2.1"])
+
+        with (
+            patch.object(main, "PEER_ADDRESS", "not-an-ip"),
+            patch.object(main, "gobgp_text") as gobgp_text,
+        ):
+            self.assertEqual(main.gobgp_neighbor_detail(), "")
+            gobgp_text.assert_not_called()
 
 
 if __name__ == "__main__":

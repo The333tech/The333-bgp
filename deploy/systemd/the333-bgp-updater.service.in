@@ -13,6 +13,7 @@ Environment=HOME=/run/the333-bgp/home
 Group=@PROJECT_GID@
 WorkingDirectory=@PROJECT_DIR@
 ExecStart=/usr/bin/python3 @PROJECT_DIR@/scripts/host-updater.py --socket /run/the333-bgp/updater.sock
+SuccessExitStatus=75
 Restart=always
 RestartSec=2s
 TimeoutStopSec=20s

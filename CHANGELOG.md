@@ -1,10 +1,47 @@
 # The333-BGP Changelog
 
+## 0.82b - 2026-07-12
+
+- Фоновые product-update задачи получили durable-результат: перезапуск backend больше не превращает выполняющееся обновление в потерянную или фиктивно отменённую задачу.
+- Обновление использует полный readiness-check backend/GoBGP/маршрутов/портала; rollback восстанавливает код, `.env`, `config` и `data` и проверяет предыдущую версию совместимым health-check.
+- Перед update/repair Backend кратковременно останавливается для согласованного снимка `data/config`, затем обязательно запускается снова даже при ошибке архива; GoBGP и опубликованные маршруты при этом не перезапускаются.
+- Исправлен stdin/JSON defect установщика, который приводил к `JSONDecodeError` при выборе версии из manifest.
+- Fresh install и upgrade переведены на GitHub Releases API с поддержкой prerelease, SHA-256 release assets и безопасной распаковкой без path traversal, symlink и device-файлов.
+- Добавлена идемпотентная миграция `.env`: пользовательские TLS/auth-настройки сохраняются, legacy manifest URL обновляется, TCP MD5 переносится в secret-файл.
+- Portal, backend и GoBGP разделены по frontend/control/BGP-edge сетям; control network стала internal, portal работает без Linux capabilities под непривилегированным UID.
+- GTSM/TTL security для прямого eBGP сделана явной двухсторонней opt-in настройкой: совместимый режим используется по умолчанию, а генератор MikroTik добавляет TTL-параметры только когда GTSM включена и на сервере, и на RouterOS.
+- Для direct eBGP через Docker bridge введён явный `BGP_DOCKER_BRIDGE_HOPS`: MikroTik работает с `multihop=no`, а GoBGP автоматически учитывает ровно один внутренний container-to-LAN hop минимальным TTL `2`.
+- Версия GoBGP core отделена от версии продукта: обычные portal/backend-релизы больше не должны пересоздавать routing-core.
+- Атомарные записи состояния получили уникальные временные файлы, `fsync` файла и каталога; критические sources/catalog/state JSON теперь обрабатываются fail-closed.
+- DNS-кэш Geosite обновляется пакетно вместо полного чтения и записи на каждый домен; ожидаемые DNS-сбои больше не засоряют логи stack trace.
+- История маршрутов сохраняет выбранные источники, модули, итоговое количество и SHA-256 fingerprint набора; портал показывает реальное происхождение вместо «источник не указан».
+- В состояние системы добавлены свободное место, порог безопасного обновления и понятное предупреждение о disk pressure.
+- CI дополнен Docker runtime smoke-тестом, проверкой сетевой изоляции и Dependency Review; release workflow запрещает повторную публикацию уже существующего тега и перезапись его assets.
+- Manifest и release archive загружаются во временные файлы только по HTTPS, включая redirects; добавлены лимиты 2 MiB/256 MiB и понятные ошибки без Python traceback при сетевом или JSON-сбое.
+- Исправлен контракт `download_release`: вывод проверки SHA-256 больше не смешивается с путём распакованного релиза; поведение покрыто POSIX integration-тестом.
+- Host-updater запускает дочерний update в минимальном системном окружении и каждый раз читает актуальный `.env`, поэтому удалённые CA/URL/secrets не остаются унаследованными от старого systemd-процесса.
+- Атомарная миграция `.env` сохраняет UID/GID исходного файла и режим `0600`, поэтому обновление от root-service не лишает локального администратора доступа к CLI и Docker Compose.
+- DNS-кэш модулей сервисов самовосстанавливается при повреждённом JSON и удаляет malformed, private, reserved и sinkhole-адреса до расчёта маршрутов.
+- Полный update E2E через production Unix-socket updater завершён успешно: durable result сохранён, backend/portal заменены, GoBGP core не пересоздан и BGP-сессия не прерывалась.
+- Автообновление маршрутов получило persistent-настройки в портале: включение, отключение и интервал в минутах применяются без рестарта и переживают обновление проекта.
+- Добавлены автоматические системные бэкапы с расписанием, настраиваемым retention и проверкой fingerprint: неизменившееся состояние не дублируется новым архивом.
+- Uptime трёх контейнеров передаётся через allowlist-ручку изолированного host-updater; Docker socket по-прежнему не монтируется в backend или portal.
+- На странице маршрутов файл выбранного набора можно скачать, а блок «Подключения» больше не дублирует настройку автообновления.
+- Community-профили получили точный генератор входного Large Community filter для RouterOS v7, выбор имени BGP connection, Safe Mode warning, проверку по реальному `session prefix-count` и команды rollback.
+- Генератор Community-команд теперь проверяет, что BGP connection найден в единственном экземпляре, до изменения фильтров; интерфейс объясняет назначение защитных private/reserved reject-правил.
+- Блок GoBGP в «Подключениях» расширен до технической диагностики: global, подробное состояние соседа, таймеры, capabilities, статистика сообщений, advertised routes и сверка RIB/last-good.
+- Настройки автоматических бэкапов перенесены в нижнюю часть модального окна, получили нейтральное оформление, явную кнопку включения и компактные числовые поля.
+- Атомарный мигратор `.env` сохраняет строгие POSIX-права на Linux и корректно проходит release-тесты на Windows, где `fchmod` недоступен.
+- Исправлены scrollbar блоков Dashboard и статусы страницы обновлений: установленная актуальная версия теперь явно показывает «Обновление не требуется».
+- Успешный служебный код `75` host-updater объявлен в systemd как `SuccessExitStatus`, поэтому штатный self-restart больше не выглядит как отказ сервиса.
+- Backend/security suite обнаруживает **104 теста** в актуальном Python 3.14 image; 9 POSIX update/installer сценариев, пропускаемых в Alpine без Bash, отдельно проходят на Linux host. Frontend production build, MikroTik logic tests и npm audit также проходят без ошибок.
+- Документация GitHub дополнена правилами для contributors и приватным процессом отправки отчётов об уязвимостях без публикации чувствительных деталей в Issues.
+
 ## 0.78 beta - 2026-07-09
 
 - Beta-релиз перед первым stable-релизом: проект находится в активной разработке, рабочий стенд больше месяца публикует маршруты в MikroTik.
 - GoBGP обновлён до `v4.7.0`; core/backend images собраны и проверены на этой версии.
-- Backend runtime обновлён до Python 3.14 с hash-locked dependencies; FastAPI/Uvicorn/Pydantic HTTPX2 обновлены.
+- Backend runtime обновлён до Python 3.14 с hash-locked dependencies; FastAPI, Uvicorn, Pydantic и HTTPX2 обновлены.
 - Portal runtime обновлён до Node 24/nginx 1.30; frontend dependencies закреплены exact versions.
 - Добавлены и проверены session auth, CSRF, rate limiting, TLS overlay, безопасный reset password flow.
 - Updater вынесен в host-side systemd service через Unix socket; Docker socket не монтируется в containers.

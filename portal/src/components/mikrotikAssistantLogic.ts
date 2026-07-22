@@ -11,6 +11,7 @@ export type RouterFacts = {
 };
 
 export type RouterOsBgpSyntax = "legacy-v7" | "current-v7";
+export type BgpPeerMode = "direct" | "multihop";
 
 export const PREFLIGHT_COMMANDS = [
   "# Только чтение. Команды не меняют RouterOS.",
@@ -110,6 +111,23 @@ export function isStandardCommunity(value: string): boolean {
   });
 }
 
+export function isLargeCommunity(value: string): boolean {
+  const parts = value.trim().split(":");
+  return parts.length === 3 && parts.every((part) => {
+    if (!/^\d+$/.test(part)) return false;
+    const number = Number(part);
+    return Number.isSafeInteger(number) && number >= 0 && number <= 4_294_967_295;
+  });
+}
+
+export function isRouterOsObjectName(value: string): boolean {
+  return /^[A-Za-z0-9._-]{1,64}$/.test(value);
+}
+
+export function isTcpMd5Key(value: string): boolean {
+  return value.length >= 1 && value.length <= 80 && /^[A-Za-z0-9._+-]+$/.test(value);
+}
+
 export function versionAtLeast(facts: RouterFacts, major: number, minor: number, patch: number): boolean {
   if (facts.major === null || facts.minor === null || facts.patch === null) return false;
   if (facts.major !== major) return facts.major > major;
@@ -124,6 +142,46 @@ export type MikroTikCommands = {
   rollback: string;
 };
 
+export function buildMikroTikCommunityFilterCommands({
+  community,
+  connectionName,
+  profileId,
+}: {
+  community: string;
+  connectionName: string;
+  profileId: string;
+}): string {
+  if (!isLargeCommunity(community)) {
+    throw new Error("Large Community должен иметь формат admin:value1:value2");
+  }
+  if (!isRouterOsObjectName(connectionName)) {
+    throw new Error("Некорректное имя BGP connection");
+  }
+  const safeProfileId = isRouterOsObjectName(profileId) ? profileId : "selected";
+  const filterChain = "the333-bgp-profile-in";
+  return [
+    "# RouterOS v7. Выполняйте в Safe Mode после backup конфигурации.",
+    `# Выбран профиль ${safeProfileId}: ${community}.`,
+    "# Создаём отдельную входящую цепочку и не меняем базовую the333-bgp-in.",
+    `:if ([:len [/routing/bgp/connection/find where name="${connectionName}"]] != 1) do={ :error "The333-BGP: BGP connection не найден или имя не уникально" }`,
+    `/routing/filter/rule/remove [find where chain="${filterChain}"]`,
+    ...RESERVED_PREFIXES.map((prefix, index) => (
+      `/routing/filter/rule/add chain=${filterChain} rule="if (dst in ${prefix}) { reject }" comment="the333 profile: reserved ${index + 1}"`
+    )),
+    `/routing/filter/rule/add chain=${filterChain} rule="if (afi ipv4 && bgp-large-communities includes ${community} && dst-len>=8 && dst-len<=32) { accept }" comment="the333 profile: ${safeProfileId}"`,
+    `/routing/filter/rule/add chain=${filterChain} rule="reject" comment="the333 profile: final reject"`,
+    `/routing/bgp/connection/set [find where name="${connectionName}"] input.filter=${filterChain}`,
+    `/routing/bgp/session/reset [find where name~"${connectionName}"]`,
+    ":delay 5s",
+    `/routing/bgp/connection/print detail where name="${connectionName}"`,
+    `/routing/bgp/session/print detail where name~"${connectionName}"`,
+    "# В выводе session проверьте state=established и prefix-count: это число полученных маршрутов выбранного профиля.",
+    "# Rollback к полному базовому набору:",
+    `# /routing/bgp/connection/set [find where name="${connectionName}"] input.filter=the333-bgp-in`,
+    `# /routing/bgp/session/reset [find where name~"${connectionName}"]`,
+  ].join("\n");
+}
+
 export function buildMikroTikCommands({
   syntax,
   serviceIp,
@@ -132,6 +190,10 @@ export function buildMikroTikCommands({
   routerId,
   community,
   customGateway,
+  peerMode,
+  ttlSecurityEnabled,
+  ttlSecurityMin,
+  tcpMd5Key,
 }: {
   syntax: RouterOsBgpSyntax;
   serviceIp: string;
@@ -140,6 +202,10 @@ export function buildMikroTikCommands({
   routerId: string;
   community: string;
   customGateway: string | null;
+  peerMode: BgpPeerMode;
+  ttlSecurityEnabled: boolean;
+  ttlSecurityMin: number;
+  tcpMd5Key: string | null;
 }): MikroTikCommands {
   const quarantineChain = "the333-bgp-quarantine";
   const activeChain = "the333-bgp-in";
@@ -147,6 +213,12 @@ export function buildMikroTikCommands({
   const instanceName = "the333-bgp";
   const gatewayAction = customGateway ? `set gw ${customGateway.trim()}; ` : "";
   const legacySyntax = syntax === "legacy-v7";
+  const transportSecurity = peerMode === "multihop"
+    ? "multihop=yes"
+    : ttlSecurityEnabled
+      ? `multihop=no local.ttl=255 remote.ttl=${ttlSecurityMin}`
+      : "multihop=no";
+  const tcpMd5 = tcpMd5Key ? ` tcp-md5-key=${tcpMd5Key}` : "";
   const reservedRules = RESERVED_PREFIXES.map((prefix, index) => (
     `:if ([:len [/routing/filter/rule/find where comment="the333: reserved ${index + 1}"]] = 0) do={`
     + ` /routing/filter/rule/add chain=${activeChain} rule="if (dst in ${prefix}) { reject }" comment="the333: reserved ${index + 1}" }`
@@ -163,8 +235,8 @@ export function buildMikroTikCommands({
       `:if ([:len [/routing/bgp/instance/find where name="${instanceName}"]] = 0) do={ /routing/bgp/instance/add name=${instanceName} as=${routerAs.trim()} }`,
     ]),
     legacySyntax
-      ? `:if ([:len [/routing/bgp/connection/find where name="${connectionName}"]] = 0) do={ /routing/bgp/connection/add name=${connectionName} remote.address=${serviceIp.trim()}/32 remote.as=${serviceAs.trim()} local.default-address=${routerId.trim()} local.role=ebgp routing-table=main as=${routerAs.trim()} multihop=yes input.filter=${quarantineChain} disabled=yes }`
-      : `:if ([:len [/routing/bgp/connection/find where name="${connectionName}"]] = 0) do={ /routing/bgp/connection/add name=${connectionName} instance=${instanceName} remote.address=${serviceIp.trim()} remote.as=${serviceAs.trim()} local.address=${routerId.trim()} local.role=ebgp multihop=yes address-families=ip input.filter=${quarantineChain} disabled=yes }`,
+      ? `:if ([:len [/routing/bgp/connection/find where name="${connectionName}"]] = 0) do={ /routing/bgp/connection/add name=${connectionName} remote.address=${serviceIp.trim()}/32 remote.as=${serviceAs.trim()} local.default-address=${routerId.trim()} local.role=ebgp routing-table=main as=${routerAs.trim()} ${transportSecurity}${tcpMd5} input.filter=${quarantineChain} disabled=yes }`
+      : `:if ([:len [/routing/bgp/connection/find where name="${connectionName}"]] = 0) do={ /routing/bgp/connection/add name=${connectionName} instance=${instanceName} remote.address=${serviceIp.trim()} remote.as=${serviceAs.trim()} local.address=${routerId.trim()} local.role=ebgp ${transportSecurity}${tcpMd5} address-families=ip input.filter=${quarantineChain} disabled=yes }`,
     `:put "The333-BGP подготовлен в выключенном состоянии. Выполните проверки перед активацией."`,
   ].join("\n");
 
@@ -182,7 +254,7 @@ export function buildMikroTikCommands({
     `/routing/bgp/connection/set [find where name="${connectionName}"] input.filter=${activeChain} disabled=no`,
     ":delay 5s",
     `/routing/bgp/session/print detail where name~"${connectionName}"`,
-    `/ip/route/print count-only where routing-protocol=bgp`,
+    "# В выводе session проверьте state=established и prefix-count: это число полученных маршрутов.",
   ].join("\n");
 
   const rollback = [

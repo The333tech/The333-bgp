@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 : "${WEB_HOST:=0.0.0.0}"
 : "${WEB_PORT:=8088}"

@@ -1,5 +1,6 @@
 export type ReadyResponse = {
   ready: boolean;
+  unconfigured?: boolean;
   app: string;
   gobgp_ready: boolean;
   rib_count: number | null;
@@ -29,6 +30,7 @@ export type DiagnosticsResponse = {
   };
   safe_env?: Record<string, unknown>;
   gobgp_neighbor?: string;
+  gobgp_neighbor_detail?: string;
   gobgp_global?: string;
 };
 
@@ -57,6 +59,9 @@ export type UpdateHistoryRecord = {
   ok: boolean;
   mode: string;
   selected_source: string | null;
+  selected_sources?: string[];
+  selected_services?: string[];
+  route_set_sha256?: string | null;
   final_count: number | null;
   advertised_count: number | null;
   added: number | null;
@@ -92,8 +97,54 @@ export type ServerResourcesResponse = {
     used_bytes: number;
     free_bytes: number;
     used_percent: number | null;
+    free_percent?: number | null;
+    pressure?: "normal" | "warning" | "critical";
+    update_ready?: boolean;
+    update_min_free_bytes?: number;
+  };
+  runtime?: {
+    ok: boolean;
+    containers: Array<{
+      key: "portal" | "backend" | "gobgp" | string;
+      label: string;
+      name: string;
+      exists: boolean;
+      status: string;
+      health: string;
+      started_at?: string | null;
+      uptime_seconds?: number | null;
+    }>;
+    time?: string;
   };
   time: string;
+};
+
+export type RuntimeSettingsResponse = {
+  ok: boolean;
+  version: number;
+  route_auto_update: {
+    enabled: boolean;
+    interval_minutes: number;
+    interval_seconds: number;
+    minimum_minutes: number;
+    maximum_minutes: number;
+  };
+  automatic_backup: {
+    enabled: boolean;
+    interval_days: number;
+    retention: number;
+    mode: "on_change";
+    last_checked_at?: string | null;
+    last_result?: "created" | "unchanged" | "failed" | null;
+    last_backup_name?: string | null;
+    last_backup_at?: string | null;
+    minimum_days: number;
+    maximum_days: number;
+    minimum_retention: number;
+    maximum_retention: number;
+  };
+  updated_at?: string;
+  time?: string;
 };
 
 export type RouteSetKind = "advertised" | "last_good" | "service" | "service_last_good";

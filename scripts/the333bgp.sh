@@ -5,7 +5,9 @@ PROJECT_DIR="${THE333_PROJECT_DIR:-/opt/the333-bgp}"
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.portal.yml)
 VERSION_FILE="${PROJECT_DIR}/VERSION"
 BACKUP_DIR="${PROJECT_DIR}/backups"
-MANIFEST_URL="${PRODUCT_UPDATE_MANIFEST_URL:-}"
+# Resolve the manifest from the current on-disk .env on every invocation.
+# A long-running host-updater may otherwise leak a stale URL into child runs.
+MANIFEST_URL=""
 CHANNEL="stable"
 TARGET_VERSION=""
 NON_INTERACTIVE="false"
@@ -14,7 +16,7 @@ DOCKER_CMD=(docker)
 DOCKER_ACCESS_READY="false"
 LAST_BACKUP_ARCHIVE=""
 HOST_UPDATER_SERVICE="the333-bgp-updater.service"
-MIN_UPDATE_FREE_DISK_KB=2097152
+DEFAULT_MIN_UPDATE_FREE_BYTES=2147483648
 
 log() {
   printf '[the333bgp] %s\n' "$*" >&2
@@ -44,7 +46,7 @@ Usage:
 
 Environment:
   THE333_PROJECT_DIR=/opt/the333-bgp
-  PRODUCT_UPDATE_MANIFEST_URL=https://github.com/The333tech/The333-bgp/releases/latest/download/update-manifest.json
+  PRODUCT_UPDATE_MANIFEST_URL=https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20
 USAGE
 }
 
@@ -134,36 +136,113 @@ current_version() {
 }
 
 check_update_disk_space() {
-  local disk_kb
+  local disk_kb min_bytes min_kb
   disk_kb="$(df -Pk "${PROJECT_DIR}" 2>/dev/null | awk 'NR==2 {print $4}' || true)"
   if [[ -z "${disk_kb}" || ! "${disk_kb}" =~ ^[0-9]+$ ]]; then
     fail "cannot determine free disk space for ${PROJECT_DIR}"
   fi
 
-  if (( disk_kb < MIN_UPDATE_FREE_DISK_KB )); then
-    fail "not enough free disk space for a safe update: $((disk_kb / 1024)) MB available, at least 2048 MB required. Free disk space and retry; existing containers were not changed"
+  min_bytes="${UPDATE_MIN_FREE_BYTES:-${DEFAULT_MIN_UPDATE_FREE_BYTES}}"
+  [[ "${min_bytes}" =~ ^[0-9]+$ ]] || fail "UPDATE_MIN_FREE_BYTES must be a positive integer"
+  (( min_bytes > 0 )) || fail "UPDATE_MIN_FREE_BYTES must be greater than zero"
+  min_kb=$(((min_bytes + 1023) / 1024))
+
+  if (( disk_kb < min_kb )); then
+    fail "not enough free disk space for a safe update: $((disk_kb / 1024)) MB available, at least $(((min_kb + 1023) / 1024)) MB required. Free disk space and retry; existing containers were not changed"
   fi
 
   log "Disk preflight passed: $((disk_kb / 1024)) MB available."
 }
 
-make_backup() {
-  mkdir -p "${BACKUP_DIR}"
-  local ts
-  ts="$(date +%Y%m%d-%H%M%S)"
-  local archive="${BACKUP_DIR}/the333-bgp-before-update-${ts}.tar.gz"
-  LAST_BACKUP_ARCHIVE="${archive}"
-
-  log "Creating backup: ${archive}"
+create_update_backup_archive() {
+  local archive="$1"
   tar \
     --exclude='./backups' \
     --exclude='./portal/node_modules' \
     --exclude='./portal/dist' \
     -czf "${archive}" \
     -C "${PROJECT_DIR}" \
-    .env VERSION CHANGELOG.md docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml \
+    .env VERSION CHANGELOG.md README.md docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml \
     requirements.in requirements.txt app portal config data docs docker deploy extras scripts install.sh LICENSE SECURITY.md \
-    update-manifest.json update-manifest.example.json .env.example .dockerignore .gitignore
+    update-manifest.json update-manifest.example.json .env.example .dockerignore .gitattributes .gitignore
+}
+
+verify_update_backup_archive() {
+  tar -tzf "$1" >/dev/null
+}
+
+wait_backend_after_backup() {
+  local status
+  for _ in $(seq 1 60); do
+    status="$(docker_cli inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' the333-bgp-backend 2>/dev/null || true)"
+    [[ "${status}" == "healthy" || "${status}" == "running" ]] && return 0
+    [[ "${status}" == "unhealthy" || "${status}" == "exited" || "${status}" == "dead" ]] && return 1
+    sleep 2
+  done
+  return 1
+}
+
+resume_backend_after_interrupted_backup() {
+  local signal="$1"
+  trap - INT TERM
+  set +e
+  if [[ "${backend_was_running:-false}" == "true" ]]; then
+    log "Backup interrupted by ${signal}; starting backend before exit."
+    docker_cli start the333-bgp-backend >/dev/null 2>&1 || true
+  fi
+  [[ -n "${archive:-}" ]] && rm -f "${archive}"
+  [[ "${signal}" == "INT" ]] && exit 130
+  exit 143
+}
+
+make_backup() {
+  mkdir -p "${BACKUP_DIR}"
+  local ts archive backend_was_running backup_rc restart_rc
+  ts="$(date +%Y%m%d-%H%M%S)"
+  archive="${BACKUP_DIR}/the333-bgp-before-update-${ts}.tar.gz"
+  LAST_BACKUP_ARCHIVE="${archive}"
+  backend_was_running="false"
+  backup_rc=0
+  restart_rc=0
+
+  if docker_cli container inspect the333-bgp-backend >/dev/null 2>&1 \
+    && [[ "$(docker_cli inspect -f '{{.State.Running}}' the333-bgp-backend 2>/dev/null || true)" == "true" ]]; then
+    log "Pausing backend briefly to create a consistent update backup; GoBGP remains online."
+    docker_cli stop --time 30 the333-bgp-backend >/dev/null \
+      || fail "backend could not be paused for a consistent update backup"
+    backend_was_running="true"
+    trap 'resume_backend_after_interrupted_backup INT' INT
+    trap 'resume_backend_after_interrupted_backup TERM' TERM
+  fi
+
+  log "Creating backup: ${archive}"
+  if create_update_backup_archive "${archive}"; then
+    backup_rc=0
+  else
+    backup_rc=$?
+  fi
+
+  if [[ "${backend_was_running}" == "true" ]]; then
+    log "Starting backend after the backup snapshot."
+    if ! docker_cli start the333-bgp-backend >/dev/null || ! wait_backend_after_backup; then
+      restart_rc=1
+    fi
+  fi
+  trap - INT TERM
+
+  if (( restart_rc != 0 )); then
+    rm -f "${archive}"
+    fail "backend did not recover after the backup snapshot; GoBGP was not restarted"
+  fi
+  if (( backup_rc != 0 )); then
+    rm -f "${archive}"
+    fail "consistent update backup failed; backend was restored and the update was not started"
+  fi
+
+  verify_update_backup_archive "${archive}" || {
+    rm -f "${archive}"
+    fail "backup integrity check failed: ${archive}"
+  }
 
   log "Backup ready: ${archive}"
 }
@@ -175,6 +254,45 @@ runtime_host() {
 }
 
 runtime_is_ready() {
+  need_cmd curl
+  need_cmd python3
+  local host tmp status rc
+  host="$(runtime_host)"
+  tmp="$(mktemp)"
+  [[ -n "${HOST_UPDATER_TOKEN:-}" ]] || return 1
+  status="$(curl -sS -o "${tmp}" -w '%{http_code}' \
+    -H "x-the333-updater-token: ${HOST_UPDATER_TOKEN}" \
+    "http://${host}:8088/internal/ready" 2>/dev/null || true)"
+  if [[ "${status}" != "200" ]]; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  python3 - "${tmp}" >/dev/null 2>&1 <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    raise SystemExit(1)
+
+raise SystemExit(0 if data.get("ready") is True else 1)
+PY
+  rc=$?
+  rm -f "${tmp}"
+  [[ "${rc}" == "0" ]] || return 1
+  case "${PORTAL_TLS_ENABLED:-false}" in
+    1|true|TRUE|yes|YES|on|ON)
+      curl -kfsS -o /dev/null "https://${host}:8090/" 2>/dev/null
+      ;;
+    *)
+      curl -fsS -o /dev/null "http://${host}:8090/" 2>/dev/null
+      ;;
+  esac
+}
+
+legacy_runtime_is_ready() {
   need_cmd curl
   need_cmd python3
   local host tmp status rc
@@ -200,15 +318,27 @@ PY
   rc=$?
   rm -f "${tmp}"
   [[ "${rc}" == "0" ]] || return 1
-  curl -fsS -o /dev/null "http://${host}:8090/" 2>/dev/null
+  case "${PORTAL_TLS_ENABLED:-false}" in
+    1|true|TRUE|yes|YES|on|ON)
+      curl -kfsS -o /dev/null "https://${host}:8090/" 2>/dev/null
+      ;;
+    *)
+      curl -fsS -o /dev/null "http://${host}:8090/" 2>/dev/null
+      ;;
+  esac
 }
 
 wait_for_services() {
+  local mode="${1:-strict}"
   local attempts=72
   log "Ожидание готовности backend, GoBGP и портала (до 6 минут)..."
 
   while (( attempts > 0 )); do
-    if runtime_is_ready; then
+    if [[ "${mode}" == "legacy" ]] && legacy_runtime_is_ready; then
+      log "Предыдущая версия восстановлена и прошла совместимую health-проверку."
+      return 0
+    fi
+    if [[ "${mode}" != "legacy" ]] && runtime_is_ready; then
       log "Все сервисы готовы."
       return 0
     fi
@@ -424,7 +554,7 @@ tls_enable() {
   need_cmd sha256sum
   need_cmd python3
 
-  local cert_source key_source cert_hash key_hash backup_env
+  local cert_source key_source cert_hash key_hash backup_env project_gid
   cert_source="$(realpath "$1")"
   key_source="$(realpath "$2")"
   [[ -f "${cert_source}" ]] || fail "TLS certificate not found: ${cert_source}"
@@ -440,9 +570,11 @@ tls_enable() {
   cp "${PROJECT_DIR}/.env" "${backup_env}"
   chmod 600 "${backup_env}"
 
-  root_cmd install -d -m 700 /etc/the333-bgp/tls
-  root_cmd install -m 644 "${cert_source}" /etc/the333-bgp/tls/portal.crt
-  root_cmd install -m 600 "${key_source}" /etc/the333-bgp/tls/portal.key
+  project_gid="${PGID:-$(id -g)}"
+  [[ "${project_gid}" =~ ^[0-9]+$ ]] || fail "PGID must be numeric"
+  root_cmd install -d -m 0750 -o root -g "${project_gid}" /etc/the333-bgp/tls
+  root_cmd install -m 0640 -o root -g "${project_gid}" "${cert_source}" /etc/the333-bgp/tls/portal.crt
+  root_cmd install -m 0640 -o root -g "${project_gid}" "${key_source}" /etc/the333-bgp/tls/portal.key
   set_env_values \
     PORTAL_TLS_ENABLED true \
     SESSION_COOKIE_SECURE true \
@@ -512,14 +644,100 @@ doctor() {
 }
 
 fetch_manifest() {
+  local manifest_file manifest_json manifest_size
   need_cmd curl
+  need_cmd python3
   [[ -n "${MANIFEST_URL}" ]] || fail "manifest URL is empty. Set PRODUCT_UPDATE_MANIFEST_URL or pass --manifest URL"
-  curl -fsSL "${MANIFEST_URL}"
+  [[ "${MANIFEST_URL}" == https://* ]] || fail "manifest URL must use HTTPS"
+  [[ "${MANIFEST_URL}" != *$'\n'* && "${MANIFEST_URL}" != *$'\r'* ]] \
+    || fail "manifest URL contains a line break"
+  case "${CHANNEL}" in
+    stable|beta) ;;
+    *) fail "channel must be stable or beta" ;;
+  esac
+  if [[ -n "${TARGET_VERSION}" && ! "${TARGET_VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
+    fail "target version has an invalid format"
+  fi
+  manifest_file="$(mktemp)"
+  if ! curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --max-filesize 2097152 \
+    "${MANIFEST_URL}" \
+    --output "${manifest_file}"; then
+    rm -f "${manifest_file}"
+    fail "update manifest download failed"
+  fi
+  manifest_size="$(wc -c < "${manifest_file}")"
+  if (( manifest_size > 2097152 )); then
+    rm -f "${manifest_file}"
+    fail "update manifest exceeds the 2 MB limit"
+  fi
+
+  if ! manifest_json="$(python3 -c '
+import json
+import re
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, UnicodeDecodeError):
+    raise SystemExit("update manifest is not valid JSON")
+if isinstance(payload, dict):
+    print(json.dumps(payload, ensure_ascii=False))
+    raise SystemExit(0)
+if not isinstance(payload, list):
+    raise SystemExit("update index must be an object or GitHub releases array")
+
+versions = []
+latest = {"stable": None, "beta": None}
+for release in payload[:20]:
+    if not isinstance(release, dict) or release.get("draft"):
+        continue
+    tag = str(release.get("tag_name") or "").strip()
+    version = tag[1:] if tag.lower().startswith("v") else tag
+    if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,63}", version):
+        continue
+    channel = "beta" if release.get("prerelease") else "stable"
+    expected = f"the333-bgp-v{version}.tar.gz"
+    asset = next((item for item in release.get("assets", []) if isinstance(item, dict) and item.get("name") == expected), None)
+    if not asset:
+        continue
+    digest = str(asset.get("digest") or "")
+    sha256 = digest.split(":", 1)[1] if digest.startswith("sha256:") else ""
+    archive_url = str(asset.get("browser_download_url") or "")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256) or not archive_url.startswith("https://"):
+        continue
+    versions.append({
+        "version": version,
+        "title": str(release.get("name") or f"v{version}"),
+        "channel": channel,
+        "date": str(release.get("published_at") or release.get("created_at") or "")[:10],
+        "recommended": latest[channel] is None,
+        "archive_url": archive_url,
+        "sha256": sha256,
+    })
+    if latest[channel] is None:
+        latest[channel] = version
+
+if not versions:
+    raise SystemExit("GitHub releases index has no usable release assets")
+print(json.dumps({"product": "The333-BGP", "latest": latest, "versions": versions}, ensure_ascii=False))
+' < "${manifest_file}")"; then
+    rm -f "${manifest_file}"
+    fail "update manifest validation failed"
+  fi
+  rm -f "${manifest_file}"
+  printf '%s\n' "${manifest_json}"
 }
 
 select_version_json() {
   need_cmd python3
-  python3 - "$CHANNEL" "$TARGET_VERSION" <<'PY'
+  python3 -c '
 import json
 import sys
 
@@ -541,6 +759,25 @@ if not selected:
     raise SystemExit(f"no version found for channel={channel!r} target={target!r}")
 
 print(json.dumps(selected, ensure_ascii=False))
+' "$CHANNEL" "$TARGET_VERSION"
+}
+
+version_is_newer() {
+  python3 - "$1" "$2" <<'PY'
+import re
+import sys
+
+def weight(value):
+    raw = str(value or "").strip()
+    if raw[:1].lower() == "v":
+        raw = raw[1:]
+    match = re.match(r"^(\d+(?:\.\d+)*)", raw)
+    numbers = [int(part) for part in match.group(1).split(".")] if match else []
+    numbers = (numbers + [0, 0, 0])[:3]
+    prerelease = -1 if re.search(r"(?:b|-beta(?:\.|$))", raw, flags=re.IGNORECASE) else 0
+    return (*numbers, prerelease)
+
+raise SystemExit(0 if weight(sys.argv[1]) > weight(sys.argv[2]) else 1)
 PY
 }
 
@@ -556,7 +793,7 @@ download_release() {
   need_cmd python3
   need_cmd curl
 
-  local archive_url sha tmp archive
+  local archive_url sha tmp archive archive_size
   archive_url="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("archive_url") or "").strip())')"
   sha="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("sha256") or "").strip())')"
   [[ -n "${archive_url}" ]] || fail "selected version has no archive_url"
@@ -566,13 +803,35 @@ download_release() {
   tmp="$(mktemp -d)"
   archive="${tmp}/release.tar.gz"
   log "Downloading release archive..."
-  curl -fL "${archive_url}" -o "${archive}"
+  if ! curl \
+    --fail \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --max-filesize 268435456 \
+    "${archive_url}" \
+    --output "${archive}"; then
+    rm -rf "${tmp}"
+    fail "release archive download failed"
+  fi
+  archive_size="$(wc -c < "${archive}")"
+  if (( archive_size > 268435456 )); then
+    rm -rf "${tmp}"
+    fail "release archive exceeds the 256 MB compressed-size limit"
+  fi
 
   need_cmd sha256sum
-  printf '%s  %s\n' "${sha}" "${archive}" | sha256sum -c -
+  if ! printf '%s  %s\n' "${sha}" "${archive}" | sha256sum -c - >/dev/null; then
+    rm -rf "${tmp}"
+    fail "release archive SHA-256 verification failed"
+  fi
 
   mkdir -p "${tmp}/src"
-  tar -xzf "${archive}" -C "${tmp}/src" --strip-components=1
+  if ! python3 "${PROJECT_DIR}/scripts/extract-release.py" "${archive}" "${tmp}/src"; then
+    rm -rf "${tmp}"
+    fail "release archive extraction failed"
+  fi
   printf '%s\n' "${tmp}/src"
 }
 
@@ -584,7 +843,7 @@ copy_release_files() {
   log "Copying release files while preserving .env, data and user state..."
   mkdir -p "${PROJECT_DIR}"
 
-  for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md LICENSE SECURITY.md install.sh scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitignore; do
+  for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md README.md LICENSE SECURITY.md install.sh scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitattributes .gitignore; do
     if [[ -e "${src}/${item}" ]]; then
       rm -rf "${PROJECT_DIR:?}/${item}"
       cp -a "${src}/${item}" "${PROJECT_DIR}/${item}"
@@ -592,6 +851,16 @@ copy_release_files() {
   done
 
   rm -f "${PROJECT_DIR}/Dockerfile" "${PROJECT_DIR}/entrypoint.sh" "${PROJECT_DIR}/app/updater.py"
+
+  chmod +x \
+    "${PROJECT_DIR}/docker/gobgp-entrypoint.sh" \
+    "${PROJECT_DIR}/docker/backend-entrypoint.sh" \
+    "${PROJECT_DIR}/scripts/host-updater.py" \
+    "${PROJECT_DIR}/scripts/extract-release.py" \
+    "${PROJECT_DIR}/scripts/migrate-env.py" \
+    "${PROJECT_DIR}/scripts/release-check.sh" \
+    "${PROJECT_DIR}/scripts/the333bgp.sh" \
+    "${PROJECT_DIR}/install.sh"
 
   mkdir -p "${PROJECT_DIR}/config" "${PROJECT_DIR}/data"
   if [[ -d "${src}/config" ]]; then
@@ -604,6 +873,20 @@ copy_release_files() {
   fi
 }
 
+migrate_release_env() {
+  local version update_url
+  version="$(current_version)"
+  update_url="${MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
+  python3 "${PROJECT_DIR}/scripts/migrate-env.py" \
+    --env "${PROJECT_DIR}/.env" \
+    --project-dir "${PROJECT_DIR}" \
+    --version "${version}" \
+    --channel "${CHANNEL}" \
+    --update-url "${update_url}"
+  load_env
+  configure_compose_files
+}
+
 restore_release_files_from_backup() {
   local archive="$1"
   [[ -f "${archive}" ]] || fail "rollback archive not found: ${archive}"
@@ -613,33 +896,81 @@ restore_release_files_from_backup() {
   tar -xzf "${archive}" -C "${tmp}"
 
   log "Восстановление файлов предыдущей версии из ${archive}..."
-  for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md LICENSE SECURITY.md install.sh scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitignore; do
+  for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md README.md LICENSE SECURITY.md install.sh scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitattributes .gitignore; do
     if [[ -e "${tmp}/${item}" ]]; then
       rm -rf "${PROJECT_DIR:?}/${item}"
       cp -a "${tmp}/${item}" "${PROJECT_DIR}/${item}"
     fi
   done
 
+  for state_item in .env config data; do
+    [[ -e "${tmp}/${state_item}" ]] || fail "rollback archive has no ${state_item}"
+    rm -rf "${PROJECT_DIR:?}/${state_item}"
+    cp -a "${tmp}/${state_item}" "${PROJECT_DIR}/${state_item}"
+  done
+  chmod 600 "${PROJECT_DIR}/.env"
+
   rm -rf "${tmp}"
 }
 
-build_and_restart() {
-  cd "${PROJECT_DIR}"
-  install_host_updater_service
-  log "Building images..."
+stop_runtime_for_rollback() {
+  local container
+  log "Остановка runtime перед восстановлением согласованного состояния..."
+  for container in the333-portal the333-bgp-backend the333-gobgp-core; do
+    if docker_cli container inspect "${container}" >/dev/null 2>&1; then
+      docker_cli stop --time 30 "${container}" >/dev/null || return 1
+    fi
+  done
+}
+
+build_update_images() {
+  local readiness_mode="${1:-strict}"
+  local core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r4}"
+  if [[ "${readiness_mode}" == "legacy" ]]; then
+    log "Rollback: выполняется полная сборка предыдущего runtime."
+    compose build
+    return
+  fi
+  if docker_cli image inspect "${core_image}" >/dev/null 2>&1; then
+    log "Routing-core ${core_image} уже установлен; собираются только backend и portal."
+    compose build the333-bgp-backend the333-portal
+    return
+  fi
+
+  log "Routing-core ${core_image} отсутствует; выполняется полная сборка."
   compose build
+}
+
+build_and_restart() {
+  local readiness_mode="${1:-strict}"
+  cd "${PROJECT_DIR}"
+  if [[ "${THE333_HOST_UPDATER_ACTIVE:-false}" == "true" ]]; then
+    log "Host updater выполняет обновление: стабильный systemd unit будет переиспользован."
+  else
+    install_host_updater_service
+  fi
+  log "Building images..."
+  build_update_images "${readiness_mode}"
   log "Restarting services..."
   compose up -d --remove-orphans
-  wait_for_services || return 1
+  wait_for_services "${readiness_mode}" || return 1
+  if [[ "${readiness_mode}" == "legacy" ]]; then
+    compose ps
+    return 0
+  fi
   status
 }
 
 update_project() {
-  local manifest version_json release_dir backup_archive release_tmp
+  local manifest version_json selected_version installed_version release_dir backup_archive release_tmp
   manifest="$(fetch_manifest)"
   version_json="$(printf '%s' "${manifest}" | select_version_json)"
+  selected_version="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version") or "")')"
+  installed_version="$(current_version)"
 
-  log "Selected version: $(printf '%s' "${version_json}" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("version"))')"
+  log "Selected version: ${selected_version}"
+  version_is_newer "${selected_version}" "${installed_version}" \
+    || fail "selected version ${selected_version} is not newer than installed ${installed_version}; use repair or a verified backup for recovery"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     printf '%s\n' "${version_json}"
@@ -657,17 +988,19 @@ update_project() {
   backup_archive="${LAST_BACKUP_ARCHIVE}"
   release_dir="$(download_release "${version_json}")"
   copy_release_files "${release_dir}"
+  migrate_release_env
   release_tmp="$(dirname "${release_dir}")"
   [[ "${release_tmp}" == /tmp/* ]] && rm -rf "${release_tmp}"
 
-  if build_and_restart; then
+  if build_and_restart strict; then
     log "Обновление успешно завершено."
     return 0
   fi
 
   log "Обновление не прошло проверку готовности. Запускается автоматический rollback."
+  stop_runtime_for_rollback || fail "update failed and runtime could not be stopped safely; inspect ${backup_archive}"
   restore_release_files_from_backup "${backup_archive}"
-  if build_and_restart; then
+  if build_and_restart legacy; then
     fail "update failed; the previous version was restored automatically"
   fi
 

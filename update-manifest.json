@@ -2,16 +2,42 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.78"
+    "beta": "0.82b"
   },
   "versions": [
+    {
+      "version": "0.82b",
+      "title": "v0.82b",
+      "channel": "beta",
+      "status": "текущая beta",
+      "date": "2026-07-12",
+      "recommended": true,
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82b/the333-bgp-v0.82b.tar.gz",
+      "sha256": "",
+      "changelog": [
+        "Фоновые обновления переживают перезапуск backend и восстанавливают статус из durable-результата host-updater.",
+        "Перед обновлением Backend кратко приостанавливается для согласованного бэкапа и гарантированно запускается снова; GoBGP остаётся онлайн.",
+        "Установка и обновление используют GitHub Releases API, SHA-256 и безопасную распаковку без path traversal и ссылок.",
+        "Rollback восстанавливает код, .env, config и data; миграция .env сохраняет пользовательские TLS/auth-настройки.",
+        "GoBGP core изолирован от портала, TCP MD5 вынесен в secret-файл, а GTSM включается только как согласованная двухсторонняя настройка.",
+        "Версия routing-core отделена от версии портала, чтобы обычные UI/backend-обновления не сбрасывали BGP-сессию.",
+        "Критические JSON-состояния обрабатываются fail-closed, DNS-кэш обновляется пакетно, история хранит provenance и fingerprint маршрутов.",
+        "CI дополнен runtime smoke-тестом Docker-сетей и контейнеров, dependency review и запретом перезаписи уже опубликованного release-тега.",
+        "Автообновление маршрутов настраивается в минутах из портала и применяется без перезапуска контейнеров.",
+        "Автоматические бэкапы создаются только при изменении состояния; расписание и количество архивов настраиваются пользователем.",
+        "В сайдбаре показывается Uptime Portal, Backend и GoBGP через защищённый host-updater без монтирования Docker socket.",
+        "Маршруты можно скачать файлом, а Community-профили формируют точные RouterOS v7 Large Community фильтры с проверкой и rollback.",
+        "Техническая диагностика GoBGP показывает подробности BGP-соседа, таймеры, capabilities, статистику сообщений и сверку маршрутных наборов.",
+        "Настройки автоматических бэкапов получили компактный нижний блок, явное включение и нейтральное оформление."
+      ]
+    },
     {
       "version": "0.78",
       "title": "v0.78 beta",
       "channel": "beta",
-      "status": "текущая beta",
+      "status": "предыдущая beta",
       "date": "2026-07-09",
-      "recommended": true,
+      "recommended": false,
       "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.78/the333-bgp-v0.78.tar.gz",
       "sha256": "",
       "changelog": [

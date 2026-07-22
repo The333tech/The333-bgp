@@ -13,6 +13,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -65,7 +66,11 @@ ADVERTISED_FILE = DATA_DIR / "advertised_prefixes.txt"
 LAST_GOOD_FILE = DATA_DIR / "last_good_prefixes.txt"
 LAST_GOOD_SNAPSHOT_FILE = DATA_DIR / "last_good_route_snapshot.json"
 ADVERTISED_ROUTE_ATTRIBUTES_FILE = DATA_DIR / "advertised_route_attributes.json"
-GOBGP_GENERATION_FILE = DATA_DIR / "gobgp_generation"
+GOBGP_GENERATION_FILE = Path(
+    os.getenv("GOBGP_GENERATION_FILE", str(DATA_DIR / "gobgp-state" / "gobgp_generation"))
+)
+GOBGP_STATE_DIR = GOBGP_GENERATION_FILE.parent
+LEGACY_GOBGP_GENERATION_FILE = DATA_DIR / "gobgp_generation"
 LEGACY_GOBGP_CONFIG_FILE = DATA_DIR / "gobgpd.toml"
 STATUS_FILE = DATA_DIR / "status.json"
 SOURCES_BACKUP_DIR = DATA_DIR / "sources_backups"
@@ -75,14 +80,17 @@ JOBS_FILE = DATA_DIR / "jobs.json"
 JOB_HISTORY_MAX_ITEMS = int(os.getenv("JOB_HISTORY_MAX_ITEMS", "200"))
 COMMUNITY_PROFILES_FILE = DATA_DIR / "community_profiles.json"
 SCHEMA_STATE_FILE = DATA_DIR / "schema_state.json"
-DATA_SCHEMA_VERSION = "0.5"
+DATA_SCHEMA_VERSION = "0.6"
 SYSTEM_BACKUP_DIR = DATA_DIR / "system_backups"
 SYSTEM_RESTORE_STAGING_DIR = DATA_DIR / ".restore_staging"
+RUNTIME_SETTINGS_FILE = DATA_DIR / "runtime_settings.json"
 SYSTEM_BACKUP_RETENTION = int(os.getenv("SYSTEM_BACKUP_RETENTION", "20"))
 SYSTEM_BACKUP_MAX_BYTES = int(os.getenv("SYSTEM_BACKUP_MAX_BYTES", str(128 * 1024 * 1024)))
+SYSTEM_BACKUP_AUTO_ENABLED = os.getenv("SYSTEM_BACKUP_AUTO_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+SYSTEM_BACKUP_AUTO_INTERVAL_DAYS = int(os.getenv("SYSTEM_BACKUP_AUTO_INTERVAL_DAYS", "1"))
 SYSTEM_BACKUP_SCHEMA_VERSION = 1
 SYSTEM_BACKUP_NAME_RE = re.compile(r"^the333-bgp-backup-\d{8}-\d{6}(?:-[0-9a-f]{8})?\.zip$")
-SOURCE_BACKUP_NAME_RE = re.compile(r"^sources-\d{8}-\d{6}\.json$")
+SOURCE_BACKUP_NAME_RE = re.compile(r"^sources-\d{8}-\d{6}(?:-\d{6})?\.json$")
 CONFIG_PATH_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BUILTIN_CONFIG_FILENAMES = {
     "default_sources.json",
@@ -97,7 +105,12 @@ PEER_AS = os.getenv("PEER_AS", "65455")
 PEER_ADDRESS = os.getenv("PEER_ADDRESS", "192.168.1.1")
 ROUTER_ID = os.getenv("ROUTER_ID", "127.0.0.1")
 THE333_BIND_IP = os.getenv("THE333_BIND_IP", ROUTER_ID).strip() or ROUTER_ID
+BGP_PEER_MODE = os.getenv("BGP_PEER_MODE", "direct").strip().lower() or "direct"
+BGP_DOCKER_BRIDGE_HOPS = int(os.getenv("BGP_DOCKER_BRIDGE_HOPS", "1"))
 BGP_MULTIHOP_TTL = int(os.getenv("BGP_MULTIHOP_TTL", "10"))
+BGP_TTL_SECURITY_ENABLED = os.getenv("BGP_TTL_SECURITY_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+BGP_TTL_SECURITY_MIN = int(os.getenv("BGP_TTL_SECURITY_MIN", "255"))
+BGP_TCP_MD5_CONFIGURED = os.getenv("BGP_TCP_MD5_CONFIGURED", "false").lower() in ("1", "true", "yes", "on")
 BGP_GRACEFUL_RESTART = os.getenv("BGP_GRACEFUL_RESTART", "true").lower() in ("1", "true", "yes", "on")
 BGP_GRACEFUL_RESTART_TIME = int(os.getenv("BGP_GRACEFUL_RESTART_TIME", "300"))
 BGP_REJECT_INBOUND_ROUTES = os.getenv("BGP_REJECT_INBOUND_ROUTES", "true").lower() in ("1", "true", "yes", "on")
@@ -121,6 +134,12 @@ REMOTE_FETCH_MAX_REDIRECTS = int(os.getenv("REMOTE_FETCH_MAX_REDIRECTS", "5"))
 REMOTE_FETCH_CACHE_GRACE_SECONDS = int(os.getenv("REMOTE_FETCH_CACHE_GRACE_SECONDS", "86400"))
 AUTO_UPDATE = os.getenv("AUTO_UPDATE", "true").lower() in ("1", "true", "yes", "on")
 UPDATE_INTERVAL_SECONDS = int(os.getenv("UPDATE_INTERVAL_SECONDS", "21600"))
+ROUTE_AUTO_UPDATE_MIN_MINUTES = 5
+ROUTE_AUTO_UPDATE_MAX_MINUTES = 7 * 24 * 60
+SYSTEM_BACKUP_AUTO_MIN_DAYS = 1
+SYSTEM_BACKUP_AUTO_MAX_DAYS = 30
+SYSTEM_BACKUP_RETENTION_MIN = 1
+SYSTEM_BACKUP_RETENTION_MAX = 100
 
 SERVICE_ROUTES_ENABLED = os.getenv("SERVICE_ROUTES_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 SERVICE_DNS_CACHE_GRACE_SECONDS = int(os.getenv("SERVICE_DNS_CACHE_GRACE_SECONDS", "86400"))
@@ -143,6 +162,14 @@ PRODUCT_UPDATE_MODE = os.getenv("PRODUCT_UPDATE_MODE", "host-updater").strip() o
 PRODUCT_UPDATE_TIMEOUT_SECONDS = int(os.getenv("PRODUCT_UPDATE_TIMEOUT_SECONDS", "1800"))
 HOST_UPDATER_SOCKET = os.getenv("HOST_UPDATER_SOCKET", "/run/the333-bgp/updater.sock").strip()
 HOST_UPDATER_TOKEN = os.getenv("HOST_UPDATER_TOKEN", "").strip()
+HOST_UPDATER_RESULT_DIR = Path(
+    os.getenv("HOST_UPDATER_RESULT_DIR", str(DATA_DIR / "host-updater-results"))
+)
+HOST_UPDATER_RESULT_STALE_SECONDS = max(
+    PRODUCT_UPDATE_TIMEOUT_SECONDS + 300,
+    int(os.getenv("HOST_UPDATER_RESULT_STALE_SECONDS", "2100")),
+)
+UPDATE_MIN_FREE_BYTES = int(os.getenv("UPDATE_MIN_FREE_BYTES", str(2 * 1024 * 1024 * 1024)))
 
 PUBLIC_OPERATION_ERROR = "Операция не выполнена. Подробности смотри в логах backend."
 
@@ -194,6 +221,10 @@ JOBS_LOCK = threading.RLock()
 AUTH_LOCK = threading.RLock()
 ROUTE_MUTATION_LOCK = threading.RLock()
 REMOTE_FETCH_CACHE_LOCK = threading.RLock()
+SERVICE_DNS_CACHE_LOCK = threading.RLock()
+STATE_WRITE_LOCK = threading.RLock()
+RUNTIME_SETTINGS_LOCK = threading.RLock()
+RUNNING_JOB_IDS: set[str] = set()
 AUTH_FAILURES: dict[str, dict[str, float | int]] = {}
 AUTH_SESSIONS: dict[str, dict[str, Any]] = {}
 REMOTE_FETCH_CACHE_DIR = DATA_DIR / "remote_fetch_cache"
@@ -468,12 +499,28 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.78"
+    return "0.82b"
+
+
+def product_version_weight(value: str) -> tuple[int, int, int, int]:
+    raw = str(value or "").strip()
+    if raw[:1].lower() == "v":
+        raw = raw[1:]
+    match = re.match(r"^(\d+(?:\.\d+)*)", raw)
+    numbers = [int(part) for part in match.group(1).split(".")] if match else []
+    numbers = (numbers + [0, 0, 0])[:3]
+    prerelease = -1 if re.search(r"(?:b|-beta(?:\.|$))", raw, flags=re.IGNORECASE) else 0
+    return numbers[0], numbers[1], numbers[2], prerelease
+
+
+def product_version_is_newer(candidate: str, current: str) -> bool:
+    return product_version_weight(candidate) > product_version_weight(current)
 
 
 def bundled_update_manifest() -> dict[str, Any]:
     version = read_product_version()
     channel = PRODUCT_CHANNEL if PRODUCT_CHANNEL in {"stable", "beta"} else "beta"
+    title = f"v{version}" if channel == "beta" and version.lower().endswith("b") else f"v{version} {channel}"
     return {
         "ok": True,
         "product": APP_NAME,
@@ -485,7 +532,7 @@ def bundled_update_manifest() -> dict[str, Any]:
         "versions": [
             {
                 "version": version,
-                "title": f"v{version} {channel}",
+                "title": title,
                 "channel": channel,
                 "status": "установлена",
                 "date": "2026-07",
@@ -505,6 +552,68 @@ def bundled_update_manifest() -> dict[str, Any]:
     }
 
 
+def update_manifest_from_github_releases(releases: list[Any]) -> dict[str, Any]:
+    versions: list[dict[str, Any]] = []
+    latest: dict[str, str | None] = {"stable": None, "beta": None}
+
+    for release in releases[:20]:
+        if not isinstance(release, dict) or release.get("draft"):
+            continue
+        tag = str(release.get("tag_name", "")).strip()
+        version = tag[1:] if tag.lower().startswith("v") else tag
+        if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,63}", version):
+            continue
+        channel = "beta" if release.get("prerelease") else "stable"
+        assets = release.get("assets", [])
+        if not isinstance(assets, list):
+            assets = []
+        expected_name = f"the333-bgp-v{version}.tar.gz"
+        archive = next(
+            (
+                item
+                for item in assets
+                if isinstance(item, dict) and str(item.get("name", "")) == expected_name
+            ),
+            None,
+        )
+        if archive is None:
+            continue
+        digest = str(archive.get("digest", "") or "")
+        sha256 = digest.split(":", 1)[1] if digest.startswith("sha256:") else ""
+        archive_url = str(archive.get("browser_download_url", "") or "")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256) or not archive_url.startswith("https://"):
+            continue
+        body_lines = [
+            line.strip().lstrip("-* ").strip()
+            for line in str(release.get("body", "") or "").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        versions.append(
+            {
+                "version": version,
+                "title": str(release.get("name") or f"v{version}"),
+                "channel": channel,
+                "status": "доступна",
+                "date": str(release.get("published_at") or release.get("created_at") or "")[:10],
+                "recommended": latest[channel] is None,
+                "archive_url": archive_url,
+                "sha256": sha256,
+                "changelog": body_lines[:20],
+            }
+        )
+        if latest[channel] is None:
+            latest[channel] = version
+
+    if not versions:
+        raise ValueError("GitHub releases index has no usable release assets")
+    return {
+        "ok": True,
+        "product": APP_NAME,
+        "latest": latest,
+        "versions": versions,
+    }
+
+
 async def load_update_manifest() -> dict[str, Any]:
     fallback = bundled_update_manifest()
 
@@ -519,8 +628,10 @@ async def load_update_manifest() -> dict[str, Any]:
             max_bytes=2 * 1024 * 1024,
         )
 
-        if not isinstance(manifest, dict):
-            raise ValueError("manifest root must be an object")
+        if isinstance(manifest, list):
+            manifest = update_manifest_from_github_releases(manifest)
+        elif not isinstance(manifest, dict):
+            raise ValueError("manifest root must be an object or GitHub releases array")
 
         manifest.setdefault("ok", True)
         manifest.setdefault("product", APP_NAME)
@@ -570,15 +681,38 @@ def gobgp_cli_args(args: list[str]) -> list[str]:
 
 
 def write_text_atomic(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    write_bytes_atomic(path, text.encode("utf-8"))
+
+
+def fsync_directory(path: Path) -> None:
+    # Windows does not support opening directories for fsync. Production runs on Linux.
+    if os.name == "nt":
+        return
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def write_bytes_atomic(path: Path, data: bytes) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with STATE_WRITE_LOCK:
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            fsync_directory(path.parent)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def read_lines(path: Path) -> list[str]:
@@ -591,12 +725,19 @@ def read_lines(path: Path) -> list[str]:
     ]
 
 
-def read_json(path: Path, default: Any) -> Any:
+def read_json(path: Path, default: Any, *, strict: bool = False) -> Any:
     if not path.exists():
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        LOGGER.error(
+            "invalid JSON state file %s (%s)",
+            path.name,
+            type(exc).__name__,
+        )
+        if strict:
+            raise RuntimeError(f"invalid JSON state file: {path.name}") from exc
         return default
 
 
@@ -604,8 +745,214 @@ def write_json_atomic(path: Path, data: Any) -> None:
     write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def bounded_integer(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def default_runtime_settings() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "route_auto_update": {
+            "enabled": AUTO_UPDATE,
+            "interval_minutes": bounded_integer(
+                round(UPDATE_INTERVAL_SECONDS / 60),
+                360,
+                ROUTE_AUTO_UPDATE_MIN_MINUTES,
+                ROUTE_AUTO_UPDATE_MAX_MINUTES,
+            ),
+        },
+        "automatic_backup": {
+            "enabled": SYSTEM_BACKUP_AUTO_ENABLED,
+            "interval_days": bounded_integer(
+                SYSTEM_BACKUP_AUTO_INTERVAL_DAYS,
+                1,
+                SYSTEM_BACKUP_AUTO_MIN_DAYS,
+                SYSTEM_BACKUP_AUTO_MAX_DAYS,
+            ),
+            "retention": bounded_integer(
+                SYSTEM_BACKUP_RETENTION,
+                20,
+                SYSTEM_BACKUP_RETENTION_MIN,
+                SYSTEM_BACKUP_RETENTION_MAX,
+            ),
+            "mode": "on_change",
+            "last_checked_at": None,
+            "last_result": None,
+            "last_backup_name": None,
+            "last_backup_at": None,
+        },
+        "updated_at": now_iso(),
+    }
+
+
+def normalize_runtime_settings(value: Any) -> dict[str, Any]:
+    defaults = default_runtime_settings()
+    source = value if isinstance(value, dict) else {}
+    route_source = source.get("route_auto_update") if isinstance(source.get("route_auto_update"), dict) else {}
+    backup_source = source.get("automatic_backup") if isinstance(source.get("automatic_backup"), dict) else {}
+
+    route_defaults = defaults["route_auto_update"]
+    backup_defaults = defaults["automatic_backup"]
+    backup_name = str(backup_source.get("last_backup_name") or "").strip()
+    if backup_name and not SYSTEM_BACKUP_NAME_RE.fullmatch(backup_name):
+        backup_name = ""
+
+    last_result = str(backup_source.get("last_result") or "").strip()
+    if last_result not in {"created", "unchanged", "failed"}:
+        last_result = ""
+
+    return {
+        "version": 1,
+        "route_auto_update": {
+            "enabled": route_source.get("enabled") if isinstance(route_source.get("enabled"), bool) else route_defaults["enabled"],
+            "interval_minutes": bounded_integer(
+                route_source.get("interval_minutes"),
+                route_defaults["interval_minutes"],
+                ROUTE_AUTO_UPDATE_MIN_MINUTES,
+                ROUTE_AUTO_UPDATE_MAX_MINUTES,
+            ),
+        },
+        "automatic_backup": {
+            "enabled": backup_source.get("enabled") if isinstance(backup_source.get("enabled"), bool) else backup_defaults["enabled"],
+            "interval_days": bounded_integer(
+                backup_source.get("interval_days"),
+                backup_defaults["interval_days"],
+                SYSTEM_BACKUP_AUTO_MIN_DAYS,
+                SYSTEM_BACKUP_AUTO_MAX_DAYS,
+            ),
+            "retention": bounded_integer(
+                backup_source.get("retention"),
+                backup_defaults["retention"],
+                SYSTEM_BACKUP_RETENTION_MIN,
+                SYSTEM_BACKUP_RETENTION_MAX,
+            ),
+            "mode": "on_change",
+            "last_checked_at": str(backup_source.get("last_checked_at") or "")[:64] or None,
+            "last_result": last_result or None,
+            "last_backup_name": backup_name or None,
+            "last_backup_at": str(backup_source.get("last_backup_at") or "")[:64] or None,
+        },
+        "updated_at": str(source.get("updated_at") or defaults["updated_at"])[:64],
+    }
+
+
+def read_runtime_settings() -> dict[str, Any]:
+    with RUNTIME_SETTINGS_LOCK:
+        raw = read_json(RUNTIME_SETTINGS_FILE, {})
+        normalized = normalize_runtime_settings(raw)
+        if raw != normalized:
+            write_json_atomic(RUNTIME_SETTINGS_FILE, normalized)
+        return copy.deepcopy(normalized)
+
+
+def write_runtime_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_runtime_settings(settings)
+    with RUNTIME_SETTINGS_LOCK:
+        write_json_atomic(RUNTIME_SETTINGS_FILE, normalized)
+    return copy.deepcopy(normalized)
+
+
+def runtime_settings_payload() -> dict[str, Any]:
+    settings = read_runtime_settings()
+    route = settings["route_auto_update"]
+    backup = settings["automatic_backup"]
+    return {
+        "ok": True,
+        **settings,
+        "route_auto_update": {
+            **route,
+            "interval_seconds": int(route["interval_minutes"]) * 60,
+            "minimum_minutes": ROUTE_AUTO_UPDATE_MIN_MINUTES,
+            "maximum_minutes": ROUTE_AUTO_UPDATE_MAX_MINUTES,
+        },
+        "automatic_backup": {
+            **backup,
+            "minimum_days": SYSTEM_BACKUP_AUTO_MIN_DAYS,
+            "maximum_days": SYSTEM_BACKUP_AUTO_MAX_DAYS,
+            "minimum_retention": SYSTEM_BACKUP_RETENTION_MIN,
+            "maximum_retention": SYSTEM_BACKUP_RETENTION_MAX,
+        },
+        "time": now_iso(),
+    }
+
+
+def request_integer(value: Any, label: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{label} должно быть целым числом.")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{label} должно быть целым числом.") from exc
+    if number < minimum or number > maximum:
+        raise HTTPException(status_code=400, detail=f"{label}: допустимо от {minimum} до {maximum}.")
+    return number
+
+
+def update_runtime_settings(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Настройки должны быть JSON-объектом.")
+    if set(payload) - {"route_auto_update", "automatic_backup"}:
+        raise HTTPException(status_code=400, detail="Переданы неподдерживаемые настройки.")
+
+    with RUNTIME_SETTINGS_LOCK:
+        settings = read_runtime_settings()
+
+        if "route_auto_update" in payload:
+            route_payload = payload["route_auto_update"]
+            if not isinstance(route_payload, dict) or set(route_payload) - {"enabled", "interval_minutes"}:
+                raise HTTPException(status_code=400, detail="Некорректные настройки автообновления маршрутов.")
+            if "enabled" in route_payload:
+                if not isinstance(route_payload["enabled"], bool):
+                    raise HTTPException(status_code=400, detail="enabled должно быть true или false.")
+                settings["route_auto_update"]["enabled"] = route_payload["enabled"]
+            if "interval_minutes" in route_payload:
+                settings["route_auto_update"]["interval_minutes"] = request_integer(
+                    route_payload["interval_minutes"],
+                    "Интервал автообновления",
+                    ROUTE_AUTO_UPDATE_MIN_MINUTES,
+                    ROUTE_AUTO_UPDATE_MAX_MINUTES,
+                )
+
+        if "automatic_backup" in payload:
+            backup_payload = payload["automatic_backup"]
+            if not isinstance(backup_payload, dict) or set(backup_payload) - {"enabled", "interval_days", "retention"}:
+                raise HTTPException(status_code=400, detail="Некорректные настройки автобэкапа.")
+            if "enabled" in backup_payload:
+                if not isinstance(backup_payload["enabled"], bool):
+                    raise HTTPException(status_code=400, detail="enabled должно быть true или false.")
+                settings["automatic_backup"]["enabled"] = backup_payload["enabled"]
+            if "interval_days" in backup_payload:
+                settings["automatic_backup"]["interval_days"] = request_integer(
+                    backup_payload["interval_days"],
+                    "Интервал автобэкапа",
+                    SYSTEM_BACKUP_AUTO_MIN_DAYS,
+                    SYSTEM_BACKUP_AUTO_MAX_DAYS,
+                )
+            if "retention" in backup_payload:
+                settings["automatic_backup"]["retention"] = request_integer(
+                    backup_payload["retention"],
+                    "Количество хранимых бэкапов",
+                    SYSTEM_BACKUP_RETENTION_MIN,
+                    SYSTEM_BACKUP_RETENTION_MAX,
+                )
+
+        settings["updated_at"] = now_iso()
+        saved = write_runtime_settings(settings)
+
+    if "automatic_backup" in payload and "retention" in payload["automatic_backup"]:
+        prune_system_backups(int(saved["automatic_backup"]["retention"]))
+    return saved
+
+
 def run_data_migrations() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    read_runtime_settings()
     state = read_json(SCHEMA_STATE_FILE, {})
     if not isinstance(state, dict):
         state = {}
@@ -620,6 +967,7 @@ def run_data_migrations() -> None:
         "community_profiles": safe_file_info(COMMUNITY_PROFILES_FILE),
         "jobs": safe_file_info(JOBS_FILE),
         "update_history": safe_file_info(UPDATE_HISTORY_FILE),
+        "runtime_settings": safe_file_info(RUNTIME_SETTINGS_FILE),
     }
 
     state.update(
@@ -635,6 +983,7 @@ def run_data_migrations() -> None:
             },
             "notes": [
                 "0.5 separates immutable built-in service definitions from user catalog state.",
+                "0.6 adds persistent route update and automatic backup settings.",
                 "Legacy user-added services are migrated by stable service ID.",
             ],
         }
@@ -655,12 +1004,17 @@ def ensure_sources_file() -> None:
         return
 
     if DEFAULT_SOURCES_FILE.exists():
-        SOURCES_FILE.write_text(
-            DEFAULT_SOURCES_FILE.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+        write_text_atomic(SOURCES_FILE, DEFAULT_SOURCES_FILE.read_text(encoding="utf-8"))
     else:
         write_json_atomic(SOURCES_FILE, [])
+
+
+def read_sources_config() -> list[dict[str, Any]]:
+    ensure_sources_file()
+    sources = read_json(SOURCES_FILE, [], strict=True)
+    if not isinstance(sources, list):
+        raise RuntimeError("sources.json must be a JSON array")
+    return validate_sources_config(sources)
 
 
 def migrate_default_sources() -> dict[str, Any]:
@@ -669,9 +1023,9 @@ def migrate_default_sources() -> dict[str, Any]:
         raise RuntimeError("default_sources.json must be a JSON array")
     defaults = validate_sources_config(defaults)
 
-    existing = read_json(SOURCES_FILE, [])
+    existing = read_json(SOURCES_FILE, [], strict=SOURCES_FILE.exists())
     if not isinstance(existing, list):
-        existing = []
+        raise RuntimeError("sources.json must be a JSON array")
 
     existing_by_name = {
         str(item.get("name", "")).strip(): item
@@ -756,6 +1110,14 @@ def gobgp_text(args: list[str]) -> str:
     result = run_cmd(gobgp_cli_args(args), timeout=20)
     text = result.stdout if result.stdout else result.stderr
     return text.strip() + ("\n" if text else "")
+
+
+def gobgp_neighbor_detail() -> str:
+    try:
+        ipaddress.ip_address(PEER_ADDRESS)
+    except ValueError:
+        return ""
+    return gobgp_text(["neighbor", PEER_ADDRESS])
 
 
 def ensure_gobgp_neighbor_enabled() -> None:
@@ -1312,11 +1674,7 @@ def additive_diff_prefixes_vs_current(prefixes: list[str]) -> dict[str, Any]:
 
 
 def preview_source_by_name(source_name: str, allow_large: bool = False) -> dict[str, Any]:
-    ensure_sources_file()
-
-    sources = read_json(SOURCES_FILE, [])
-    if not isinstance(sources, list):
-        raise RuntimeError("sources.json must be a JSON array")
+    sources = read_sources_config()
 
     selected_source = None
     for source in sources:
@@ -1404,13 +1762,7 @@ def collect_static_prefixes_from_sources(sources: list[dict[str, Any]]) -> tuple
 
 
 def collect_static_prefixes() -> tuple[list[str], dict[str, Any]]:
-    ensure_sources_file()
-
-    sources = read_json(SOURCES_FILE, [])
-
-    if not isinstance(sources, list):
-        raise RuntimeError("sources.json must be a JSON array")
-
+    sources = read_sources_config()
     return collect_static_prefixes_from_sources(sources)
 
 
@@ -1564,12 +1916,11 @@ def validate_community_profiles_config(data: Any) -> dict[str, Any]:
 
 def read_community_profiles() -> dict[str, Any]:
     ensure_community_profiles_file()
-    data = read_json(COMMUNITY_PROFILES_FILE, default_community_profiles())
-
+    data = read_json(COMMUNITY_PROFILES_FILE, default_community_profiles(), strict=True)
     try:
         return validate_community_profiles_config(data)
-    except HTTPException:
-        return default_community_profiles()
+    except HTTPException as exc:
+        raise RuntimeError("community_profiles.json is invalid") from exc
 
 
 def write_community_profiles(data: dict[str, Any]) -> None:
@@ -1581,12 +1932,8 @@ def collect_prefixes_for_source_names(source_names: list[str]) -> tuple[set[ipad
     if not source_names:
         return set(), []
 
-    ensure_sources_file()
     wanted = set(source_names)
-    sources = read_json(SOURCES_FILE, [])
-
-    if not isinstance(sources, list):
-        raise RuntimeError("sources.json must be a JSON array")
+    sources = read_sources_config()
 
     collected: set[ipaddress.IPv4Network] = set()
     stats: list[dict[str, Any]] = []
@@ -2181,6 +2528,7 @@ def apply_last_good(
             "ok": True,
             "mode": trigger,
             "prefix_summary": summarize_prefixes(prefixes),
+            "meta": {"route_set_sha256": route_set_sha256(prefixes)},
             "apply": apply_result,
             "time": now_iso(),
         }
@@ -2214,6 +2562,12 @@ def compact_history_record(result: dict[str, Any], trigger: str) -> dict[str, An
     apply_data = result.get("apply", {}) if isinstance(result.get("apply"), dict) else {}
     prefix_summary = result.get("prefix_summary", {}) if isinstance(result.get("prefix_summary"), dict) else {}
     meta = result.get("meta", {}) if isinstance(result.get("meta"), dict) else {}
+    selected_sources, selected_services = selected_route_inputs(meta)
+    final_count = meta.get("final_count_with_services")
+    if final_count is None:
+        final_count = meta.get("final_count")
+    if final_count is None:
+        final_count = prefix_summary.get("count")
 
     return {
         "time": result.get("updated_at") or result.get("time") or now_iso(),
@@ -2221,7 +2575,10 @@ def compact_history_record(result: dict[str, Any], trigger: str) -> dict[str, An
         "ok": bool(result.get("ok", False)),
         "mode": result.get("mode"),
         "selected_source": extract_selected_source(result),
-        "final_count": meta.get("final_count") or prefix_summary.get("count"),
+        "selected_sources": selected_sources,
+        "selected_services": selected_services,
+        "route_set_sha256": meta.get("route_set_sha256"),
+        "final_count": final_count,
         "advertised_count": apply_data.get("advertised_count"),
         "added": apply_data.get("added"),
         "deleted": apply_data.get("deleted"),
@@ -2234,14 +2591,14 @@ def compact_history_record(result: dict[str, Any], trigger: str) -> dict[str, An
 
 def append_update_history(result: dict[str, Any], trigger: str) -> None:
     try:
-        UPDATE_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-        record = compact_history_record(result, trigger)
-
-        with UPDATE_HISTORY_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-        trim_update_history()
+        with STATE_WRITE_LOCK:
+            UPDATE_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            record = compact_history_record(result, trigger)
+            with UPDATE_HISTORY_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            trim_update_history()
     except Exception:
         # History must never break route serving.
         pass
@@ -2259,10 +2616,7 @@ def trim_update_history() -> None:
     if len(lines) <= UPDATE_HISTORY_MAX_LINES:
         return
 
-    UPDATE_HISTORY_FILE.write_text(
-        "\n".join(lines[-UPDATE_HISTORY_MAX_LINES:]) + "\n",
-        encoding="utf-8",
-    )
+    write_text_atomic(UPDATE_HISTORY_FILE, "\n".join(lines[-UPDATE_HISTORY_MAX_LINES:]) + "\n")
 
 
 def read_update_history(limit: int = 100) -> list[dict[str, Any]]:
@@ -2336,12 +2690,15 @@ def public_job_record(job: dict[str, Any]) -> dict[str, Any]:
         "result_summary": job.get("result_summary"),
         "error": job.get("error"),
         "cancel_requested": bool(job.get("cancel_requested", False)),
+        "cancellable": str(job.get("status")) == "queued" and str(job.get("id")) not in RUNNING_JOB_IDS,
     }
 
 
 def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
     with JOBS_LOCK:
         state = read_jobs_state()
+        if reconcile_jobs_state(state):
+            write_jobs_state(state)
         jobs = state.get("jobs", [])
         selected = list(reversed(jobs))[: max(1, min(limit, 200))]
         return [public_job_record(job) for job in selected]
@@ -2357,6 +2714,8 @@ def find_job(job_id: str) -> dict[str, Any] | None:
 
 def find_active_job_by_key(key: str) -> dict[str, Any] | None:
     state = read_jobs_state()
+    if reconcile_jobs_state(state):
+        write_jobs_state(state)
     for job in reversed(state.get("jobs", [])):
         if str(job.get("key")) == key and str(job.get("status")) in active_job_statuses():
             return job
@@ -2377,9 +2736,36 @@ def update_job_record(job_id: str, updates: dict[str, Any]) -> dict[str, Any]:
 
 def create_job(kind: str, key: str, title: str, payload: dict[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
     with JOBS_LOCK:
-        existing = find_active_job_by_key(key)
+        state = read_jobs_state()
+        if reconcile_jobs_state(state):
+            write_jobs_state(state)
+        active_jobs = [
+            job
+            for job in state.get("jobs", [])
+            if str(job.get("status")) in active_job_statuses()
+        ]
+        existing = next(
+            (job for job in reversed(active_jobs) if str(job.get("key")) == key),
+            None,
+        )
         if existing:
             return public_job_record(existing), True
+
+        exclusive_kinds = {"product_update", "system_restore"}
+        active_exclusive = next(
+            (job for job in reversed(active_jobs) if str(job.get("kind")) in exclusive_kinds),
+            None,
+        )
+        if kind in exclusive_kinds and active_jobs:
+            raise HTTPException(
+                status_code=409,
+                detail="Перед этой операцией дождись завершения остальных фоновых задач.",
+            )
+        if active_exclusive is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Эксклюзивная системная операция уже выполняется. Новые задачи временно заблокированы.",
+            )
 
         job = {
             "id": uuid.uuid4().hex,
@@ -2399,7 +2785,6 @@ def create_job(kind: str, key: str, title: str, payload: dict[str, Any] | None =
             "cancel_requested": False,
         }
 
-        state = read_jobs_state()
         state.setdefault("jobs", []).append(job)
         write_jobs_state(state)
         return public_job_record(job), False
@@ -2419,12 +2804,15 @@ def summarize_job_result(kind: str, result: dict[str, Any]) -> dict[str, Any]:
     if kind == "system_backup":
         return {
             "ok": bool(result.get("ok", False)),
+            "skipped": bool(result.get("skipped", False)),
+            "reason": result.get("reason"),
             "backup_name": result.get("backup_name"),
             "created_at": result.get("created_at"),
             "size_bytes": result.get("size_bytes"),
             "files_count": result.get("files_count"),
             "data_files_count": result.get("data_files_count"),
             "config_files_count": result.get("config_files_count"),
+            "state_sha256": result.get("state_sha256"),
             "time": result.get("time"),
         }
 
@@ -2486,17 +2874,135 @@ def summarize_job_result(kind: str, result: dict[str, Any]) -> dict[str, Any]:
     return {"ok": bool(result.get("ok", False)), "time": result.get("time")}
 
 
+def job_age_seconds(job: dict[str, Any]) -> float | None:
+    raw_value = job.get("started_at") or job.get("created_at")
+    if not raw_value:
+        return None
+    try:
+        started = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+    except (TypeError, ValueError):
+        return None
+
+
+def read_host_updater_result(job_id: str) -> dict[str, Any] | None:
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        return None
+    result_dir = HOST_UPDATER_RESULT_DIR.resolve()
+    result_path = (result_dir / f"{job_id}.json").resolve()
+    try:
+        result_path.relative_to(result_dir)
+    except ValueError:
+        return None
+    if not result_path.is_file() or result_path.is_symlink():
+        return None
+    result = read_json(result_path, None)
+    return result if isinstance(result, dict) else None
+
+
+def reconcile_jobs_state(state: dict[str, Any]) -> bool:
+    changed = False
+    for job in state.get("jobs", []):
+        if not isinstance(job, dict):
+            continue
+        job_id = str(job.get("id", ""))
+        status = str(job.get("status", ""))
+        if status not in active_job_statuses() or job_id in RUNNING_JOB_IDS:
+            continue
+
+        if str(job.get("kind")) != "product_update":
+            if (job_age_seconds(job) or 0) <= 30:
+                continue
+            job.update(
+                {
+                    "status": "failed",
+                    "stage": "Прервано перезапуском backend",
+                    "progress_percent": 100,
+                    "finished_at": now_iso(),
+                    "error": public_error("Фоновая задача была прервана перезапуском backend."),
+                    "cancel_requested": False,
+                }
+            )
+            changed = True
+            continue
+
+        durable_result = read_host_updater_result(job_id)
+        if durable_result is not None:
+            durable_status = str(durable_result.get("status", ""))
+            if durable_status in {"succeeded", "failed"}:
+                succeeded = durable_status == "succeeded" and bool(durable_result.get("ok"))
+                job.update(
+                    {
+                        "status": "succeeded" if succeeded else "failed",
+                        "stage": "Готово" if succeeded else "Ошибка обновления",
+                        "progress_percent": 100,
+                        "finished_at": durable_result.get("finished_at") or durable_result.get("time") or now_iso(),
+                        "duration_seconds": durable_result.get("duration_seconds"),
+                        "result_summary": summarize_job_result("product_update", durable_result),
+                        "error": None if succeeded else public_error("Обновление The333-BGP завершилось с ошибкой."),
+                        "cancel_requested": False,
+                    }
+                )
+                changed = True
+                continue
+            if durable_status == "running":
+                if job.get("status") != "running" or job.get("stage") != durable_result.get("stage"):
+                    job["status"] = "running"
+                    job["stage"] = durable_result.get("stage") or "Обновление выполняется на хосте"
+                    job["progress_percent"] = 50
+                    changed = True
+                if (job_age_seconds(job) or 0) <= HOST_UPDATER_RESULT_STALE_SECONDS:
+                    continue
+
+        if (job_age_seconds(job) or 0) <= 30:
+            continue
+        job.update(
+            {
+                "status": "failed",
+                "stage": "Результат обновления не найден",
+                "progress_percent": 100,
+                "finished_at": now_iso(),
+                "error": public_error("Обновление было прервано, durable-результат не найден."),
+                "cancel_requested": False,
+            }
+        )
+        changed = True
+
+    return changed
+
+
+def claim_queued_job(job_id: str) -> bool:
+    with JOBS_LOCK:
+        state = read_jobs_state()
+        for job in state.get("jobs", []):
+            if str(job.get("id")) != job_id:
+                continue
+            if str(job.get("status")) != "queued" or bool(job.get("cancel_requested")):
+                return False
+            job.update(
+                {
+                    "status": "running",
+                    "stage": "Выполняется",
+                    "progress_percent": 10,
+                    "started_at": now_iso(),
+                }
+            )
+            RUNNING_JOB_IDS.add(job_id)
+            try:
+                write_jobs_state(state)
+            except Exception:
+                RUNNING_JOB_IDS.discard(job_id)
+                raise
+            return True
+    return False
+
+
 async def run_background_job(job_id: str, kind: str, target: Any) -> None:
     started = time.time()
-    update_job_record(
-        job_id,
-        {
-            "status": "running",
-            "stage": "Выполняется",
-            "progress_percent": 10,
-            "started_at": now_iso(),
-        },
-    )
+    if not claim_queued_job(job_id):
+        return
 
     try:
         result = await asyncio.to_thread(target)
@@ -2512,6 +3018,8 @@ async def run_background_job(job_id: str, kind: str, target: Any) -> None:
                 "error": None,
             },
         )
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         log_exception(f"background job failed: {kind}", e)
         update_job_record(
@@ -2525,13 +3033,15 @@ async def run_background_job(job_id: str, kind: str, target: Any) -> None:
                 "error": public_error("Фоновая задача завершилась с ошибкой."),
             },
         )
+    finally:
+        RUNNING_JOB_IDS.discard(job_id)
 
 
 def start_background_job(kind: str, key: str, title: str, target: Any, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     job, deduplicated = create_job(kind=kind, key=key, title=title, payload=payload)
 
     if not deduplicated:
-        asyncio.create_task(run_background_job(str(job["id"]), kind, target))
+        spawn_background_task(run_background_job(str(job["id"]), kind, target))
 
     return {
         "ok": True,
@@ -2541,7 +3051,11 @@ def start_background_job(kind: str, key: str, title: str, target: Any, payload: 
     }
 
 
-def run_product_update_command(channel: str, version: str | None = None) -> dict[str, Any]:
+def run_product_update_command(
+    channel: str,
+    version: str | None,
+    request_id: str,
+) -> dict[str, Any]:
     if not PRODUCT_UPDATE_ENABLED:
         raise RuntimeError("Product update from portal is disabled")
     if PRODUCT_UPDATE_MODE != "host-updater":
@@ -2562,7 +3076,7 @@ def run_product_update_command(channel: str, version: str | None = None) -> dict
         response = client.post(
             "/api/update",
             headers={"x-the333-updater-token": HOST_UPDATER_TOKEN},
-            json={"channel": channel, "version": version},
+            json={"channel": channel, "version": version, "request_id": request_id},
         )
 
     try:
@@ -2666,9 +3180,16 @@ def system_backup_skip_path(path: Path) -> bool:
         return True
     if path_is_relative_to(path, SYSTEM_RESTORE_STAGING_DIR):
         return True
+    if path_is_relative_to(path, HOST_UPDATER_RESULT_DIR):
+        return True
+    if path_is_relative_to(path, GOBGP_STATE_DIR):
+        return True
     if path.resolve() == JOBS_FILE.resolve():
         return True
-    if path.resolve() in {GOBGP_GENERATION_FILE.resolve(), LEGACY_GOBGP_CONFIG_FILE.resolve()}:
+    if path.resolve() in {
+        LEGACY_GOBGP_GENERATION_FILE.resolve(),
+        LEGACY_GOBGP_CONFIG_FILE.resolve(),
+    }:
         return True
     if path.parent.resolve() == CONFIG_DIR.resolve() and path.name in BUILTIN_CONFIG_FILENAMES:
         return True
@@ -2712,8 +3233,37 @@ def collect_system_backup_files() -> tuple[list[tuple[Path, str]], int, int, int
     return files, total_bytes, data_files_count, config_files_count
 
 
-def prune_system_backups() -> None:
-    if SYSTEM_BACKUP_RETENTION <= 0 or not SYSTEM_BACKUP_DIR.exists():
+def system_backup_state_sha256(files: list[tuple[Path, str]]) -> str:
+    digest = hashlib.sha256()
+    for path, arcname in sorted(files, key=lambda item: item[1]):
+        digest.update(arcname.encode("utf-8"))
+        digest.update(b"\0")
+        if path.resolve() == RUNTIME_SETTINGS_FILE.resolve():
+            settings = normalize_runtime_settings(read_json(path, {}))
+            automatic = settings["automatic_backup"]
+            for key in ("last_checked_at", "last_result", "last_backup_name", "last_backup_at"):
+                automatic[key] = None
+            digest.update(json.dumps(settings, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        else:
+            with path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def current_system_state_sha256() -> str:
+    files, _, _, _ = collect_system_backup_files()
+    return system_backup_state_sha256(files)
+
+
+def effective_system_backup_retention() -> int:
+    return int(read_runtime_settings()["automatic_backup"]["retention"])
+
+
+def prune_system_backups(retention: int | None = None) -> None:
+    keep = effective_system_backup_retention() if retention is None else retention
+    if keep <= 0 or not SYSTEM_BACKUP_DIR.exists():
         return
 
     backups = sorted(
@@ -2722,7 +3272,7 @@ def prune_system_backups() -> None:
         reverse=True,
     )
 
-    for item in backups[SYSTEM_BACKUP_RETENTION:]:
+    for item in backups[keep:]:
         try:
             item.unlink()
         except Exception:
@@ -2734,6 +3284,7 @@ def create_system_backup(trigger: str = "manual", reason: str | None = None) -> 
     SYSTEM_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
     files, total_bytes, data_files_count, config_files_count = collect_system_backup_files()
+    state_sha256 = system_backup_state_sha256(files)
     created_at = now_iso()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     backup_path = SYSTEM_BACKUP_DIR / f"the333-bgp-backup-{stamp}.zip"
@@ -2753,7 +3304,9 @@ def create_system_backup(trigger: str = "manual", reason: str | None = None) -> 
             "data/system_backups",
             "data/.restore_staging",
             "data/jobs.json",
-            "data/gobgp_generation",
+            "data/host-updater-results",
+            "data/gobgp-state",
+            "data/gobgp_generation (legacy)",
             "data/gobgpd.toml",
             ".env",
             "Docker images",
@@ -2764,15 +3317,25 @@ def create_system_backup(trigger: str = "manual", reason: str | None = None) -> 
         "config_files_count": config_files_count,
         "total_bytes": total_bytes,
         "max_bytes": SYSTEM_BACKUP_MAX_BYTES,
+        "state_sha256": state_sha256,
     }
 
     tmp_path = backup_path.with_suffix(".zip.tmp")
-    with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-        for path, arcname in files:
-            archive.write(path, arcname)
-
-    tmp_path.replace(backup_path)
+    try:
+        with zipfile.ZipFile(tmp_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            for path, arcname in files:
+                archive.write(path, arcname)
+        os.chmod(tmp_path, 0o600)
+        archive_fd = os.open(tmp_path, os.O_RDONLY)
+        try:
+            os.fsync(archive_fd)
+        finally:
+            os.close(archive_fd)
+        os.replace(tmp_path, backup_path)
+        fsync_directory(backup_path.parent)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     prune_system_backups()
 
     return {
@@ -2785,9 +3348,97 @@ def create_system_backup(trigger: str = "manual", reason: str | None = None) -> 
         "data_files_count": data_files_count,
         "config_files_count": config_files_count,
         "total_bytes": total_bytes,
+        "state_sha256": state_sha256,
         "duration_seconds": round(time.time() - started, 3),
         "time": now_iso(),
     }
+
+
+def create_consistent_system_backup(trigger: str = "manual", reason: str | None = None) -> dict[str, Any]:
+    with ROUTE_MUTATION_LOCK:
+        return create_system_backup(trigger=trigger, reason=reason)
+
+
+def iso_timestamp(value: Any) -> float | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def automatic_backup_is_due(settings: dict[str, Any], current_time: float | None = None) -> bool:
+    backup = settings["automatic_backup"]
+    if not bool(backup["enabled"]):
+        return False
+    now_value = time.time() if current_time is None else current_time
+    reference = iso_timestamp(backup.get("last_checked_at")) or iso_timestamp(settings.get("updated_at"))
+    if reference is None:
+        reference = RUNTIME_SETTINGS_FILE.stat().st_mtime if RUNTIME_SETTINGS_FILE.exists() else now_value
+    return now_value - reference >= int(backup["interval_days"]) * 86400
+
+
+def update_automatic_backup_runtime(
+    *,
+    result: str,
+    backup_name: str | None = None,
+    backup_at: str | None = None,
+) -> dict[str, Any]:
+    with RUNTIME_SETTINGS_LOCK:
+        settings = read_runtime_settings()
+        automatic = settings["automatic_backup"]
+        automatic["last_checked_at"] = now_iso()
+        automatic["last_result"] = result
+        if backup_name:
+            automatic["last_backup_name"] = backup_name
+        if backup_at:
+            automatic["last_backup_at"] = backup_at
+        return write_runtime_settings(settings)
+
+
+def run_automatic_backup_check() -> dict[str, Any]:
+    started = time.time()
+    try:
+        with ROUTE_MUTATION_LOCK:
+            state_sha256 = current_system_state_sha256()
+            backups = list_system_backups()
+            latest = backups[0] if backups else None
+            if latest and latest.get("state_sha256") == state_sha256:
+                update_automatic_backup_runtime(
+                    result="unchanged",
+                    backup_name=str(latest.get("name") or "") or None,
+                    backup_at=str(latest.get("created_at") or latest.get("mtime") or "") or None,
+                )
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "state_unchanged",
+                    "backup_name": latest.get("name"),
+                    "created_at": latest.get("created_at") or latest.get("mtime"),
+                    "size_bytes": latest.get("size_bytes"),
+                    "files_count": latest.get("files_count"),
+                    "state_sha256": state_sha256,
+                    "duration_seconds": round(time.time() - started, 3),
+                    "time": now_iso(),
+                }
+
+            result = create_system_backup(
+                trigger="automatic",
+                reason="scheduled backup after state change",
+            )
+        update_automatic_backup_runtime(
+            result="created",
+            backup_name=str(result.get("backup_name") or "") or None,
+            backup_at=str(result.get("created_at") or "") or None,
+        )
+        return result
+    except Exception:
+        update_automatic_backup_runtime(result="failed")
+        raise
 
 
 def system_backup_zip_is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -2858,6 +3509,10 @@ def validate_system_backup_zip_path(backup_path: Path) -> tuple[dict[str, Any], 
                 ("data", "gobgpd.toml"),
             }:
                 continue
+            if parts[:2] == ("data", "host-updater-results"):
+                continue
+            if parts[:2] == ("data", "gobgp-state"):
+                continue
 
             total_size += int(info.file_size)
             if total_size > SYSTEM_BACKUP_MAX_BYTES:
@@ -2908,6 +3563,7 @@ def list_system_backups() -> list[dict[str, Any]]:
                 "data_files_count": manifest.get("data_files_count"),
                 "config_files_count": manifest.get("config_files_count"),
                 "total_bytes": manifest.get("total_bytes"),
+                "state_sha256": manifest.get("state_sha256"),
                 "schema_version": manifest.get("schema_version"),
                 "restore_supported": manifest.get("schema_version") == SYSTEM_BACKUP_SCHEMA_VERSION,
                 "warning": manifest.get("warning"),
@@ -2981,7 +3637,16 @@ def _restore_system_backup_locked(backup_name: str, apply_routes: bool = True) -
         extract_system_backup_to_stage(backup_path, stage_dir, entries)
         pre_restore = create_system_backup(trigger="pre_restore", reason=f"before restoring {backup_path.name}")
 
-        clear_restore_root(DATA_DIR, preserve_names={"system_backups", ".restore_staging", "jobs.json"})
+        clear_restore_root(
+            DATA_DIR,
+            preserve_names={
+                "system_backups",
+                ".restore_staging",
+                "jobs.json",
+                "host-updater-results",
+                "gobgp-state",
+            },
+        )
         clear_restore_root(CONFIG_DIR, preserve_names=BUILTIN_CONFIG_FILENAMES)
 
         copied_data = copy_staged_root(stage_dir / "data", DATA_DIR)
@@ -3025,19 +3690,23 @@ def restore_system_backup(backup_name: str, apply_routes: bool = True) -> dict[s
 
 @app.get("/api/system/backups")
 async def api_system_backups(_: str = Depends(require_auth)) -> JSONResponse:
+    settings = runtime_settings_payload()
     return JSONResponse(
         {
             "ok": True,
             "backups": list_system_backups(),
-            "retention": SYSTEM_BACKUP_RETENTION,
+            "retention": settings["automatic_backup"]["retention"],
             "max_bytes": SYSTEM_BACKUP_MAX_BYTES,
+            "automatic_backup": settings["automatic_backup"],
             "scope": ["data", "config"],
             "excluded": [
                 ".env",
                 "Docker images",
                 "application code",
                 "data/jobs.json",
-                "data/gobgp_generation",
+                "data/host-updater-results",
+                "data/gobgp-state",
+                "data/gobgp_generation (legacy)",
                 "data/gobgpd.toml",
                 "built-in config files",
             ],
@@ -3053,7 +3722,7 @@ async def api_system_backup_job(_: str = Depends(require_auth)) -> JSONResponse:
             kind="system_backup",
             key="system_backup",
             title="Создание бэкапа системы",
-            target=lambda: create_system_backup(trigger="manual"),
+            target=lambda: create_consistent_system_backup(trigger="manual"),
             payload={"scope": ["data", "config"]},
         )
     )
@@ -3144,14 +3813,69 @@ async def api_product_update_job(request: Request, _: str = Depends(require_auth
     if channel not in {"stable", "beta"}:
         raise HTTPException(status_code=400, detail="channel must be stable or beta")
 
-    return JSONResponse(
-        start_background_job(
-            kind="product_update",
-            key="product_update",
-            title="Обновление The333-BGP",
-            target=lambda: run_product_update_command(channel=channel, version=version),
-            payload={"channel": channel, "version": version},
+    manifest = await load_update_manifest()
+    versions = manifest.get("versions", [])
+    if not isinstance(versions, list):
+        versions = []
+    latest = manifest.get("latest", {})
+    if not isinstance(latest, dict):
+        latest = {}
+    requested_version = version or str(latest.get(channel) or "").strip()
+    selected_release = next(
+        (
+            item
+            for item in versions
+            if isinstance(item, dict)
+            and str(item.get("version", "")) == requested_version
+            and str(item.get("channel", "")) == channel
+        ),
+        None,
+    )
+    if selected_release is None:
+        raise HTTPException(status_code=400, detail="Выбранная версия отсутствует в проверенном списке релизов.")
+    current_version = read_product_version()
+    if not product_version_is_newer(requested_version, current_version):
+        raise HTTPException(
+            status_code=409,
+            detail="Через обновление можно установить только более новую версию. Для восстановления используй проверенный бэкап.",
         )
+    sha256 = str(selected_release.get("sha256", "") or "").strip()
+    archive_url = str(selected_release.get("archive_url", "") or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256) or not archive_url.startswith("https://"):
+        raise HTTPException(status_code=409, detail="Релиз ещё не имеет проверяемого архива SHA-256.")
+    version = requested_version
+
+    disk = read_server_resources().get("disk", {})
+    if not bool(disk.get("update_ready", False)):
+        free_mb = int(disk.get("free_bytes", 0) or 0) // (1024 * 1024)
+        required_mb = int(disk.get("update_min_free_bytes", UPDATE_MIN_FREE_BYTES) or 0) // (1024 * 1024)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Недостаточно места для безопасного обновления: свободно {free_mb} МБ, требуется {required_mb} МБ.",
+        )
+
+    job, deduplicated = create_job(
+        kind="product_update",
+        key="product_update",
+        title="Обновление The333-BGP",
+        payload={"channel": channel, "version": version},
+    )
+    if not deduplicated:
+        job_id = str(job["id"])
+        spawn_background_task(
+            run_background_job(
+                job_id,
+                "product_update",
+                lambda: run_product_update_command(channel, version, job_id),
+            )
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "job": job,
+            "deduplicated": deduplicated,
+            "time": now_iso(),
+        }
     )
 
 
@@ -3186,9 +3910,16 @@ async def api_job_cancel(job_id: str, _: str = Depends(require_auth)) -> JSONRes
                 if str(job.get("status")) not in active_job_statuses():
                     return JSONResponse({"ok": True, "job": public_job_record(job), "time": now_iso()})
 
+                if str(job.get("status")) != "queued" or job_id in RUNNING_JOB_IDS:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Выполняемую операцию нельзя безопасно прервать. Дождись её результата.",
+                    )
                 job["cancel_requested"] = True
-                job["status"] = "cancel_requested"
-                job["stage"] = "Запрошена остановка"
+                job["status"] = "cancelled"
+                job["stage"] = "Отменено до запуска"
+                job["finished_at"] = now_iso()
+                job["progress_percent"] = 100
                 write_jobs_state(state)
                 return JSONResponse({"ok": True, "job": public_job_record(job), "time": now_iso()})
 
@@ -3292,6 +4023,7 @@ def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", 
     meta["service_routes"] = service_meta
     meta["collection_health"] = collection_health
     meta["final_count_with_services"] = len(prefixes)
+    meta["route_set_sha256"] = route_set_sha256(prefixes)
     meta["community_routes"] = {
         "profiles_count": community_plan.get("profiles_count"),
         "enabled_count": community_plan.get("enabled_count"),
@@ -3352,8 +4084,26 @@ def update_now(force_reannounce: bool = False, trigger: str = "manual", allow_la
 
 
 async def auto_update_loop() -> None:
+    schedule_signature: tuple[bool, int] | None = None
+    next_run = time.monotonic()
     while True:
-        await asyncio.sleep(UPDATE_INTERVAL_SECONDS)
+        settings = await asyncio.to_thread(read_runtime_settings)
+        route_settings = settings["route_auto_update"]
+        enabled = bool(route_settings["enabled"])
+        interval_seconds = int(route_settings["interval_minutes"]) * 60
+        signature = (enabled, interval_seconds)
+        if signature != schedule_signature:
+            schedule_signature = signature
+            next_run = time.monotonic() + interval_seconds
+
+        if not enabled:
+            await asyncio.sleep(15)
+            continue
+
+        remaining = next_run - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(min(15, remaining))
+            continue
 
         try:
             try:
@@ -3372,7 +4122,7 @@ async def auto_update_loop() -> None:
                     **result,
                     "auto_update": True,
                     "auto_update_ok": True,
-                    "auto_update_interval_seconds": UPDATE_INTERVAL_SECONDS,
+                    "auto_update_interval_seconds": interval_seconds,
                 }
             )
         except Exception as e:
@@ -3384,13 +4134,46 @@ async def auto_update_loop() -> None:
                     "mode": "auto_update_failed",
                     "auto_update": True,
                     "auto_update_ok": False,
-                    "auto_update_interval_seconds": UPDATE_INTERVAL_SECONDS,
+                    "auto_update_interval_seconds": interval_seconds,
                     "error": public_error("Автообновление маршрутов не выполнено."),
                     "time": now_iso(),
                 }
             )
             save_status(current_status)
             append_update_history(current_status, "auto_failed")
+        finally:
+            latest_settings = await asyncio.to_thread(read_runtime_settings)
+            latest_route = latest_settings["route_auto_update"]
+            schedule_signature = (
+                bool(latest_route["enabled"]),
+                int(latest_route["interval_minutes"]) * 60,
+            )
+            next_run = time.monotonic() + schedule_signature[1]
+
+
+async def automatic_backup_loop() -> None:
+    await asyncio.sleep(30)
+    while True:
+        try:
+            settings = await asyncio.to_thread(read_runtime_settings)
+            if automatic_backup_is_due(settings):
+                job, deduplicated = create_job(
+                    kind="system_backup",
+                    key="system_backup",
+                    title="Автоматический бэкап системы",
+                    payload={"scope": ["data", "config"], "mode": "on_change"},
+                )
+                if not deduplicated:
+                    await run_background_job(
+                        str(job["id"]),
+                        "system_backup",
+                        run_automatic_backup_check,
+                    )
+        except HTTPException:
+            pass
+        except Exception as exc:
+            log_exception("automatic backup loop failed", exc)
+        await asyncio.sleep(60)
 
 
 async def startup_update_once() -> None:
@@ -3452,6 +4235,10 @@ async def gobgp_recovery_loop() -> None:
 
 async def startup() -> None:
     ensure_sources_file()
+    with JOBS_LOCK:
+        jobs_state = read_jobs_state()
+        if reconcile_jobs_state(jobs_state):
+            write_jobs_state(jobs_state)
 
     for _ in range(30):
         if gobgp_ready():
@@ -3460,9 +4247,8 @@ async def startup() -> None:
 
     spawn_background_task(startup_update_once())
     spawn_background_task(gobgp_recovery_loop())
-
-    if AUTO_UPDATE:
-        spawn_background_task(auto_update_loop())
+    spawn_background_task(auto_update_loop())
+    spawn_background_task(automatic_backup_loop())
 
 
 @app.get("/health")
@@ -3546,8 +4332,8 @@ def backup_sources_file() -> Path | None:
         return None
 
     SOURCES_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    backup_path = SOURCES_BACKUP_DIR / f"sources-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
-    backup_path.write_text(SOURCES_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+    backup_path = SOURCES_BACKUP_DIR / f"sources-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')}.json"
+    write_text_atomic(backup_path, SOURCES_FILE.read_text(encoding="utf-8"))
     return backup_path
 
 
@@ -3601,6 +4387,8 @@ def build_diagnostics_payload() -> dict[str, Any]:
     last_good_routes = read_lines(LAST_GOOD_FILE)
     sources = read_json(SOURCES_FILE, [])
     status_data = read_json(STATUS_FILE, {})
+    runtime_settings = read_runtime_settings()
+    route_auto_update = runtime_settings["route_auto_update"]
 
     diagnostics: dict[str, Any] = {
         "ok": True,
@@ -3610,13 +4398,14 @@ def build_diagnostics_payload() -> dict[str, Any]:
         "gobgp_rib_count": None,
         "gobgp_global": None,
         "gobgp_neighbor": None,
+        "gobgp_neighbor_detail": None,
         "advertised_routes_summary": summarize_prefixes(advertised_routes),
         "last_good_routes_summary": summarize_prefixes(last_good_routes),
         "sources_count": len(sources) if isinstance(sources, list) else None,
         "last_status": status_data,
         "safe_env": {
-            "AUTO_UPDATE": AUTO_UPDATE,
-            "UPDATE_INTERVAL_SECONDS": UPDATE_INTERVAL_SECONDS,
+            "AUTO_UPDATE": bool(route_auto_update["enabled"]),
+            "UPDATE_INTERVAL_SECONDS": int(route_auto_update["interval_minutes"]) * 60,
             "GOBGP_RECOVERY_POLL_SECONDS": GOBGP_RECOVERY_POLL_SECONDS,
             "JOB_HISTORY_MAX_ITEMS": JOB_HISTORY_MAX_ITEMS,
             "MAX_PREFIXES": MAX_PREFIXES,
@@ -3627,7 +4416,12 @@ def build_diagnostics_payload() -> dict[str, Any]:
             "AGGREGATE_PREFIXES": AGGREGATE_PREFIXES,
             "BGP_COMMUNITY": BGP_COMMUNITY,
             "BGP_NEXTHOP": BGP_NEXTHOP,
+            "BGP_PEER_MODE": BGP_PEER_MODE,
+            "BGP_DOCKER_BRIDGE_HOPS": BGP_DOCKER_BRIDGE_HOPS,
             "BGP_MULTIHOP_TTL": BGP_MULTIHOP_TTL,
+            "BGP_TTL_SECURITY_ENABLED": BGP_TTL_SECURITY_ENABLED,
+            "BGP_TTL_SECURITY_MIN": BGP_TTL_SECURITY_MIN,
+            "BGP_TCP_MD5_CONFIGURED": BGP_TCP_MD5_CONFIGURED,
             "BGP_GRACEFUL_RESTART": BGP_GRACEFUL_RESTART,
             "BGP_GRACEFUL_RESTART_TIME": BGP_GRACEFUL_RESTART_TIME,
             "BGP_REJECT_INBOUND_ROUTES": BGP_REJECT_INBOUND_ROUTES,
@@ -3660,6 +4454,7 @@ def build_diagnostics_payload() -> dict[str, Any]:
             safe_file_info(SERVICE_ROUTES_FILE),
             safe_file_info(SERVICE_LAST_GOOD_ROUTES_FILE),
             safe_file_info(SERVICE_SOURCE_REFRESH_FILE),
+            safe_file_info(RUNTIME_SETTINGS_FILE),
         ],
     }
 
@@ -3672,6 +4467,7 @@ def build_diagnostics_payload() -> dict[str, Any]:
 
     diagnostics["gobgp_global"] = gobgp_text(["gobgp", "global"])
     diagnostics["gobgp_neighbor"] = gobgp_text(["gobgp", "neighbor"])
+    diagnostics["gobgp_neighbor_detail"] = gobgp_neighbor_detail()
 
     return diagnostics
 
@@ -3679,6 +4475,18 @@ def build_diagnostics_payload() -> dict[str, Any]:
 @app.get("/api/diagnostics")
 async def api_diagnostics(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(build_diagnostics_payload())
+
+
+@app.get("/api/runtime-settings")
+async def api_runtime_settings(_: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse(runtime_settings_payload())
+
+
+@app.put("/api/runtime-settings")
+async def api_runtime_settings_update(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    update_runtime_settings(payload)
+    return JSONResponse(runtime_settings_payload())
 
 
 @app.get("/api/diagnostics/bundle")
@@ -3716,6 +4524,7 @@ async def api_diagnostics_bundle(_: str = Depends(require_auth)) -> StreamingRes
         )
         archive.writestr("gobgp_global.txt", str(diagnostics.get("gobgp_global") or ""))
         archive.writestr("gobgp_neighbor.txt", str(diagnostics.get("gobgp_neighbor") or ""))
+        archive.writestr("gobgp_neighbor_detail.txt", str(diagnostics.get("gobgp_neighbor_detail") or ""))
 
     bundle.seek(0)
     filename = f"the333-bgp-diagnostics-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.zip"
@@ -3726,8 +4535,7 @@ async def api_diagnostics_bundle(_: str = Depends(require_auth)) -> StreamingRes
     )
 
 
-@app.get("/ready")
-async def ready(_: str = Depends(require_auth)) -> JSONResponse:
+def build_readiness_payload() -> tuple[dict[str, Any], int]:
     advertised_routes = read_lines(ADVERTISED_FILE)
     last_good_routes = read_lines(LAST_GOOD_FILE)
     status_data = read_json(STATUS_FILE, {})
@@ -3736,6 +4544,11 @@ async def ready(_: str = Depends(require_auth)) -> JSONResponse:
     last_good_count = len(last_good_routes)
     status_ok = bool(status_data.get("ok", False))
     gobgp_api_ready = gobgp_ready()
+    unconfigured = (
+        not STATUS_FILE.exists()
+        and advertised_count == 0
+        and last_good_count == 0
+    )
 
     rib_count = None
     errors: list[str] = []
@@ -3743,12 +4556,12 @@ async def ready(_: str = Depends(require_auth)) -> JSONResponse:
     if not gobgp_api_ready:
         errors.append("gobgp API is not ready")
 
-    if advertised_count < MIN_PREFIXES_TO_APPLY:
+    if not unconfigured and advertised_count < MIN_PREFIXES_TO_APPLY:
         errors.append(
             f"advertised routes too small: {advertised_count} < MIN_PREFIXES_TO_APPLY={MIN_PREFIXES_TO_APPLY}"
         )
 
-    if not status_ok:
+    if not unconfigured and not status_ok:
         errors.append("last status is not ok")
 
     try:
@@ -3764,6 +4577,7 @@ async def ready(_: str = Depends(require_auth)) -> JSONResponse:
 
     payload = {
         "ready": is_ready,
+        "unconfigured": unconfigured,
         "app": APP_NAME,
         "gobgp_ready": gobgp_api_ready,
         "rib_count": rib_count,
@@ -3774,7 +4588,26 @@ async def ready(_: str = Depends(require_auth)) -> JSONResponse:
         "time": now_iso(),
     }
 
-    return JSONResponse(payload, status_code=200 if is_ready else 503)
+    return payload, 200 if is_ready else 503
+
+
+@app.get("/ready")
+async def ready(_: str = Depends(require_auth)) -> JSONResponse:
+    payload, status_code = build_readiness_payload()
+    return JSONResponse(payload, status_code=status_code)
+
+
+@app.get("/internal/ready")
+async def internal_ready(request: Request) -> JSONResponse:
+    provided = request.headers.get("x-the333-updater-token", "")
+    if (
+        not HOST_UPDATER_TOKEN
+        or "CHANGE_ME" in HOST_UPDATER_TOKEN
+        or not secrets.compare_digest(provided, HOST_UPDATER_TOKEN)
+    ):
+        raise HTTPException(status_code=403, detail="access denied")
+    payload, status_code = build_readiness_payload()
+    return JSONResponse(payload, status_code=status_code)
 
 
 def list_source_backups() -> list[dict[str, Any]]:
@@ -3849,11 +4682,7 @@ async def api_sources_set_selection(request: Request, _: str = Depends(require_a
 
 @app.get("/api/sources/manual/{source_name}")
 async def api_sources_get_manual(source_name: str, _: str = Depends(require_auth)) -> JSONResponse:
-    ensure_sources_file()
-    sources = read_json(SOURCES_FILE, [])
-
-    if not isinstance(sources, list):
-        raise HTTPException(status_code=500, detail="sources.json must be a JSON array")
+    sources = read_sources_config()
 
     for source in sources:
         if str(source.get("name", "")).strip() != source_name:
@@ -3886,11 +4715,7 @@ async def api_sources_put_manual(source_name: str, request: Request, _: str = De
 
     normalized_entries = [str(item).strip() for item in manual_entries if str(item).strip()]
 
-    ensure_sources_file()
-    sources = read_json(SOURCES_FILE, [])
-
-    if not isinstance(sources, list):
-        raise HTTPException(status_code=500, detail="sources.json must be a JSON array")
+    sources = read_sources_config()
 
     found = False
 
@@ -3937,12 +4762,7 @@ async def api_sources_set_enabled(request: Request, _: str = Depends(require_aut
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="enabled must be boolean")
 
-    ensure_sources_file()
-
-    sources = read_json(SOURCES_FILE, [])
-
-    if not isinstance(sources, list):
-        raise HTTPException(status_code=500, detail="sources.json must be a JSON array")
+    sources = read_sources_config()
 
     found = False
 
@@ -3977,11 +4797,7 @@ def set_source_enabled_and_update(
     allow_large: bool,
 ) -> tuple[dict[str, Any], int]:
     with ROUTE_MUTATION_LOCK:
-        ensure_sources_file()
-        previous_sources = read_json(SOURCES_FILE, [])
-
-        if not isinstance(previous_sources, list):
-            raise HTTPException(status_code=500, detail="sources.json must be a JSON array")
+        previous_sources = read_sources_config()
 
         next_sources = copy.deepcopy(previous_sources)
         found = False
@@ -4093,11 +4909,10 @@ async def api_sources_restore(request: Request, _: str = Depends(require_auth)) 
 
 @app.get("/api/sources")
 async def api_get_sources(_: str = Depends(require_auth)) -> JSONResponse:
-    ensure_sources_file()
     return JSONResponse(
         {
             "ok": True,
-            "sources": read_json(SOURCES_FILE, []),
+            "sources": read_sources_config(),
             "time": now_iso(),
         }
     )
@@ -4135,7 +4950,7 @@ async def status(_: str = Depends(require_auth)) -> JSONResponse:
             "status": read_json(STATUS_FILE, {}),
             "advertised_routes_summary": summarize_prefixes(advertised_routes),
             "last_good_routes_summary": summarize_prefixes(last_good_routes),
-            "sources": read_json(SOURCES_FILE, []),
+            "sources": read_sources_config(),
             "time": now_iso(),
         }
     )
@@ -4150,7 +4965,7 @@ async def status_full(_: str = Depends(require_auth)) -> JSONResponse:
             "status": read_json(STATUS_FILE, {}),
             "advertised_routes": read_lines(ADVERTISED_FILE),
             "last_good_routes": read_lines(LAST_GOOD_FILE),
-            "sources": read_json(SOURCES_FILE, []),
+            "sources": read_sources_config(),
             "time": now_iso(),
         }
     )
@@ -4205,12 +5020,7 @@ async def update_job(request: Request, _: str = Depends(require_auth)) -> JSONRe
 
 
 def preflight_group(group_name: str) -> dict[str, Any]:
-    ensure_sources_file()
-
-    sources = read_json(SOURCES_FILE, [])
-
-    if not isinstance(sources, list):
-        raise RuntimeError("sources.json must be a JSON array")
+    sources = read_sources_config()
 
     group_sources = [
         source for source in sources
@@ -4416,7 +5226,7 @@ def backend_index_html() -> str:
     }
     h1 {
       margin: 20px 0 8px;
-      font-size: clamp(32px, 4vw, 54px);
+      font-size: 44px;
       line-height: 1.02;
     }
     .lead {
@@ -4717,6 +5527,7 @@ def backend_index_html() -> str:
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .card { border-radius: 18px; padding: 15px; }
       .metric strong { font-size: 26px; }
+      h1 { font-size: 36px; }
     }
     @media (max-width: 430px) {
       .summary,
@@ -4726,6 +5537,7 @@ def backend_index_html() -> str:
       .safe-actions {
         grid-template-columns: 1fr;
       }
+      h1 { font-size: 32px; }
     }
   </style>
 </head>
@@ -4756,14 +5568,14 @@ def backend_index_html() -> str:
     <section class="ops-strip" aria-label="Системная информация backend">
       <div class="ops-cell"><span>ASN</span><strong id="stripAsn">...</strong></div>
       <div class="ops-cell"><span>Community</span><strong id="stripCommunity">...</strong></div>
-      <div class="ops-cell"><span>Автообновление</span><strong id="stripAutoUpdate">...</strong></div>
+      <div class="ops-cell"><span>Автообновление маршрутов</span><strong id="stripAutoUpdate">...</strong></div>
       <div class="ops-cell"><span>Модули</span><strong id="stripServices">...</strong></div>
       <div class="ops-cell"><span>CPU / RAM</span><strong id="stripCpuRam">...</strong></div>
       <div class="ops-cell"><span>Disk</span><strong id="stripDisk">...</strong></div>
     </section>
 
     <section class="card compact diagnostics-card">
-      <div class="card-title"><h2>Диагностические ручки</h2><span class="pill">7 read-only</span></div>
+      <div class="card-title"><h2>Диагностические ручки</h2><span class="pill">8 read-only</span></div>
       <div class="endpoint-grid">
         <a class="endpoint-link" href="/status/full" target="_blank"><strong>/status/full</strong><span>полный статус update pipeline</span></a>
         <a class="endpoint-link" href="/api/diagnostics" target="_blank"><strong>/api/diagnostics</strong><span>файлы, env, GoBGP output</span></a>
@@ -4772,6 +5584,7 @@ def backend_index_html() -> str:
         <a class="endpoint-link" href="/gobgp/neighbor" target="_blank"><strong>/gobgp/neighbor</strong><span>BGP peer raw output</span></a>
         <a class="endpoint-link" href="/gobgp/rib" target="_blank"><strong>/gobgp/rib</strong><span>GoBGP global RIB</span></a>
         <a class="endpoint-link" href="/api/services/source-refresh" target="_blank"><strong>/api/services/source-refresh</strong><span>статус geosite/geoip</span></a>
+        <a class="endpoint-link" href="/api/runtime-settings" target="_blank"><strong>/api/runtime-settings</strong><span>расписания маршрутов и бэкапов</span></a>
       </div>
     </section>
 
@@ -4796,6 +5609,9 @@ def backend_index_html() -> str:
             <div class="kv"><span>Модулей</span><strong id="servicesCount">...</strong></div>
             <div class="kv"><span>CPU / RAM</span><strong id="cpuRam">...</strong></div>
             <div class="kv"><span>Disk</span><strong id="diskUsage">...</strong></div>
+            <div class="kv"><span>Uptime Portal</span><strong id="portalUptime">...</strong></div>
+            <div class="kv"><span>Uptime Backend</span><strong id="backendUptime">...</strong></div>
+            <div class="kv"><span>Uptime GoBGP</span><strong id="gobgpUptime">...</strong></div>
           </div>
         </div>
 
@@ -4832,6 +5648,14 @@ def backend_index_html() -> str:
     const text = (value, fallback = "—") => value === undefined || value === null || value === "" ? fallback : String(value);
     const fmt = (value) => typeof value === "number" ? value.toLocaleString("ru-RU") : text(value);
     const percent = (value) => typeof value === "number" ? `${value}%` : "—";
+    const duration = (value) => {
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds) || seconds < 0) return "—";
+      const minutes = Math.floor(seconds / 60);
+      const days = Math.floor(minutes / 1440);
+      const hours = Math.floor((minutes % 1440) / 60);
+      return days > 0 ? `${days} д ${hours} ч` : hours > 0 ? `${hours} ч ${minutes % 60} мин` : `${minutes} мин`;
+    };
     const cls = (ok) => ok ? "ok" : "bad";
     function set(id, value, className) {
       const el = document.getElementById(id);
@@ -4899,6 +5723,8 @@ def backend_index_html() -> str:
         const resourcesPayload = resources.payload || {};
         const servicesPayload = services.payload || {};
         const jobsPayload = jobs.payload || {};
+        const runtimeContainers = resourcesPayload.runtime?.containers || [];
+        const runtimeByKey = Object.fromEntries(runtimeContainers.map((item) => [item.key, item]));
 
         set("readyState", readyPayload.ready ? "работает" : "ошибка", `metric-value ${cls(readyPayload.ready)}`);
         set("readyNote", readyPayload.errors?.length ? readyPayload.errors.join("; ") : "ready=true");
@@ -4912,9 +5738,12 @@ def backend_index_html() -> str:
         set("servicesCount", `${servicesPayload.cache?.enabled_count ?? 0}/${servicesPayload.catalog?.length ?? "—"}`);
         set("cpuRam", `${percent(resourcesPayload.cpu?.used_percent)} / ${percent(resourcesPayload.ram?.used_percent)}`);
         set("diskUsage", percent(resourcesPayload.disk?.used_percent));
+        set("portalUptime", duration(runtimeByKey.portal?.uptime_seconds));
+        set("backendUptime", duration(runtimeByKey.backend?.uptime_seconds));
+        set("gobgpUptime", duration(runtimeByKey.gobgp?.uptime_seconds));
         set("stripAsn", env.LOCAL_AS);
         set("stripCommunity", env.BGP_COMMUNITY);
-        set("stripAutoUpdate", env.AUTO_UPDATE ? `${Math.round(Number(env.UPDATE_INTERVAL_SECONDS || 0) / 3600)} ч` : "выключено");
+        set("stripAutoUpdate", env.AUTO_UPDATE ? duration(env.UPDATE_INTERVAL_SECONDS) : "выключено");
         set("stripServices", `${servicesPayload.cache?.enabled_count ?? 0}/${servicesPayload.catalog?.length ?? "—"}`);
         set("stripCpuRam", `${percent(resourcesPayload.cpu?.used_percent)} / ${percent(resourcesPayload.ram?.used_percent)}`);
         set("stripDisk", percent(resourcesPayload.disk?.used_percent));
@@ -4968,7 +5797,25 @@ async def index(_: str = Depends(require_auth)) -> str:
     return backend_index_html()
 
 
-
+def read_host_runtime_status() -> dict[str, Any]:
+    unavailable = {"ok": False, "containers": [], "time": now_iso()}
+    if not HOST_UPDATER_SOCKET or not HOST_UPDATER_TOKEN or "CHANGE_ME" in HOST_UPDATER_TOKEN:
+        return unavailable
+    try:
+        transport = httpx.HTTPTransport(uds=HOST_UPDATER_SOCKET)
+        with httpx.Client(transport=transport, base_url="http://localhost", timeout=5.0, trust_env=False) as client:
+            response = client.get(
+                "/api/runtime",
+                headers={"x-the333-updater-token": HOST_UPDATER_TOKEN},
+            )
+        if not response.is_success:
+            return unavailable
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("containers"), list):
+            return unavailable
+        return payload
+    except Exception:
+        return unavailable
 
 
 def read_server_resources():
@@ -5010,6 +5857,14 @@ def read_server_resources():
         target = "/data" if os.path.exists("/data") else "/"
         usage = shutil.disk_usage(target)
         percent = round((usage.used / usage.total * 100), 1) if usage.total else None
+        free_percent = round((usage.free / usage.total * 100), 1) if usage.total else None
+        update_ready = usage.free >= UPDATE_MIN_FREE_BYTES
+        if usage.free < 512 * 1024 * 1024 or (percent is not None and percent >= 95):
+            pressure = "critical"
+        elif not update_ready or (percent is not None and percent >= 90):
+            pressure = "warning"
+        else:
+            pressure = "normal"
 
         return {
             "path": target,
@@ -5017,6 +5872,10 @@ def read_server_resources():
             "used_bytes": usage.used,
             "free_bytes": usage.free,
             "used_percent": percent,
+            "free_percent": free_percent,
+            "pressure": pressure,
+            "update_ready": update_ready,
+            "update_min_free_bytes": UPDATE_MIN_FREE_BYTES,
         }
 
     cpu_percent = None
@@ -5042,6 +5901,7 @@ def read_server_resources():
         },
         "ram": read_meminfo(),
         "disk": read_disk_usage(),
+        "runtime": read_host_runtime_status(),
         "time": now_iso(),
     }
 
@@ -5356,6 +6216,22 @@ async def api_routes(
     )
 
 
+@app.get("/api/routes/download")
+async def api_routes_download(
+    kind: str = "advertised",
+    _: str = Depends(require_auth),
+) -> FileResponse:
+    definition = route_set_definition(kind)
+    route_path = definition["path"]
+    if not route_path.is_file() or route_path.is_symlink():
+        raise HTTPException(status_code=404, detail="Файл маршрутов не найден.")
+    return FileResponse(
+        route_path,
+        media_type="text/plain; charset=utf-8",
+        filename=route_path.name,
+    )
+
+
 @app.get("/api/routes/diff")
 async def api_routes_diff(
     base: str = "last_good",
@@ -5493,7 +6369,7 @@ def normalize_service_catalog_items(catalog: Any) -> list[dict[str, Any]]:
 
 
 def read_builtin_service_catalog() -> list[dict[str, Any]]:
-    catalog = read_json(SERVICE_BUILTIN_CATALOG_FILE, [])
+    catalog = read_json(SERVICE_BUILTIN_CATALOG_FILE, [], strict=True)
 
     if not isinstance(catalog, list):
         raise RuntimeError("service_catalog.builtin.json must be a JSON array")
@@ -5502,13 +6378,20 @@ def read_builtin_service_catalog() -> list[dict[str, Any]]:
 
 
 def read_user_service_catalog() -> list[dict[str, Any]]:
-    payload = read_json(SERVICE_USER_CATALOG_FILE, {"version": 1, "services": []})
+    payload = read_json(
+        SERVICE_USER_CATALOG_FILE,
+        {"version": 1, "services": []},
+        strict=SERVICE_USER_CATALOG_FILE.exists(),
+    )
     if isinstance(payload, list):
         services = payload
     elif isinstance(payload, dict):
         services = payload.get("services", [])
     else:
-        services = []
+        raise RuntimeError("service_catalog.user.json must be an object or array")
+
+    if not isinstance(services, list):
+        raise RuntimeError("service_catalog.user.json services must be an array")
 
     return normalize_service_catalog_items(services)
 
@@ -5625,14 +6508,22 @@ def candidate_service_id(code_or_id: str) -> str:
 
 
 def read_removed_service_catalog() -> dict[str, Any]:
-    payload = read_json(SERVICE_REMOVED_CATALOG_FILE, None)
+    payload = read_json(
+        SERVICE_REMOVED_CATALOG_FILE,
+        None,
+        strict=SERVICE_REMOVED_CATALOG_FILE.exists(),
+    )
 
-    if not isinstance(payload, dict):
+    if payload is None:
         payload = {}
+    elif not isinstance(payload, dict):
+        raise RuntimeError("service_catalog.removed.json must be an object")
 
     services = payload.get("services")
-    if not isinstance(services, dict):
+    if services is None:
         services = {}
+    elif not isinstance(services, dict):
+        raise RuntimeError("service_catalog.removed.json services must be an object")
 
     normalized_services: dict[str, dict[str, Any]] = {}
     for raw_id, raw_entry in services.items():
@@ -5694,6 +6585,38 @@ def service_source_code_from_providers(service: dict[str, Any]) -> str | None:
                 return source_code
 
     return None
+
+
+def selected_route_inputs(meta: dict[str, Any]) -> tuple[list[str], list[str]]:
+    selected_sources = sorted(
+        {
+            str(item.get("name"))
+            for item in meta.get("source_stats", [])
+            if isinstance(item, dict)
+            and item.get("enabled")
+            and item.get("selected")
+            and item.get("name")
+        }
+    )
+    service_meta = meta.get("service_routes", {})
+    if not isinstance(service_meta, dict):
+        service_meta = {}
+    selected_services = sorted(
+        {
+            str(item.get("id"))
+            for item in service_meta.get("service_stats", [])
+            if isinstance(item, dict)
+            and item.get("enabled")
+            and item.get("selected")
+            and item.get("id")
+        }
+    )
+    return selected_sources, selected_services
+
+
+def route_set_sha256(prefixes: list[str]) -> str:
+    canonical = "\n".join(sort_prefixes(set(prefixes))) + ("\n" if prefixes else "")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def service_source_url_from_providers(service: dict[str, Any]) -> str | None:
@@ -6482,13 +7405,13 @@ def remove_service_catalog_items(service_ids: list[str], auto_discovered_only: b
 
 def read_service_state() -> dict[str, Any]:
     ensure_service_state_file()
-    state = read_json(SERVICE_STATE_FILE, {"version": 1, "services": {}})
+    state = read_json(SERVICE_STATE_FILE, {"version": 1, "services": {}}, strict=True)
 
     if not isinstance(state, dict):
         raise RuntimeError("service_state.json must be a JSON object")
 
     if not isinstance(state.get("services"), dict):
-        state["services"] = {}
+        raise RuntimeError("service_state.json services must be a JSON object")
 
     return state
 
@@ -6504,21 +7427,75 @@ def write_service_state(state: dict[str, Any]) -> None:
 
 
 def read_service_dns_cache() -> dict[str, Any]:
-    cache = read_json(SERVICE_DNS_CACHE_FILE, {"version": 1, "domains": {}})
+    with SERVICE_DNS_CACHE_LOCK:
+        repaired = False
+        try:
+            cache = read_json(
+                SERVICE_DNS_CACHE_FILE,
+                {"version": 1, "domains": {}},
+                strict=True,
+            )
+        except RuntimeError:
+            cache = {"version": 1, "domains": {}}
+            repaired = True
 
-    if not isinstance(cache, dict):
-        cache = {"version": 1, "domains": {}}
+        if not isinstance(cache, dict):
+            cache = {"version": 1, "domains": {}}
+            repaired = True
 
-    if not isinstance(cache.get("domains"), dict):
-        cache["domains"] = {}
+        domains = cache.get("domains")
+        if not isinstance(domains, dict):
+            domains = {}
+            repaired = True
 
-    return cache
+        sanitized_domains: dict[str, Any] = {}
+        for domain, domain_entry in domains.items():
+            if (
+                not isinstance(domain, str)
+                or normalize_geosite_domain(domain) != domain
+                or not isinstance(domain_entry, dict)
+            ):
+                repaired = True
+                continue
+
+            ips = domain_entry.get("ips", {})
+            if not isinstance(ips, dict):
+                ips = {}
+                repaired = True
+
+            sanitized_ips: dict[str, Any] = {}
+            for raw_ip, metadata in ips.items():
+                if (
+                    not isinstance(raw_ip, str)
+                    or not isinstance(metadata, dict)
+                    or parse_prefix(f"{raw_ip}/32") is None
+                ):
+                    repaired = True
+                    continue
+                sanitized_ips[raw_ip] = metadata
+
+            sanitized_entry = dict(domain_entry)
+            sanitized_entry["ips"] = sanitized_ips
+            sanitized_domains[domain] = sanitized_entry
+
+        if cache.get("version") != 1:
+            repaired = True
+        cache["version"] = 1
+        cache["domains"] = sanitized_domains
+
+        if repaired:
+            cache["updated_at"] = now_iso()
+            write_json_atomic(SERVICE_DNS_CACHE_FILE, cache)
+            LOGGER.warning("service DNS cache repaired; invalid entries removed")
+
+        return cache
 
 
 def write_service_dns_cache(cache: dict[str, Any]) -> None:
-    cache["version"] = 1
-    cache["updated_at"] = now_iso()
-    write_json_atomic(SERVICE_DNS_CACHE_FILE, cache)
+    with SERVICE_DNS_CACHE_LOCK:
+        cache["version"] = 1
+        cache["updated_at"] = now_iso()
+        write_json_atomic(SERVICE_DNS_CACHE_FILE, cache)
 
 
 def default_service_source_refresh_state() -> dict[str, Any]:
@@ -6749,8 +7726,18 @@ def parse_iso_ts(value: str | None) -> float | None:
         return None
 
 
-def dns_resolve_ipv4(domain: str) -> tuple[set[ipaddress.IPv4Network], dict[str, Any]]:
+def dns_resolve_ipv4(
+    domain: str,
+    cache: dict[str, Any] | None = None,
+) -> tuple[set[ipaddress.IPv4Network], dict[str, Any]]:
     import socket
+
+    if cache is None:
+        with SERVICE_DNS_CACHE_LOCK:
+            owned_cache = read_service_dns_cache()
+            result = dns_resolve_ipv4(domain, owned_cache)
+            write_service_dns_cache(owned_cache)
+            return result
 
     domain = domain.strip().lower()
     now_ts = time.time()
@@ -6772,7 +7759,6 @@ def dns_resolve_ipv4(domain: str) -> tuple[set[ipaddress.IPv4Network], dict[str,
         "warning": None,
     }
 
-    cache = read_service_dns_cache()
     domain_cache = cache["domains"].get(domain, {})
 
     if not isinstance(domain_cache, dict):
@@ -6804,7 +7790,13 @@ def dns_resolve_ipv4(domain: str) -> tuple[set[ipaddress.IPv4Network], dict[str,
             break
 
         except Exception as e:
-            log_exception(f"dns resolve failed: {domain}", e)
+            LOGGER.info(
+                "dns resolve attempt failed for %s (%s, attempt %s/%s)",
+                domain,
+                type(e).__name__,
+                attempt,
+                max_attempts,
+            )
             error_text = public_error("DNS-разрешение домена не выполнено.")
             stat["resolve_errors"].append(error_text)
 
@@ -6873,7 +7865,6 @@ def dns_resolve_ipv4(domain: str) -> tuple[set[ipaddress.IPv4Network], dict[str,
     domain_cache["last_error"] = stat["error"]
     domain_cache["last_warning"] = stat["warning"]
     cache["domains"][domain] = domain_cache
-    write_service_dns_cache(cache)
 
     networks: set[ipaddress.IPv4Network] = set()
 
@@ -7195,13 +8186,16 @@ def collect_geosite_plain_provider(provider: dict[str, Any]) -> tuple[set[ipaddr
 
     collected: set[ipaddress.IPv4Network] = set()
 
-    for domain in selected_domains:
-        if SERVICE_DNS_RESOLVE_DELAY_SECONDS > 0:
-            time.sleep(SERVICE_DNS_RESOLVE_DELAY_SECONDS)
+    with SERVICE_DNS_CACHE_LOCK:
+        dns_cache = read_service_dns_cache()
+        for domain in selected_domains:
+            if SERVICE_DNS_RESOLVE_DELAY_SECONDS > 0:
+                time.sleep(SERVICE_DNS_RESOLVE_DELAY_SECONDS)
 
-        domain_prefixes, domain_stat = dns_resolve_ipv4(domain)
-        collected.update(domain_prefixes)
-        stat["domain_stats"].append(domain_stat)
+            domain_prefixes, domain_stat = dns_resolve_ipv4(domain, dns_cache)
+            collected.update(domain_prefixes)
+            stat["domain_stats"].append(domain_stat)
+        write_service_dns_cache(dns_cache)
 
     stat["accepted"] = len(collected)
     stat["ignored"] = int(stat["ignored_lines"])
@@ -7610,15 +8604,18 @@ def collect_service_provider(provider: dict[str, Any]) -> tuple[set[ipaddress.IP
             stat["error"] = "domains must be a list"
             return collected, stat
 
-        for item in domains:
-            domain = str(item).strip().lower()
-            if not domain:
-                stat["ignored"] += 1
-                continue
+        with SERVICE_DNS_CACHE_LOCK:
+            dns_cache = read_service_dns_cache()
+            for item in domains:
+                domain = str(item).strip().lower()
+                if not domain:
+                    stat["ignored"] += 1
+                    continue
 
-            domain_prefixes, domain_stat = dns_resolve_ipv4(domain)
-            collected.update(domain_prefixes)
-            stat["domain_stats"].append(domain_stat)
+                domain_prefixes, domain_stat = dns_resolve_ipv4(domain, dns_cache)
+                collected.update(domain_prefixes)
+                stat["domain_stats"].append(domain_stat)
+            write_service_dns_cache(dns_cache)
 
         stat["accepted"] = len(collected)
         stat["ignored"] += sum(int(item.get("ignored", 0)) for item in stat["domain_stats"])
@@ -7887,8 +8884,7 @@ async def api_services_remove(request: Request, _: str = Depends(require_auth)) 
 
 
 def community_catalog_summary() -> dict[str, Any]:
-    ensure_sources_file()
-    sources = read_json(SOURCES_FILE, [])
+    sources = read_sources_config()
     services = read_service_catalog()
 
     return {

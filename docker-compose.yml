@@ -1,13 +1,12 @@
 services:
   the333-gobgp-core:
-    image: "the333-bgp-core:${PRODUCT_VERSION:-dev}"
+    image: "the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r4}"
     build:
       context: .
       dockerfile: docker/gobgp.Dockerfile
       args:
         GOBGP_VERSION: v4.7.0
-        PRODUCT_VERSION: "${PRODUCT_VERSION:-dev}"
-        VCS_REF: "${VCS_REF:-unknown}"
+        GOBGP_CORE_IMAGE_VERSION: "${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r4}"
     container_name: the333-gobgp-core
     user: "${PUID}:${PGID}"
     init: true
@@ -24,13 +23,30 @@ services:
     mem_limit: 512m
     tmpfs:
       - /tmp:size=16m,mode=1777
-    env_file:
-      - .env
+    environment:
+      LOCAL_AS: "${LOCAL_AS}"
+      ROUTER_ID: "${ROUTER_ID}"
+      BGP_LISTEN_PORT: "${BGP_LISTEN_PORT:-1179}"
+      PEER_ADDRESS: "${PEER_ADDRESS}"
+      PEER_AS: "${PEER_AS}"
+      BGP_PEER_MODE: "${BGP_PEER_MODE:-direct}"
+      BGP_DOCKER_BRIDGE_HOPS: "${BGP_DOCKER_BRIDGE_HOPS:-1}"
+      BGP_MULTIHOP_TTL: "${BGP_MULTIHOP_TTL:-10}"
+      BGP_TTL_SECURITY_ENABLED: "${BGP_TTL_SECURITY_ENABLED:-false}"
+      BGP_TTL_SECURITY_MIN: "${BGP_TTL_SECURITY_MIN:-255}"
+      BGP_TCP_MD5_KEY_FILE: /run/secrets/bgp_tcp_md5
+      BGP_GRACEFUL_RESTART: "${BGP_GRACEFUL_RESTART:-true}"
+      BGP_GRACEFUL_RESTART_TIME: "${BGP_GRACEFUL_RESTART_TIME:-300}"
+      BGP_REJECT_INBOUND_ROUTES: "${BGP_REJECT_INBOUND_ROUTES:-true}"
+      GOBGP_STATE_DIR: /state
     ports:
       - "${THE333_BIND_IP:-${ROUTER_ID:?THE333_BIND_IP or ROUTER_ID must be set}}:179:1179/tcp"
     volumes:
-      - ./data:/data
-      - ./config:/config:ro
+      - ./data/gobgp-state:/state
+      - ./data/secrets/bgp_tcp_md5:/run/secrets/bgp_tcp_md5:ro
+    networks:
+      - bgp_edge
+      - control
     healthcheck:
       test: ["CMD-SHELL", "gobgp -u 127.0.0.1 -p 50051 global >/dev/null 2>&1 || exit 1"]
       interval: 30s
@@ -66,6 +82,9 @@ services:
       GOBGP_API_HOST: the333-gobgp-core
       GOBGP_API_PORT: "50051"
       HOST_UPDATER_SOCKET: /run/the333-bgp/updater.sock
+      HOST_UPDATER_RESULT_DIR: /data/host-updater-results
+      GOBGP_GENERATION_FILE: /data/gobgp-state/gobgp_generation
+      BGP_TCP_MD5_CONFIGURED: "${BGP_TCP_MD5_CONFIGURED:-false}"
       PYTHONDONTWRITEBYTECODE: "1"
     depends_on:
       - the333-gobgp-core
@@ -75,9 +94,21 @@ services:
       - ./data:/data
       - ./config:/config
       - ${HOST_UPDATER_RUN_DIR:-/run/the333-bgp}:/run/the333-bgp:ro
+    networks:
+      - frontend
+      - control
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8088/health\", timeout=3)' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 20s
+
+networks:
+  frontend:
+    name: the333-frontend
+  control:
+    name: the333-control
+    internal: true
+  bgp_edge:
+    name: the333-bgp-edge

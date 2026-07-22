@@ -13,7 +13,7 @@ body:
     attributes:
       label: Версия
       description: Версия из футера портала или файла VERSION.
-      placeholder: v0.78 beta
+      placeholder: v0.82b beta
     validations:
       required: true
   - type: input

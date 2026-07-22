@@ -154,7 +154,8 @@ class SystemBackupConfigTests(unittest.TestCase):
                 patch.object(main, "SYSTEM_BACKUP_DIR", backup_dir),
                 patch.object(main, "SYSTEM_RESTORE_STAGING_DIR", staging_dir),
                 patch.object(main, "JOBS_FILE", data_dir / "jobs.json"),
-                patch.object(main, "GOBGP_GENERATION_FILE", data_dir / "gobgp_generation"),
+                patch.object(main, "LEGACY_GOBGP_GENERATION_FILE", data_dir / "gobgp_generation"),
+                patch.object(main, "GOBGP_STATE_DIR", data_dir / "gobgp-state"),
                 patch.object(main, "LEGACY_GOBGP_CONFIG_FILE", data_dir / "gobgpd.toml"),
                 patch.object(main, "SYSTEM_BACKUP_MAX_BYTES", 1024 * 1024),
             ):

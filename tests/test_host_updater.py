@@ -49,9 +49,26 @@ class HostUpdaterApiTests(unittest.TestCase):
         self.assertTrue(response.json()["ok"])
 
     def test_update_requires_token(self) -> None:
-        response = self.client.post("/api/update", json={"channel": "stable"})
+        response = self.client.post("/api/update", json={"channel": "stable", "request_id": "a" * 32})
 
         self.assertEqual(response.status_code, 403)
+
+    def test_runtime_status_requires_token_and_returns_allowlisted_payload(self) -> None:
+        self.assertEqual(self.client.get("/api/runtime").status_code, 403)
+
+        expected = {
+            "ok": True,
+            "containers": [{"key": "backend", "name": "the333-bgp-backend"}],
+            "time": "2026-07-13T00:00:00+00:00",
+        }
+        with patch.object(updater, "container_runtime_status", return_value=expected):
+            response = self.client.get(
+                "/api/runtime",
+                headers={"x-the333-updater-token": "unit-test-token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), expected)
 
     def test_unsupported_fields_and_version_injection_are_rejected(self) -> None:
         headers = {"x-the333-updater-token": "unit-test-token"}
@@ -60,12 +77,12 @@ class HostUpdaterApiTests(unittest.TestCase):
             extra_field = self.client.post(
                 "/api/update",
                 headers=headers,
-                json={"channel": "stable", "manifest": "https://attacker.invalid"},
+                json={"channel": "stable", "request_id": "a" * 32, "manifest": "https://attacker.invalid"},
             )
             injected_version = self.client.post(
                 "/api/update",
                 headers=headers,
-                json={"channel": "stable", "version": "0.5;id"},
+                json={"channel": "stable", "version": "0.5;id", "request_id": "a" * 32},
             )
 
         self.assertEqual(extra_field.status_code, 400)
@@ -83,14 +100,61 @@ class HostUpdaterApiTests(unittest.TestCase):
             response = self.client.post(
                 "/api/update",
                 headers=headers,
-                json={"channel": "beta", "version": "0.5-beta.1"},
+                json={"channel": "beta", "version": "0.5-beta.1", "request_id": "a" * 32},
             )
 
         self.assertEqual(response.status_code, 200)
-        run_update.assert_called_once_with("beta", "0.5-beta.1")
+        run_update.assert_called_once_with("beta", "0.5-beta.1", "a" * 32)
 
 
 class HostUpdaterHelpersTests(unittest.TestCase):
+    def test_runtime_inspection_uses_only_fixed_container_names(self) -> None:
+        def completed(command, **_kwargs):
+            name = command[-1]
+            payload = [{
+                "State": {
+                    "Running": True,
+                    "Status": "running",
+                    "StartedAt": "2026-07-13T00:00:00Z",
+                    "Health": {"Status": "healthy"},
+                }
+            }]
+            return updater.subprocess.CompletedProcess(command, 0, stdout=updater.json.dumps(payload), stderr="")
+
+        with (
+            patch.object(updater.subprocess, "run", side_effect=completed) as run,
+            patch.object(updater, "now_iso", return_value="2026-07-13T00:01:00+00:00"),
+        ):
+            result = updater.container_runtime_status()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([item["name"] for item in result["containers"]], [item[2] for item in updater.RUNTIME_CONTAINERS])
+        self.assertTrue(all(call.args[0][:2] == ["docker", "inspect"] for call in run.call_args_list))
+
+    def test_child_environment_drops_stale_project_configuration(self) -> None:
+        with patch.dict(
+            updater.os.environ,
+            {
+                "PATH": "/test/bin",
+                "LANG": "C.UTF-8",
+                "PRODUCT_UPDATE_MANIFEST_URL": "https://stale.example/manifest.json",
+                "CURL_CA_BUNDLE": "/tmp/stale-ca.crt",
+                "HOST_UPDATER_TOKEN": "stale-token",
+                "WEB_PASSWORD": "stale-password",
+            },
+            clear=True,
+        ):
+            environment = updater.public_environment()
+
+        self.assertEqual(environment["PATH"], "/test/bin")
+        self.assertEqual(environment["LANG"], "C.UTF-8")
+        self.assertEqual(environment["THE333_PROJECT_DIR"], str(updater.PROJECT_DIR))
+        self.assertEqual(environment["THE333_HOST_UPDATER_ACTIVE"], "true")
+        self.assertNotIn("PRODUCT_UPDATE_MANIFEST_URL", environment)
+        self.assertNotIn("CURL_CA_BUNDLE", environment)
+        self.assertNotIn("HOST_UPDATER_TOKEN", environment)
+        self.assertNotIn("WEB_PASSWORD", environment)
+
     def test_sensitive_environment_values_are_redacted(self) -> None:
         with patch.dict(
             updater.os.environ,

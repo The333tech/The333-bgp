@@ -13,6 +13,7 @@ import {
   isAsn,
   isIpv4,
   isStandardCommunity,
+  isTcpMd5Key,
   parseRouterFacts,
   PREFLIGHT_COMMANDS,
   RouterFacts,
@@ -28,6 +29,10 @@ type MikroTikAssistantProps = {
   detectedRouterAs: string;
   detectedRouterId: string;
   defaultCommunity: string;
+  peerMode: "direct" | "multihop";
+  ttlSecurityEnabled: boolean;
+  ttlSecurityMin: number;
+  tcpMd5Required: boolean;
 };
 
 const SCENARIOS: Array<{ id: ScenarioId; title: string; description: string }> = [
@@ -109,12 +114,17 @@ export function MikroTikAssistant({
   detectedRouterAs,
   detectedRouterId,
   defaultCommunity,
+  peerMode,
+  ttlSecurityEnabled,
+  ttlSecurityMin,
+  tcpMd5Required,
 }: MikroTikAssistantProps) {
   const [preflight, setPreflight] = useState("");
   const [scenario, setScenario] = useState<ScenarioId>("bgp");
   const [routerAs, setRouterAs] = useState(detectedRouterAs);
   const [routerId, setRouterId] = useState(detectedRouterId);
   const [community, setCommunity] = useState(defaultCommunity);
+  const [tcpMd5Key, setTcpMd5Key] = useState("");
   const [gatewayMode, setGatewayMode] = useState<GatewayMode>("received");
   const [gateway, setGateway] = useState("172.18.20.2");
   const [backupConfirmed, setBackupConfirmed] = useState(false);
@@ -161,8 +171,8 @@ export function MikroTikAssistant({
     if (isRouterOs6) return { tone: "bad", title: "RouterOS 6", text: "Containers недоступны. Разрешён только отдельный BGP-only профиль." };
     if (facts.major !== 7) return { tone: "bad", title: "Версия не поддержана", text: "Автоматический генератор предназначен только для RouterOS 7." };
     if (!supportedArchitecture) return { tone: "warn", title: "Только BGP", text: "BGP доступен, но Containers поддерживаются только на совместимых arm, arm64 и x86 устройствах." };
-    if (facts.major === 7 && facts.minor === 19) return { tone: "ok", title: "Legacy 7.19", text: "Архитектура подтверждена на reference-стенде; перед установкой обязателен отдельный тест и rollback." };
-    if (versionAtLeast(facts, 7, 23, 1)) return { tone: "warn", title: "Current 7.23.1+", text: "Поддерживается upstream, но current-профиль The333-BGP ещё должен пройти лабораторный end-to-end тест." };
+    if (facts.major === 7 && facts.minor === 19) return { tone: "ok", title: "RouterOS 7.0–7.19", text: "Эта ветка проверена на рабочем стенде. Перед изменениями всё равно сохраните backup и обеспечьте резервный доступ к роутеру." };
+    if (versionAtLeast(facts, 7, 23, 1)) return { tone: "warn", title: "RouterOS 7.23.1+", text: "Версия поддерживает нужные функции, но этот профиль ещё не прошёл полную проверку на реальном стенде. Используйте его только после backup и с резервным доступом." };
     return { tone: "warn", title: "Промежуточная RouterOS 7", text: "BGP доступен; AWG-контейнер требует отдельной проверки совместимости." };
   }, [facts, isRouterOs6, supportedArchitecture]);
 
@@ -174,12 +184,13 @@ export function MikroTikAssistant({
     if (!isAsn(routerAs)) errors.push("ASN MikroTik вне допустимого диапазона.");
     if (!isIpv4(routerId)) errors.push("Локальный IP MikroTik должен быть IPv4-адресом.");
     if (!isStandardCommunity(community)) errors.push("Standard Community должен иметь формат 0..65535:0..65535.");
+    if (tcpMd5Required && !isTcpMd5Key(tcpMd5Key)) errors.push("Введите TCP MD5 key, настроенный на сервере (1–80 символов: A-Z, a-z, 0-9, . _ + -).");
     if ((awgScenario || gatewayMode === "custom") && !isIpv4(gateway)) errors.push("VPN gateway должен быть IPv4-адресом.");
     if (isRouterOs6) errors.push("Генератор RouterOS 7 нельзя применять к RouterOS 6.");
     if (isUnsupportedRouterOs && !isRouterOs6) errors.push("Эта версия RouterOS не поддерживается генератором.");
     if (awgScenario && !awgReady) errors.push("AWG-сценарий заблокирован до успешной проверки Containers.");
     return errors;
-  }, [awgReady, awgScenario, community, facts.analyzed, facts.major, gateway, gatewayMode, isRouterOs6, isUnsupportedRouterOs, routerAs, routerId, serviceAs, serviceIp]);
+  }, [awgReady, awgScenario, community, facts.analyzed, facts.major, gateway, gatewayMode, isRouterOs6, isUnsupportedRouterOs, routerAs, routerId, serviceAs, serviceIp, tcpMd5Key, tcpMd5Required]);
 
   const generated = useMemo(() => {
     if (validationErrors.length > 0) return null;
@@ -191,8 +202,12 @@ export function MikroTikAssistant({
       routerId,
       community,
       customGateway: awgScenario || gatewayMode === "custom" ? gateway : null,
+      peerMode,
+      ttlSecurityEnabled,
+      ttlSecurityMin,
+      tcpMd5Key: tcpMd5Required ? tcpMd5Key : null,
     });
-  }, [awgScenario, bgpSyntax, community, gateway, gatewayMode, routerAs, routerId, serviceAs, serviceIp, validationErrors]);
+  }, [awgScenario, bgpSyntax, community, gateway, gatewayMode, peerMode, routerAs, routerId, serviceAs, serviceIp, tcpMd5Key, tcpMd5Required, ttlSecurityEnabled, ttlSecurityMin, validationErrors]);
 
   const handleCopy = async (label: string, code: string) => {
     const copied = await copyText(code);
@@ -290,7 +305,7 @@ export function MikroTikAssistant({
         {awgScenario ? (
           <div className="action-status-box mikrotik-profile-blocked">
             <IconAlertTriangle size={17} />
-            <span>Установка AWG-контейнера пока не выдаётся как copy-paste: legacy/current профили и rollback должны пройти отдельный лабораторный end-to-end тест.</span>
+            <span>Автоматические команды для AWG пока скрыты: обе ветки RouterOS ещё проходят полную проверку установки и восстановления на реальном оборудовании.</span>
           </div>
         ) : null}
       </section>
@@ -311,6 +326,10 @@ export function MikroTikAssistant({
           <label><span>ASN MikroTik</span><input value={routerAs} onChange={(event) => setRouterAs(event.target.value)} inputMode="numeric" /></label>
           <label><span>Локальный IP MikroTik</span><input value={routerId} onChange={(event) => setRouterId(event.target.value)} /></label>
           <label><span>Community</span><input value={community} onChange={(event) => setCommunity(event.target.value)} /></label>
+          <label><span>Режим BGP</span><input value={peerMode === "direct" ? ttlSecurityEnabled ? `прямой · GTSM ${ttlSecurityMin}` : "прямой · совместимый" : "multihop"} readOnly /></label>
+          {tcpMd5Required ? (
+            <label><span>TCP MD5 key</span><input type="password" autoComplete="off" value={tcpMd5Key} onChange={(event) => setTcpMd5Key(event.target.value)} /></label>
+          ) : null}
           <label>
             <span>Маршрутный gateway</span>
             <select className="select-input" value={awgScenario ? "custom" : gatewayMode} disabled={awgScenario} onChange={(event) => setGatewayMode(event.target.value as GatewayMode)}>

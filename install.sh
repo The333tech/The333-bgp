@@ -2,15 +2,16 @@
 set -Eeuo pipefail
 
 PROJECT_DIR="${THE333_PROJECT_DIR:-/opt/the333-bgp}"
-REPO_SLUG="${THE333_REPO_SLUG:-The333tech/The333-bgp}"
-BRANCH="${THE333_BRANCH:-main}"
+INSTALL_CHANNEL="${THE333_CHANNEL:-beta}"
+INSTALL_VERSION="${THE333_VERSION:-}"
+RELEASE_INDEX_URL="${PRODUCT_UPDATE_MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN="false"
 NON_INTERACTIVE="false"
 INSTALL_ACTION="${THE333_INSTALL_ACTION:-}"
 DOCKER_CMD=(docker)
-MIN_FREE_DISK_KB=2097152
-RECOMMENDED_FREE_DISK_GB=4
+MIN_FREE_DISK_KB=8388608
+RECOMMENDED_FREE_DISK_GB=12
 
 usage() {
   cat <<'USAGE'
@@ -27,7 +28,9 @@ Environment for --non-interactive:
   PEER_AS=65455
   BGP_COMMUNITY=64512:500
   WEB_PASSWORD=strong-password
-  PRODUCT_UPDATE_MANIFEST_URL=https://github.com/The333tech/The333-bgp/releases/latest/download/update-manifest.json
+  PRODUCT_UPDATE_MANIFEST_URL=https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20
+  THE333_CHANNEL=beta
+  THE333_VERSION=
   THE333_INSTALL_ACTION=update
 USAGE
 }
@@ -131,6 +134,17 @@ detect_ip() {
   ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}'
 }
 
+detect_bgp_peer_mode() {
+  local peer_ip="$1"
+  local route
+  route="$(ip -4 route get "${peer_ip}" 2>/dev/null | head -1 || true)"
+  if [[ -n "${route}" && " ${route} " != *" via "* ]]; then
+    printf 'direct\n'
+  else
+    printf 'multihop\n'
+  fi
+}
+
 validate_ipv4() {
   local value="$1"
   [[ "${value}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
@@ -158,6 +172,19 @@ validate_community() {
 validate_password() {
   local value="$1"
   [[ "${#value}" -ge 8 ]]
+}
+
+validate_release_selection() {
+  case "${INSTALL_CHANNEL}" in
+    stable|beta) ;;
+    *) fail "THE333_CHANNEL must be stable or beta" ;;
+  esac
+  if [[ -n "${INSTALL_VERSION}" && ! "${INSTALL_VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
+    fail "THE333_VERSION has an invalid format"
+  fi
+  [[ "${RELEASE_INDEX_URL}" == https://* ]] || fail "PRODUCT_UPDATE_MANIFEST_URL must use HTTPS"
+  [[ "${RELEASE_INDEX_URL}" != *$'\n'* && "${RELEASE_INDEX_URL}" != *$'\r'* ]] \
+    || fail "PRODUCT_UPDATE_MANIFEST_URL contains a line break"
 }
 
 ask_ipv4() {
@@ -266,7 +293,7 @@ parse_args() {
 check_basic_tools() {
   local missing=()
   local cmd
-  for cmd in awk curl tar grep sed ip python3; do
+  for cmd in awk curl tar grep sed ip python3 sha256sum; do
     need_cmd "${cmd}" || missing+=("${cmd}")
   done
   if [[ "${#missing[@]}" -gt 0 ]]; then
@@ -325,11 +352,14 @@ check_resources() {
   disk_kb="$(df -Pk "$(dirname "${PROJECT_DIR}")" 2>/dev/null | awk 'NR==2 {print $4}' || true)"
 
   if [[ -n "${mem_kb}" && "${mem_kb}" =~ ^[0-9]+$ && "${mem_kb}" -lt 900000 ]]; then
-    log "Warning: RAM looks low ($((mem_kb / 1024)) MB). Recommended minimum: 1 GB, better 2 GB+."
+    fail "not enough RAM: $((mem_kb / 1024)) MB available. Need at least 1 GB; recommended 2 GB+."
+  fi
+  if [[ -n "${mem_kb}" && "${mem_kb}" =~ ^[0-9]+$ && "${mem_kb}" -lt 1800000 ]]; then
+    log "Warning: RAM is below the recommended 2 GB level ($((mem_kb / 1024)) MB)."
   fi
 
   if [[ -n "${disk_kb}" && "${disk_kb}" =~ ^[0-9]+$ && "${disk_kb}" -lt "${MIN_FREE_DISK_KB}" ]]; then
-    fail "not enough free disk space near ${PROJECT_DIR}: $((disk_kb / 1024)) MB available. Need at least 2 GB free; recommended ${RECOMMENDED_FREE_DISK_GB}+ GB."
+    fail "not enough free disk space near ${PROJECT_DIR}: $((disk_kb / 1024)) MB available. Fresh installation needs at least 8 GB free; recommended ${RECOMMENDED_FREE_DISK_GB}+ GB."
   fi
 
   if [[ -n "${disk_kb}" && "${disk_kb}" =~ ^[0-9]+$ && "${disk_kb}" -lt $((RECOMMENDED_FREE_DISK_GB * 1024 * 1024)) ]]; then
@@ -341,7 +371,7 @@ check_project_dir_safety() {
   [[ "${PROJECT_DIR}" == /* ]] || fail "THE333_PROJECT_DIR must be an absolute path"
   [[ "${PROJECT_DIR}" =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "THE333_PROJECT_DIR contains unsupported characters"
   case "${PROJECT_DIR}" in
-    ""|"/"|"/root"|"/home"|"/opt"|"/usr"|"/var")
+    ""|"/"|"/root"|"/root/"*|"/home"|"/home/"*|"/opt"|"/usr"|"/var")
       fail "unsafe THE333_PROJECT_DIR: ${PROJECT_DIR}"
       ;;
   esac
@@ -425,6 +455,136 @@ ensure_docker() {
   configure_docker_access
 }
 
+normalize_release_index() {
+  python3 -c '
+import json
+import re
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, UnicodeDecodeError):
+    raise SystemExit("release index is not valid JSON")
+if isinstance(payload, dict):
+    print(json.dumps(payload, ensure_ascii=False))
+    raise SystemExit(0)
+if not isinstance(payload, list):
+    raise SystemExit("release index must be an object or GitHub releases array")
+
+versions = []
+latest = {"stable": None, "beta": None}
+for release in payload[:20]:
+    if not isinstance(release, dict) or release.get("draft"):
+        continue
+    tag = str(release.get("tag_name") or "").strip()
+    version = tag[1:] if tag.lower().startswith("v") else tag
+    if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,63}", version):
+        continue
+    channel = "beta" if release.get("prerelease") else "stable"
+    expected = f"the333-bgp-v{version}.tar.gz"
+    asset = next((item for item in release.get("assets", []) if isinstance(item, dict) and item.get("name") == expected), None)
+    if not asset:
+        continue
+    digest = str(asset.get("digest") or "")
+    sha256 = digest.split(":", 1)[1] if digest.startswith("sha256:") else ""
+    archive_url = str(asset.get("browser_download_url") or "")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256) or not archive_url.startswith("https://"):
+        continue
+    versions.append({
+        "version": version,
+        "channel": channel,
+        "archive_url": archive_url,
+        "sha256": sha256,
+    })
+    if latest[channel] is None:
+        latest[channel] = version
+
+if not versions:
+    raise SystemExit("GitHub releases index has no usable release assets")
+print(json.dumps({"product": "The333-BGP", "latest": latest, "versions": versions}, ensure_ascii=False))
+'
+}
+
+select_install_version_json() {
+  python3 -c '
+import json
+import sys
+
+manifest = json.load(sys.stdin)
+channel, target = sys.argv[1:]
+if channel not in {"stable", "beta"}:
+    raise SystemExit("THE333_CHANNEL must be stable or beta")
+versions = manifest.get("versions", [])
+if target:
+    selected = next((item for item in versions if str(item.get("version")) == target), None)
+else:
+    latest = (manifest.get("latest") or {}).get(channel)
+    selected = next((item for item in versions if str(item.get("version")) == str(latest)), None)
+if not selected:
+    raise SystemExit(f"no release found for channel={channel!r} version={target!r}")
+print(json.dumps(selected, ensure_ascii=False))
+' "${INSTALL_CHANNEL}" "${INSTALL_VERSION}"
+}
+
+extract_bootstrap_release() {
+  local archive="$1"
+  local destination="$2"
+  python3 - "${archive}" "${destination}" <<'PY'
+import os
+import shutil
+import sys
+import tarfile
+from pathlib import Path, PurePosixPath
+
+archive_path = Path(sys.argv[1]).resolve()
+destination = Path(sys.argv[2]).resolve()
+destination.mkdir(parents=True, exist_ok=True)
+if any(destination.iterdir()):
+    raise SystemExit("release extraction directory must be empty")
+
+with tarfile.open(archive_path, mode="r:gz") as archive:
+    members = archive.getmembers()
+    if len(members) > 20_000:
+        raise SystemExit("release archive has too many members")
+    roots = set()
+    expanded = 0
+    validated = []
+    for member in members:
+        if "\\" in member.name:
+            raise SystemExit("release archive contains an unsafe path")
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+            raise SystemExit("release archive contains an unsafe path")
+        if not (member.isdir() or member.isfile()):
+            raise SystemExit("release archive contains an unsupported member type")
+        roots.add(path.parts[0])
+        expanded += max(0, member.size)
+        if expanded > 512 * 1024 * 1024:
+            raise SystemExit("release archive exceeds the expanded size limit")
+        validated.append((member, path.parts))
+    if len(roots) != 1:
+        raise SystemExit("release archive must contain one top-level directory")
+
+    destination_root = destination.resolve()
+    for member, parts in validated:
+        if len(parts) == 1:
+            continue
+        target = destination.joinpath(*parts[1:])
+        target.parent.resolve().relative_to(destination_root)
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            os.chmod(target, 0o755)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = archive.extractfile(member)
+        if source is None:
+            raise SystemExit("release archive member cannot be read")
+        with source, target.open("xb") as output:
+            shutil.copyfileobj(source, output, length=1024 * 1024)
+        os.chmod(target, 0o755 if member.mode & 0o111 else 0o644)
+PY
+}
+
 download_repo_if_needed() {
   if [[ -f "${SCRIPT_DIR}/docker/backend.Dockerfile" && -d "${SCRIPT_DIR}/app" && -d "${SCRIPT_DIR}/portal" ]]; then
     printf '%s\n' "${SCRIPT_DIR}"
@@ -432,14 +592,65 @@ download_repo_if_needed() {
   fi
 
   need_cmd curl || fail "curl is required"
-  local tmp archive_url archive
+  local tmp index_file index_size manifest version_json archive_url sha archive archive_size
   tmp="$(mktemp -d)"
-  archive_url="https://github.com/${REPO_SLUG}/archive/refs/heads/${BRANCH}.tar.gz"
+  log "Reading release index: ${RELEASE_INDEX_URL}"
+  index_file="${tmp}/release-index.json"
+  if ! curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --max-filesize 2097152 \
+    "${RELEASE_INDEX_URL}" \
+    --output "${index_file}"; then
+    rm -rf "${tmp}"
+    fail "release index download failed"
+  fi
+  index_size="$(wc -c < "${index_file}")"
+  if (( index_size > 2097152 )); then
+    rm -rf "${tmp}"
+    fail "release index exceeds the 2 MB limit"
+  fi
+  if ! manifest="$(normalize_release_index < "${index_file}")"; then
+    rm -rf "${tmp}"
+    fail "release index validation failed"
+  fi
+  version_json="$(printf '%s' "${manifest}" | select_install_version_json)"
+  archive_url="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("archive_url") or "").strip())')"
+  sha="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("sha256") or "").strip())')"
+  [[ "${archive_url}" == https://* ]] || fail "release archive URL must use HTTPS"
+  [[ "${sha}" =~ ^[A-Fa-f0-9]{64}$ ]] || fail "release asset has no valid SHA-256 digest"
   archive="${tmp}/the333.tar.gz"
-  log "Downloading project archive: ${archive_url}"
-  curl -fL "${archive_url}" -o "${archive}"
+  log "Downloading verified release archive: ${archive_url}"
+  if ! curl \
+    --fail \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --max-filesize 268435456 \
+    "${archive_url}" \
+    --output "${archive}"; then
+    rm -rf "${tmp}"
+    fail "release archive download failed"
+  fi
+  archive_size="$(wc -c < "${archive}")"
+  if (( archive_size > 268435456 )); then
+    rm -rf "${tmp}"
+    fail "release archive exceeds the 256 MB compressed-size limit"
+  fi
+  if ! printf '%s  %s\n' "${sha}" "${archive}" | sha256sum -c - >/dev/null; then
+    rm -rf "${tmp}"
+    fail "release archive SHA-256 verification failed"
+  fi
   mkdir -p "${tmp}/src"
-  tar -xzf "${archive}" -C "${tmp}/src" --strip-components=1
+  if ! extract_bootstrap_release "${archive}" "${tmp}/src"; then
+    rm -rf "${tmp}"
+    fail "release archive extraction failed"
+  fi
   printf '%s\n' "${tmp}/src"
 }
 
@@ -450,7 +661,7 @@ copy_project_files() {
   sudo_cmd mkdir -p "${PROJECT_DIR}"
   sudo_cmd chown "$(id -u):$(id -g)" "${PROJECT_DIR}"
 
-  for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md LICENSE SECURITY.md scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitignore install.sh; do
+  for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md README.md LICENSE SECURITY.md scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitattributes .gitignore install.sh; do
     if [[ -e "${src}/${item}" ]]; then
       rm -rf "${PROJECT_DIR:?}/${item}"
       cp -a "${src}/${item}" "${PROJECT_DIR}/${item}"
@@ -475,18 +686,24 @@ copy_project_files() {
     cp -a "${src}/config" "${PROJECT_DIR}/config"
   fi
 
-  mkdir -p "${PROJECT_DIR}/data" "${PROJECT_DIR}/backups"
+  mkdir -p "${PROJECT_DIR}/data/gobgp-state" "${PROJECT_DIR}/data/secrets" "${PROJECT_DIR}/backups"
+  if [[ ! -f "${PROJECT_DIR}/data/secrets/bgp_tcp_md5" ]]; then
+    : > "${PROJECT_DIR}/data/secrets/bgp_tcp_md5"
+  fi
+  chmod 600 "${PROJECT_DIR}/data/secrets/bgp_tcp_md5"
   chmod +x \
     "${PROJECT_DIR}/docker/gobgp-entrypoint.sh" \
     "${PROJECT_DIR}/docker/backend-entrypoint.sh" \
     "${PROJECT_DIR}/scripts/host-updater.py" \
+    "${PROJECT_DIR}/scripts/extract-release.py" \
+    "${PROJECT_DIR}/scripts/migrate-env.py" \
     "${PROJECT_DIR}/scripts/the333bgp.sh" \
     "${PROJECT_DIR}/install.sh"
 }
 
 write_env() {
   log "Step 4/7: Creating .env with network, BGP and portal settings."
-  local bind_ip local_as router_id nexthop peer_ip peer_as community web_user web_password web_password_hash update_url host_updater_token generated_password product_version
+  local bind_ip local_as router_id nexthop peer_ip peer_as community bgp_peer_mode bgp_ttl_security_enabled web_user web_password web_password_hash update_url host_updater_token generated_password product_version
   bind_ip="$(ask_ipv4 "IP VM, на котором слушать портал/BGP" "${THE333_BIND_IP:-$(detect_ip || true)}" "THE333_BIND_IP")"
   [[ -n "${bind_ip}" ]] || bind_ip="0.0.0.0"
   local_as="$(ask_asn "ASN сервиса The333-BGP (private ASN: 64512-65534)" "${LOCAL_AS:-64512}" "LOCAL_AS")"
@@ -495,8 +712,26 @@ write_env() {
   peer_ip="$(ask_ipv4 "IP MikroTik/BGP peer" "${PEER_ADDRESS:-192.168.1.1}" "PEER_ADDRESS")"
   peer_as="$(ask_asn "ASN MikroTik/BGP peer" "${PEER_AS:-65455}" "PEER_AS")"
   community="$(ask_community "BGP community по умолчанию" "${BGP_COMMUNITY:-64512:500}")"
+  bgp_peer_mode="${BGP_PEER_MODE:-$(detect_bgp_peer_mode "${peer_ip}")}"
+  bgp_ttl_security_enabled="${BGP_TTL_SECURITY_ENABLED:-false}"
+  case "${bgp_ttl_security_enabled,,}" in
+    true|1|yes|on) bgp_ttl_security_enabled="true" ;;
+    false|0|no|off) bgp_ttl_security_enabled="false" ;;
+    *) fail "BGP_TTL_SECURITY_ENABLED must be true or false" ;;
+  esac
+  if [[ "${bgp_peer_mode}" == "direct" && "${NON_INTERACTIVE}" != "true" ]]; then
+    log "GTSM requires matching TTL security on MikroTik; enabling it on only one side breaks the BGP session."
+    if confirm "Включить GTSM/TTL security для прямого peer?" "N"; then
+      bgp_ttl_security_enabled="true"
+    else
+      bgp_ttl_security_enabled="false"
+    fi
+  elif [[ "${bgp_peer_mode}" != "direct" ]]; then
+    bgp_ttl_security_enabled="false"
+  fi
+  log "BGP peer mode: ${bgp_peer_mode}; GTSM: ${bgp_ttl_security_enabled}."
   web_user="admin"
-  log "Portal admin user is fixed: admin. The installer will ask only for the password."
+  log "Портал запросит только пароль; внутренняя учётная запись admin фиксирована."
   web_password="$(ask_secret "Пароль портала. Enter = сгенерировать")"
   generated_password="false"
   if [[ -z "${web_password}" ]]; then
@@ -510,10 +745,10 @@ write_env() {
   validate_password "${web_password}" || fail "portal password must be at least 8 characters"
   web_password_hash="$(make_password_hash "${web_password}")"
 
-  update_url="${PRODUCT_UPDATE_MANIFEST_URL:-https://github.com/The333tech/The333-bgp/releases/latest/download/update-manifest.json}"
+  update_url="${PRODUCT_UPDATE_MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
   host_updater_token="${HOST_UPDATER_TOKEN:-$(make_token)}"
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.78}"
+  product_version="${product_version:-0.82b}"
   log "Update manifest: ${update_url}"
 
   if [[ -f "${PROJECT_DIR}/.env" ]]; then
@@ -530,10 +765,16 @@ LOCAL_AS=${local_as}
 ROUTER_ID=${router_id}
 BGP_NEXTHOP=${nexthop}
 BGP_LISTEN_PORT=1179
+GOBGP_CORE_IMAGE_VERSION=4.7.0-r4
 PEER_ADDRESS=${peer_ip}
 PEER_AS=${peer_as}
 BGP_COMMUNITY=${community}
+BGP_PEER_MODE=${bgp_peer_mode}
+BGP_DOCKER_BRIDGE_HOPS=1
 BGP_MULTIHOP_TTL=10
+BGP_TTL_SECURITY_ENABLED=${bgp_ttl_security_enabled}
+BGP_TTL_SECURITY_MIN=255
+BGP_TCP_MD5_CONFIGURED=false
 BGP_GRACEFUL_RESTART=true
 BGP_GRACEFUL_RESTART_TIME=300
 BGP_REJECT_INBOUND_ROUTES=true
@@ -577,13 +818,15 @@ SYSTEM_BACKUP_RETENTION=20
 SYSTEM_BACKUP_MAX_BYTES=134217728
 
 PRODUCT_VERSION=${product_version}
-PRODUCT_CHANNEL=beta
+PRODUCT_CHANNEL=${INSTALL_CHANNEL}
 PRODUCT_UPDATE_MANIFEST_URL=${update_url}
 PRODUCT_UPDATE_ENABLED=true
 PRODUCT_UPDATE_MODE=host-updater
 PRODUCT_UPDATE_TIMEOUT_SECONDS=1800
+UPDATE_MIN_FREE_BYTES=2147483648
 HOST_UPDATER_SOCKET=/run/the333-bgp/updater.sock
 HOST_UPDATER_RUN_DIR=/run/the333-bgp
+HOST_UPDATER_RESULT_DIR=${PROJECT_DIR}/data/host-updater-results
 HOST_UPDATER_TOKEN=${host_updater_token}
 ENV
 
@@ -640,13 +883,40 @@ PY
   fail "host updater socket did not become ready"
 }
 
+resume_backend_after_interrupted_fallback_backup() {
+  local signal="$1"
+  trap - INT TERM
+  set +e
+  if [[ "${backend_was_running:-false}" == "true" ]]; then
+    log "Repair backup interrupted by ${signal}; starting backend before exit."
+    docker_cli start the333-bgp-backend >/dev/null 2>&1 || true
+  fi
+  [[ -n "${archive:-}" ]] && rm -f "${archive}"
+  [[ "${signal}" == "INT" ]] && exit 130
+  exit 143
+}
+
 fallback_backup_existing_install() {
   mkdir -p "${PROJECT_DIR}/backups"
-  local ts archive
+  local ts archive backend_was_running backup_rc restart_rc status
   ts="$(date +%Y%m%d-%H%M%S)"
   archive="${PROJECT_DIR}/backups/the333-bgp-before-installer-upgrade-${ts}.tar.gz"
+  backend_was_running="false"
+  backup_rc=0
+  restart_rc=0
+
+  if docker_cli container inspect the333-bgp-backend >/dev/null 2>&1 \
+    && [[ "$(docker_cli inspect -f '{{.State.Running}}' the333-bgp-backend 2>/dev/null || true)" == "true" ]]; then
+    log "Pausing backend briefly for a consistent repair backup; GoBGP remains online."
+    docker_cli stop --time 30 the333-bgp-backend >/dev/null \
+      || fail "backend could not be paused for a consistent repair backup"
+    backend_was_running="true"
+    trap 'resume_backend_after_interrupted_fallback_backup INT' INT
+    trap 'resume_backend_after_interrupted_fallback_backup TERM' TERM
+  fi
+
   log "Creating fallback backup: ${archive}"
-  tar \
+  if tar \
     --exclude='./backups' \
     --exclude='./portal/node_modules' \
     --exclude='./portal/dist' \
@@ -654,80 +924,63 @@ fallback_backup_existing_install() {
     --exclude='./.venv' \
     -czf "${archive}" \
     -C "${PROJECT_DIR}" \
-    .
+    .; then
+    backup_rc=0
+  else
+    backup_rc=$?
+  fi
+
+  if [[ "${backend_was_running}" == "true" ]]; then
+    log "Starting backend after the repair snapshot."
+    if ! docker_cli start the333-bgp-backend >/dev/null; then
+      restart_rc=1
+    else
+      for _ in $(seq 1 60); do
+        status="$(docker_cli inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' the333-bgp-backend 2>/dev/null || true)"
+        [[ "${status}" == "healthy" || "${status}" == "running" ]] && break
+        if [[ "${status}" == "unhealthy" || "${status}" == "exited" || "${status}" == "dead" ]]; then
+          restart_rc=1
+          break
+        fi
+        sleep 2
+      done
+      [[ "${status}" == "healthy" || "${status}" == "running" ]] || restart_rc=1
+    fi
+  fi
+  trap - INT TERM
+
+  if (( restart_rc != 0 )); then
+    rm -f "${archive}"
+    fail "backend did not recover after the repair snapshot; GoBGP was not restarted"
+  fi
+  if (( backup_rc != 0 )); then
+    rm -f "${archive}"
+    fail "fallback backup failed; backend was restored and repair was not started"
+  fi
   [[ -s "${archive}" ]] || fail "fallback backup failed"
+  tar -tzf "${archive}" >/dev/null || fail "fallback backup integrity check failed"
   log "Fallback backup ready: ${archive}"
 }
 
 ensure_env_defaults() {
   [[ -f "${PROJECT_DIR}/.env" ]] || fail ".env not found in existing installation"
 
-  local product_version update_url host_updater_token backup_env
+  local product_version update_url backup_env
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.78}"
+  product_version="${product_version:-0.82b}"
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-$(awk -F= '$1 == "PRODUCT_UPDATE_MANIFEST_URL" {print $2; exit}' "${PROJECT_DIR}/.env" | tr -d '[:space:]')}"
-  update_url="${update_url:-https://github.com/The333tech/The333-bgp/releases/latest/download/update-manifest.json}"
-  host_updater_token="${HOST_UPDATER_TOKEN:-$(awk -F= '$1 == "HOST_UPDATER_TOKEN" {print $2; exit}' "${PROJECT_DIR}/.env" | tr -d '[:space:]')}"
-  host_updater_token="${host_updater_token:-$(make_token)}"
+  update_url="${update_url:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
 
-  backup_env="${PROJECT_DIR}/.env.backup-before-v078-env-migration-$(date +%Y%m%d-%H%M%S)"
+  backup_env="${PROJECT_DIR}/.env.backup-before-v082b-env-migration-$(date +%Y%m%d-%H%M%S)"
   cp "${PROJECT_DIR}/.env" "${backup_env}"
   chmod 600 "${backup_env}"
 
-  python3 - "${PROJECT_DIR}/.env" "${product_version}" "${update_url}" "${host_updater_token}" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-defaults = {
-    "PRODUCT_VERSION": sys.argv[2],
-    "PRODUCT_CHANNEL": "beta",
-    "PRODUCT_UPDATE_MANIFEST_URL": sys.argv[3],
-    "PRODUCT_UPDATE_ENABLED": "true",
-    "PRODUCT_UPDATE_MODE": "host-updater",
-    "PRODUCT_UPDATE_TIMEOUT_SECONDS": "1800",
-    "HOST_UPDATER_SOCKET": "/run/the333-bgp/updater.sock",
-    "HOST_UPDATER_RUN_DIR": "/run/the333-bgp",
-    "HOST_UPDATER_TOKEN": sys.argv[4],
-    "AUTH_ALLOW_BASIC": "false",
-    "SESSION_COOKIE_NAME": "the333_session",
-    "SESSION_TTL_SECONDS": "43200",
-    "SESSION_COOKIE_SECURE": "false",
-    "SESSION_MAX_ACTIVE": "8",
-    "PORTAL_TLS_ENABLED": "false",
-    "PORTAL_TLS_CERT_PATH": "/etc/the333-bgp/tls/portal.crt",
-    "PORTAL_TLS_KEY_PATH": "/etc/the333-bgp/tls/portal.key",
-    "REMOTE_FETCH_MAX_BYTES": "16777216",
-    "REMOTE_FETCH_MAX_REDIRECTS": "5",
-    "REMOTE_FETCH_CACHE_GRACE_SECONDS": "86400",
-    "BGP_REJECT_INBOUND_ROUTES": "true",
-    "GOBGP_RECOVERY_POLL_SECONDS": "5",
-    "SYSTEM_BACKUP_RETENTION": "20",
-    "SYSTEM_BACKUP_MAX_BYTES": "134217728",
-}
-
-lines = path.read_text(encoding="utf-8").splitlines()
-seen: set[str] = set()
-updated: list[str] = []
-for line in lines:
-    if not line or line.lstrip().startswith("#") or "=" not in line:
-        updated.append(line)
-        continue
-    key, _value = line.split("=", 1)
-    if key in defaults:
-        updated.append(f"{key}={defaults[key]}")
-        seen.add(key)
-    else:
-        updated.append(line)
-
-missing = [key for key in defaults if key not in seen]
-if missing:
-    updated.append("")
-    updated.append("# Product/runtime defaults added by v0.78 migration.")
-    updated.extend(f"{key}={defaults[key]}" for key in missing)
-
-path.write_text("\n".join(updated) + "\n", encoding="utf-8")
-PY
+  python3 "${PROJECT_DIR}/scripts/migrate-env.py" \
+    --env "${PROJECT_DIR}/.env" \
+    --project-dir "${PROJECT_DIR}" \
+    --version "${product_version}" \
+    --channel "${INSTALL_CHANNEL}" \
+    --update-url "${update_url}"
   chmod 600 "${PROJECT_DIR}/.env"
   log ".env migrated for v${product_version}; previous copy: ${backup_env}"
 }
@@ -738,7 +991,7 @@ wait_for_services() {
 
   log "Ожидание готовности backend, GoBGP и портала (до 6 минут)..."
   while (( attempts > 0 )); do
-    if backend_health_ready "${bind_ip}" && curl -fsS -o /dev/null "http://${bind_ip}:8090/" 2>/dev/null; then
+    if backend_health_ready "${bind_ip}" && portal_http_ready "${bind_ip}"; then
       log "Все сервисы готовы."
       return 0
     fi
@@ -748,6 +1001,20 @@ wait_for_services() {
 
   docker_compose ps || true
   fail "services did not become ready within 6 minutes; inspect container logs"
+}
+
+portal_http_ready() {
+  local bind_ip="$1"
+  local tls_enabled
+  tls_enabled="$(awk -F= '$1 == "PORTAL_TLS_ENABLED" {print tolower($2); exit}' "${PROJECT_DIR}/.env" 2>/dev/null | tr -d '[:space:]')"
+  case "${tls_enabled}" in
+    1|true|yes|on)
+      curl -kfsS -o /dev/null "https://${bind_ip}:8090/" 2>/dev/null
+      ;;
+    *)
+      curl -fsS -o /dev/null "http://${bind_ip}:8090/" 2>/dev/null
+      ;;
+  esac
 }
 
 backend_health_ready() {
@@ -836,21 +1103,15 @@ existing_install_flow() {
 
   case "${action}" in
     u|U|update|UPDATE)
-      local src
+      local src update_controller
       src="$(download_repo_if_needed)"
-      if [[ -x "${control}" ]]; then
-        "${control}" backup || fallback_backup_existing_install
-      else
-        fallback_backup_existing_install
+      update_controller="${src}/scripts/the333bgp.sh"
+      [[ -f "${update_controller}" ]] || fail "verified release has no update controller. Use repair instead."
+      local update_args=(update --manifest "${RELEASE_INDEX_URL}" --channel "${INSTALL_CHANNEL}" --non-interactive)
+      if [[ -n "${INSTALL_VERSION}" ]]; then
+        update_args+=(--version "${INSTALL_VERSION}")
       fi
-      copy_project_files "${src}" "true"
-      ensure_env_defaults
-      install_host_updater_service
-      cd "${PROJECT_DIR}"
-      docker_compose build
-      docker_compose up -d --remove-orphans
-      wait_for_services "$(awk -F= '$1 == "THE333_BIND_IP" {print $2; exit}' .env)"
-      "${PROJECT_DIR}/scripts/the333bgp.sh" status
+      THE333_PROJECT_DIR="${PROJECT_DIR}" bash "${update_controller}" "${update_args[@]}"
       ;;
     b|B|backup|BACKUP)
       "${control}" backup
@@ -886,6 +1147,8 @@ existing_install_flow() {
 
 main() {
   parse_args "$@"
+  validate_release_selection
+  check_basic_tools
 
   if [[ -f "${PROJECT_DIR}/docker-compose.yml" && -f "${PROJECT_DIR}/.env" ]]; then
     existing_install_flow

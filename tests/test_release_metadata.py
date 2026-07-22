@@ -26,7 +26,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         package_lock = json.loads((ROOT / "portal" / "package-lock.json").read_text(encoding="utf-8"))
         matching = next(item for item in manifest["versions"] if str(item.get("version")) == version)
         channel = str(matching["channel"])
-        package_version = f"{version}.0" if version.count(".") == 1 else version
+        if re.fullmatch(r"[0-9]+\.[0-9]+b", version):
+            package_version = f"{version[:-1]}.0-beta"
+        else:
+            package_version = f"{version}.0" if version.count(".") == 1 else version
 
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
@@ -38,22 +41,23 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn(f"PRODUCT_VERSION={version}", env_example)
         self.assertIn(f"PRODUCT_CHANNEL={channel}", env_example)
         self.assertIn("product_version=\"$(tr -d '[:space:]' < \"${PROJECT_DIR}/VERSION\"", installer)
-        self.assertIn(f"PRODUCT_CHANNEL={channel}", installer)
+        self.assertIn("PRODUCT_CHANNEL=${INSTALL_CHANNEL}", installer)
         self.assertIn("ensure_env_defaults", installer)
         self.assertIn("fallback_backup_existing_install", installer)
         self.assertIn("HOST_UPDATER_TOKEN", installer)
+        self.assertIn("HOST_UPDATER_RESULT_DIR=${PROJECT_DIR}/data/host-updater-results", installer)
         self.assertIn("--action update|repair|backup|status|quit", installer)
         self.assertIn("THE333_INSTALL_ACTION=update", installer)
         self.assertIn("docker deploy extras requirements.in", installer)
         self.assertNotIn('"${control}" update', installer)
-        self.assertIn(f"Version-v{version}_{channel}", readme)
+        self.assertIn(f"Version-v{version}", readme)
         self.assertIn("github.com/The333tech/The333-bgp/actions/workflows/ci.yml/badge.svg", readme)
         self.assertIn("github.com/The333tech/The333-bgp/actions/workflows/release.yml/badge.svg", readme)
         self.assertIn("github.com/The333tech/The333-bgp/actions/workflows/codeql.yml/badge.svg", readme)
         self.assertNotIn("img.shields.io/github/actions/workflow/status", readme)
-        self.assertIn(f"v{version} {channel}", readme)
-        self.assertIn(f"Версия: **v{version} {channel}**", install_doc)
-        self.assertIn(f"**{version}.x {channel}**", security)
+        self.assertIn(f"v{version} (beta)", readme)
+        self.assertIn(f"Версия: **v{version} (beta)**", install_doc)
+        self.assertIn(f"**v{version} (beta)**", security)
         self.assertIn(f'const PRODUCT_VERSION = "{version}";', app)
         self.assertEqual(package["version"], package_version)
         self.assertEqual(package_lock["version"], package_version)
@@ -62,6 +66,7 @@ class ReleaseMetadataTests(unittest.TestCase):
     def test_release_urls_use_https(self) -> None:
         manifest = json.loads((ROOT / "update-manifest.json").read_text(encoding="utf-8"))
         release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         controller = (ROOT / "scripts" / "the333bgp.sh").read_text(encoding="utf-8")
 
         for item in manifest.get("versions", []):
@@ -70,6 +75,11 @@ class ReleaseMetadataTests(unittest.TestCase):
                 self.assertEqual(urlparse(archive_url).scheme, "https")
         self.assertIn('matches[0]["sha256"] = sha256', release)
         self.assertIn("selected version has no valid sha256; refusing update", controller)
+        for download_path in (installer, controller):
+            self.assertIn("--proto '=https'", download_path)
+            self.assertIn("--proto-redir '=https'", download_path)
+            self.assertIn("--max-filesize 2097152", download_path)
+            self.assertIn("--max-filesize 268435456", download_path)
 
     def test_default_sources_are_safe_and_opt_in(self) -> None:
         sources = json.loads((ROOT / "config" / "default_sources.json").read_text(encoding="utf-8"))
@@ -87,11 +97,27 @@ class ReleaseMetadataTests(unittest.TestCase):
 
     def test_docker_socket_is_not_exposed_to_containers(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        portal_compose = (ROOT / "docker-compose.portal.yml").read_text(encoding="utf-8")
 
         self.assertNotIn("/var/run/docker.sock", compose)
         self.assertNotIn("the333-host-updater:", compose)
         self.assertIn("HOST_UPDATER_SOCKET: /run/the333-bgp/updater.sock", compose)
         self.assertIn(":/run/the333-bgp:ro", compose)
+        self.assertIn("internal: true", compose)
+        self.assertNotIn('BGP_TCP_MD5_KEY: "${BGP_TCP_MD5_KEY', compose)
+        self.assertIn("./data/secrets/bgp_tcp_md5:/run/secrets/bgp_tcp_md5:ro", compose)
+        self.assertIn('BGP_TTL_SECURITY_ENABLED: "${BGP_TTL_SECURITY_ENABLED:-false}"', compose)
+        self.assertIn('BGP_DOCKER_BRIDGE_HOPS: "${BGP_DOCKER_BRIDGE_HOPS:-1}"', compose)
+        self.assertIn("condition: service_healthy", portal_compose)
+
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        entrypoint = (ROOT / "docker" / "gobgp-entrypoint.sh").read_text(encoding="utf-8")
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("BGP_TTL_SECURITY_ENABLED=false", env_example)
+        self.assertIn("BGP_DOCKER_BRIDGE_HOPS=1", env_example)
+        self.assertIn('elif [ "${BGP_TTL_SECURITY_ENABLED}" = "true" ]; then', entrypoint)
+        self.assertIn('direct_transport_ttl=$((BGP_DOCKER_BRIDGE_HOPS + 1))', entrypoint)
+        self.assertIn("GTSM requires matching TTL security on MikroTik", installer)
 
     def test_auth_proxy_config_values_are_not_logged_raw(self) -> None:
         app = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
@@ -102,11 +128,19 @@ class ReleaseMetadataTests(unittest.TestCase):
     def test_runtime_images_are_split_by_role(self) -> None:
         backend = (ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
         gobgp = (ROOT / "docker" / "gobgp.Dockerfile").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        core_service = compose.split("  the333-bgp-backend:", 1)[0]
 
         self.assertFalse((ROOT / "Dockerfile").exists())
         self.assertNotIn("docker-cli", backend)
         self.assertNotIn("gobgpd /usr/local/bin/gobgpd", backend)
         self.assertNotIn("python", gobgp.lower())
+        self.assertNotIn("VCS_REF", core_service)
+        self.assertIn('org.opencontainers.image.revision="${GOBGP_REVISION}"', gobgp)
+        self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r4", gobgp)
+        portal_dockerfile = (ROOT / "portal" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("apk upgrade --no-cache", portal_dockerfile)
+        self.assertIn("user[[:space:]]", portal_dockerfile)
 
     def test_python_dependencies_are_hash_locked(self) -> None:
         direct = [
@@ -175,12 +209,13 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("Scan release SBOM for fixable Critical vulnerabilities", release)
         self.assertIn("output-format: table", release)
         self.assertIn('if gh release view "${tag}"', release)
-        self.assertIn('gh release upload "${tag}" "${assets[@]}" --clobber', release)
-        self.assertIn('gh release edit "${tag}"', release)
+        self.assertIn("Published release assets are immutable", release)
+        self.assertNotIn("--clobber", release)
+        self.assertNotIn('gh release edit "${tag}"', release)
         self.assertIn('gh release create "${tag}" "${assets[@]}"', release)
         self.assertIn('release_state=(--prerelease)', release)
         self.assertIn('release_state=(--latest)', release)
-        self.assertIn('title="${title} beta"', release)
+        self.assertNotIn('title="${title} beta"', release)
         self.assertIn("THE333_REQUIRE_TRACKED_RELEASE_FILES=true ./scripts/release-check.sh", release)
         self.assertIn("THE333_REQUIRE_TRACKED_RELEASE_FILES", release_check)
         self.assertIn("source_required_files=(", release_check)
@@ -192,6 +227,12 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("excluded from git archive by export-ignore", release_check)
         self.assertIn("detect_python()", release_check)
         self.assertIn('PYTHON_BIN="$(detect_python)"', release_check)
+
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn("/.github export-ignore", attributes)
+        self.assertIn("/tests export-ignore", attributes)
+        self.assertNotIn("/.gitattributes export-ignore", attributes)
+        self.assertNotIn("/.gitignore export-ignore", attributes)
 
         ci = (workflow_dir / "ci.yml").read_text(encoding="utf-8")
         self.assertEqual(ci.count("anchore/scan-action@"), 3)
@@ -213,7 +254,9 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("NoNewPrivileges=true", unit)
         self.assertIn("ProtectSystem=strict", unit)
         self.assertIn("RestrictNamespaces=true", unit)
+        self.assertIn("SuccessExitStatus=75", unit)
         self.assertIn("scripts/the333bgp.sh install-updater-service", controller)
+        self.assertIn("стабильный systemd unit будет переиспользован", controller)
         self.assertIn('$1 == "PGID"', controller)
         self.assertIn('install-updater-service)', controller)
         self.assertIn("Legacy updater container detected", controller)
@@ -227,10 +270,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         controller = (ROOT / "scripts" / "the333bgp.sh").read_text(encoding="utf-8")
 
-        self.assertIn("MIN_FREE_DISK_KB=2097152", installer)
-        self.assertIn("RECOMMENDED_FREE_DISK_GB=4", installer)
-        self.assertIn("MIN_UPDATE_FREE_DISK_KB=2097152", controller)
+        self.assertIn("MIN_FREE_DISK_KB=8388608", installer)
+        self.assertIn("RECOMMENDED_FREE_DISK_GB=12", installer)
+        self.assertIn("DEFAULT_MIN_UPDATE_FREE_BYTES=2147483648", controller)
         self.assertIn("check_update_disk_space", controller)
+        self.assertIn("build_update_images", controller)
+        self.assertIn("compose build the333-bgp-backend the333-portal", controller)
+        self.assertIn('"${PROJECT_DIR}/scripts/the333bgp.sh"', controller)
+        self.assertIn("chmod +x", controller)
         self.assertLess(
             controller.index("check_update_disk_space", controller.index("update_project()")),
             controller.index("make_backup", controller.index("update_project()")),
@@ -242,7 +289,9 @@ class ReleaseMetadataTests(unittest.TestCase):
 
         self.assertIn('SESSION_COOKIE_SECURE: "true"', overlay)
         self.assertIn("/etc/the333-bgp/tls/portal.key", overlay)
+        self.assertIn("https://127.0.0.1:8443/", overlay)
         self.assertIn("ssl_protocols TLSv1.2 TLSv1.3", nginx)
+        self.assertIn("proxy_set_header Authorization $http_authorization", nginx)
         self.assertIn("ssl_session_tickets off", nginx)
         self.assertFalse((ROOT / "config" / "tls" / "portal.key").exists())
 

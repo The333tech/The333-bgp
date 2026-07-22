@@ -43,9 +43,14 @@ import {
   SourcesResponse,
   UpdateHistoryRecord,
   UpdateHistoryResponse,
-  ServerResourcesResponse
+  ServerResourcesResponse,
+  RuntimeSettingsResponse
 } from "./types/api";
 import { MikroTikAssistant } from "./components/MikroTikAssistant";
+import {
+  buildMikroTikCommunityFilterCommands,
+  isRouterOsObjectName,
+} from "./components/mikrotikAssistantLogic";
 
 type PortalData = {
   ready: ReadyResponse | null;
@@ -54,6 +59,7 @@ type PortalData = {
   history: UpdateHistoryResponse | null;
   services: ServicesResponse | null;
   serverResources: ServerResourcesResponse | null;
+  runtimeSettings: RuntimeSettingsResponse | null;
   productUpdates: ProductUpdatesResponse | null;
   jobs: JobsResponse | null;
 };
@@ -362,6 +368,8 @@ type ProductUpdatesResponse = {
     stable?: string | null;
     beta?: string | null;
   };
+  manifest_unavailable?: boolean;
+  notice?: string;
   error?: string;
   time?: string;
 };
@@ -384,6 +392,7 @@ type PortalJob = {
   result_summary?: Record<string, unknown> | null;
   error?: string | null;
   cancel_requested?: boolean;
+  cancellable?: boolean;
 };
 
 type JobsResponse = {
@@ -421,6 +430,7 @@ type SystemBackupsResponse = {
   backups: SystemBackupItem[];
   retention?: number;
   max_bytes?: number;
+  automatic_backup?: RuntimeSettingsResponse["automatic_backup"];
   scope?: string[];
   excluded?: string[];
   time?: string;
@@ -532,20 +542,22 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.78";
+const PRODUCT_VERSION = "0.82b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.78",
-    version: "0.78",
-    title: "v0.78 beta",
+    id: "0.82b",
+    version: "0.82b",
+    title: "v0.82b",
     channel: "beta",
     status: "текущая версия",
     date: "июль 2026",
     changelog: [
-      "Beta-релиз перед stable-релизом; проект находится в активной разработке.",
-      "GoBGP 4.7.0, обновлённые runtime и dependency locks.",
-      "Изоляция updater, транзакционное применение маршрутов, session auth и TLS-вариант."
+      "Durable-задачи обновления и полный автоматический rollback состояния.",
+      "Проверяемые release-архивы, безопасная распаковка и идемпотентная миграция .env.",
+      "Опциональные GTSM/TCP MD5 для BGP, изоляция Docker-сетей и runtime smoke-тесты.",
+      "Настройка автообновления маршрутов и автоматических бэкапов из портала без перезапуска контейнеров.",
+      "Uptime основных контейнеров, скачивание наборов маршрутов и точные RouterOS-команды для Community-профилей."
     ]
   }
 ];
@@ -553,16 +565,21 @@ const UPDATE_VERSIONS = [
 function formatProductVersion(version?: string | null, channel?: string | null): string {
   const normalizedVersion = (version || PRODUCT_VERSION).trim();
   const versionLabel = normalizedVersion.startsWith("v") ? normalizedVersion : `v${normalizedVersion}`;
+  if (channel === "beta" && /b$/i.test(normalizedVersion)) return versionLabel;
   return channel ? `${versionLabel} ${channel}` : versionLabel;
 }
 
 function versionWeight(version?: string | null): number[] {
-  return (version || "")
+  const raw = (version || "").replace(/^v/i, "");
+  const prerelease = /(?:b|-beta(?:\.|$))/i.test(raw) ? -1 : 0;
+  const numeric = raw
     .replace(/^v/i, "")
     .replace(/[^0-9.].*$/, "")
     .split(".")
     .map((part) => Number.parseInt(part, 10))
     .map((part) => (Number.isFinite(part) ? part : 0));
+  while (numeric.length < 3) numeric.push(0);
+  return [...numeric.slice(0, 3), prerelease];
 }
 
 function compareProductVersions(a?: string | null, b?: string | null): number {
@@ -579,7 +596,7 @@ function compareProductVersions(a?: string | null, b?: string | null): number {
 }
 
 function productUpdateNotice(updates: ProductUpdatesResponse | null): ProductUpdateVersion | null {
-  if (!updates?.ok || !updates.manifest_url) return null;
+  if (!updates?.ok || !updates.manifest_url || updates.manifest_unavailable) return null;
 
   const currentVersion = updates.current_version ?? PRODUCT_VERSION;
   const versions = updates.versions ?? [];
@@ -740,6 +757,18 @@ function formatDurationSeconds(value: unknown): string {
   return `${days.toFixed(1)} дня`;
 }
 
+function formatCompactUptime(value: unknown): string {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const wholeMinutes = Math.floor(seconds / 60);
+  const days = Math.floor(wholeMinutes / 1440);
+  const hours = Math.floor((wholeMinutes % 1440) / 60);
+  const minutes = wholeMinutes % 60;
+  if (days > 0) return `${days} д ${hours} ч`;
+  if (hours > 0) return `${hours} ч ${minutes} мин`;
+  return `${minutes} мин`;
+}
+
 function formatPercent(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "—";
@@ -860,6 +889,14 @@ function historyStatusTone(item: UpdateHistoryRecord): "ok" | "warn" | "bad" {
 }
 
 function historyRouteSetLabel(item: UpdateHistoryRecord): string {
+  const sourceCount = item.selected_sources?.length ?? 0;
+  const serviceCount = item.selected_services?.length ?? 0;
+  if (sourceCount > 0 || serviceCount > 0) {
+    const parts: string[] = [];
+    if (sourceCount > 0) parts.push(`${sourceCount} ист.`);
+    if (serviceCount > 0) parts.push(`${serviceCount} мод.`);
+    return parts.join(" · ");
+  }
   if (item.selected_source) return item.selected_source;
   if (item.trigger === "apply_last_good" || item.mode === "apply_last_good") return "снимок last-good";
   if (item.trigger.includes("failed") || item.mode.includes("failed")) return "источник не применялся";
@@ -1539,8 +1576,131 @@ function TimeSettingsModal({
   );
 }
 
+function RouteAutoUpdateModal({
+  auth,
+  current,
+  onSaved,
+  onClose
+}: {
+  auth: AuthState;
+  current: RuntimeSettingsResponse | null;
+  onSaved: (settings: RuntimeSettingsResponse) => void;
+  onClose: () => void;
+}) {
+  const [settings, setSettings] = useState<RuntimeSettingsResponse | null>(current);
+  const [enabled, setEnabled] = useState(current?.route_auto_update.enabled ?? true);
+  const [intervalMinutes, setIntervalMinutes] = useState(current?.route_auto_update.interval_minutes ?? 360);
+  const [busy, setBusy] = useState(false);
+  const [statusText, setStatusText] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState(false);
+  const settingsInitializedRef = useRef(false);
+
+  useEffect(() => {
+    if (current && !settingsInitializedRef.current) {
+      setSettings(current);
+      setEnabled(current.route_auto_update.enabled);
+      setIntervalMinutes(current.route_auto_update.interval_minutes);
+      settingsInitializedRef.current = true;
+      return;
+    }
+    if (settingsInitializedRef.current) return;
+    void apiFetch<RuntimeSettingsResponse>("/api/runtime-settings", auth)
+      .then((payload) => {
+        setSettings(payload);
+        setEnabled(payload.route_auto_update.enabled);
+        setIntervalMinutes(payload.route_auto_update.interval_minutes);
+        settingsInitializedRef.current = true;
+      })
+      .catch((error) => {
+        setStatusError(true);
+        setStatusText(error instanceof Error ? error.message : String(error));
+      });
+  }, [auth, current]);
+
+  const minimum = settings?.route_auto_update.minimum_minutes ?? 5;
+  const maximum = settings?.route_auto_update.maximum_minutes ?? 10080;
+  const valid = Number.isInteger(intervalMinutes) && intervalMinutes >= minimum && intervalMinutes <= maximum;
+
+  const save = async () => {
+    if (!valid) return;
+    setBusy(true);
+    setStatusError(false);
+    setStatusText(null);
+    try {
+      const payload = await apiFetch<RuntimeSettingsResponse>("/api/runtime-settings", auth, {
+        method: "PUT",
+        body: JSON.stringify({
+          route_auto_update: {
+            enabled,
+            interval_minutes: intervalMinutes,
+          },
+        }),
+      });
+      setSettings(payload);
+      onSaved(payload);
+      setStatusText("Настройки автообновления маршрутов сохранены.");
+    } catch (error) {
+      setStatusError(true);
+      setStatusText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={onClose}>
+      <motion.div
+        className="time-modal route-auto-update-modal"
+        initial={{ opacity: 0, y: 18, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.18 }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="panel-title">
+          <div>
+            <h2>Автообновление маршрутов</h2>
+            <div className="panel-subtitle">Периодический пересчёт источников и модулей с безопасным применением в GoBGP.</div>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Закрыть настройки">×</button>
+        </div>
+
+        <label className="settings-toggle-row">
+          <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+          <span>
+            <strong>{enabled ? "Автообновление включено" : "Автообновление выключено"}</strong>
+            <small>Ручное обновление маршрутов продолжит работать независимо от этого переключателя.</small>
+          </span>
+        </label>
+
+        <label className="field">
+          <span>Интервал, минут</span>
+          <input
+            type="number"
+            min={minimum}
+            max={maximum}
+            step={1}
+            value={intervalMinutes}
+            onChange={(event) => setIntervalMinutes(Number(event.target.value))}
+          />
+          <small>Сейчас: {formatDurationSeconds(intervalMinutes * 60)}. Допустимо от {minimum} до {maximum} минут.</small>
+        </label>
+
+        {statusText && <div className={`backup-status ${statusError ? "bad" : "ok"}`}><strong>{statusText}</strong></div>}
+
+        <div className="timezone-actions">
+          <button className="ghost-button" type="button" onClick={onClose}>Закрыть</button>
+          <button className="primary-button" type="button" disabled={busy || !valid} onClick={save}>
+            {busy ? "Сохраняю..." : "Сохранить настройки"}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function backupTriggerLabel(trigger?: string): string {
   if (trigger === "manual") return "ручной";
+  if (trigger === "automatic") return "автоматический";
   if (trigger === "pre_restore") return "перед откатом";
   return trigger || "не указан";
 }
@@ -1559,9 +1719,13 @@ function BackupModal({
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState("");
   const [applyRoutes, setApplyRoutes] = useState(true);
-  const [busy, setBusy] = useState<"backup" | "restore" | "download" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"backup" | "restore" | "download" | "delete" | "settings" | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [autoEnabled, setAutoEnabled] = useState(true);
+  const [autoIntervalDays, setAutoIntervalDays] = useState(1);
+  const [autoRetention, setAutoRetention] = useState(20);
+  const backupSettingsInitializedRef = useRef(false);
 
   const loadBackups = useCallback(async () => {
     const nextPayload = await apiFetch<SystemBackupsResponse>("/api/system/backups", auth);
@@ -1593,9 +1757,36 @@ function BackupModal({
     return () => window.clearInterval(timer);
   }, [refreshAll]);
 
+  useEffect(() => {
+    if (!payload?.automatic_backup || backupSettingsInitializedRef.current) return;
+    setAutoEnabled(payload.automatic_backup.enabled);
+    setAutoIntervalDays(payload.automatic_backup.interval_days);
+    setAutoRetention(payload.automatic_backup.retention);
+    backupSettingsInitializedRef.current = true;
+  }, [payload?.automatic_backup]);
+
   const activeJob = jobs.find((job) => jobIsActive(job));
   const selectedBackup = payload?.backups.find((item) => item.name === selectedName) ?? null;
   const restoreReady = Boolean(selectedBackup?.restore_supported && confirmation === "ВОССТАНОВИТЬ" && !activeJob && !busy);
+  const autoSettings = payload?.automatic_backup;
+  const autoSettingsValid = Boolean(
+    autoSettings
+    && Number.isInteger(autoIntervalDays)
+    && autoIntervalDays >= autoSettings.minimum_days
+    && autoIntervalDays <= autoSettings.maximum_days
+    && Number.isInteger(autoRetention)
+    && autoRetention >= autoSettings.minimum_retention
+    && autoRetention <= autoSettings.maximum_retention
+  );
+  const autoBackupStatusText = autoSettings?.last_checked_at
+    ? autoSettings.last_result === "unchanged"
+      ? `Проверено ${formatDate(autoSettings.last_checked_at)} · изменений нет, актуален ${autoSettings.last_backup_name ?? "последний архив"}.`
+      : autoSettings.last_result === "created"
+        ? `Создан ${autoSettings.last_backup_name ?? "новый архив"} · ${formatDate(autoSettings.last_checked_at)}.`
+        : autoSettings.last_result === "failed"
+          ? `Последняя проверка ${formatDate(autoSettings.last_checked_at)} завершилась ошибкой.`
+          : `Последняя проверка: ${formatDate(autoSettings.last_checked_at)}.`
+    : "Первая проверка будет выполнена по расписанию.";
 
   const createBackup = async () => {
     setBusy("backup");
@@ -1607,6 +1798,39 @@ function BackupModal({
       });
       setStatusText("Создание бэкапа запущено в фоне.");
       await refreshAll();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveBackupSettings = async () => {
+    const automatic = payload?.automatic_backup;
+    if (!automatic) return;
+    if (
+      autoIntervalDays < automatic.minimum_days
+      || autoIntervalDays > automatic.maximum_days
+      || autoRetention < automatic.minimum_retention
+      || autoRetention > automatic.maximum_retention
+    ) return;
+
+    setBusy("settings");
+    setErrorText(null);
+    try {
+      await apiFetch<RuntimeSettingsResponse>("/api/runtime-settings", auth, {
+        method: "PUT",
+        body: JSON.stringify({
+          automatic_backup: {
+            enabled: autoEnabled,
+            interval_days: autoIntervalDays,
+            retention: autoRetention,
+          },
+        }),
+      });
+      setStatusText("Настройки автобэкапа сохранены.");
+      await loadBackups();
+      onRefresh();
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1705,22 +1929,16 @@ function BackupModal({
             <strong>{payload?.retention ?? "—"} последних</strong>
           </div>
           <div>
-            <span>
-              Лимит архива
-              <InfoTip
-                label="Как работает лимит архива"
-                text={`Один backup не может быть больше лимита. Старые backup-файлы автоматически удаляются сверх количества «Хранение». Текущие архивы лежат на VM в /opt/the333-bgp/data/system_backups.`}
-              />
-            </span>
-            <strong>{formatBytes(payload?.max_bytes)}</strong>
+            <span>Автобэкап</span>
+            <strong>{payload?.automatic_backup?.enabled ? "включён" : "выключен"}</strong>
           </div>
           <div>
-            <span>Состав</span>
-            <strong>{payload?.scope?.join(" + ") || "data + config"}</strong>
+            <span>Проверка изменений</span>
+            <strong>каждые {payload?.automatic_backup?.interval_days ?? "—"} дн.</strong>
           </div>
           <div>
-            <span>Всего бэкапов</span>
-            <strong>{payload?.backups.length ?? "—"}</strong>
+            <span>Метод</span>
+            <strong>только при изменениях</strong>
           </div>
         </div>
 
@@ -1839,6 +2057,49 @@ function BackupModal({
             </div>
           </section>
         </div>
+
+        {payload?.automatic_backup && (
+          <div className="backup-auto-settings">
+            <div className="backup-auto-copy">
+              <strong>Автоматические бэкапы</strong>
+              <small>{autoBackupStatusText}</small>
+            </div>
+            <button
+              className={`small-action-button backup-auto-toggle ${autoEnabled ? "active" : ""}`}
+              type="button"
+              aria-pressed={autoEnabled}
+              disabled={Boolean(busy)}
+              onClick={() => setAutoEnabled((enabled) => !enabled)}
+            >
+              {autoEnabled ? "Выключить" : "Включить"}
+            </button>
+            <label className="backup-auto-number">
+              <input
+                aria-label="Каждые, дней"
+                type="number"
+                min={payload.automatic_backup.minimum_days}
+                max={payload.automatic_backup.maximum_days}
+                value={autoIntervalDays}
+                onChange={(event) => setAutoIntervalDays(Number(event.target.value))}
+              />
+              <span>Каждые, дней</span>
+            </label>
+            <label className="backup-auto-number">
+              <input
+                aria-label="Хранить архивов"
+                type="number"
+                min={payload.automatic_backup.minimum_retention}
+                max={payload.automatic_backup.maximum_retention}
+                value={autoRetention}
+                onChange={(event) => setAutoRetention(Number(event.target.value))}
+              />
+              <span>Хранить архивов</span>
+            </label>
+            <button className="primary-button" type="button" disabled={Boolean(busy) || !autoSettingsValid} onClick={saveBackupSettings}>
+              {busy === "settings" ? "Сохраняю..." : "Сохранить"}
+            </button>
+          </div>
+        )}
       </motion.div>
     </motion.div>
   );
@@ -1850,7 +2111,9 @@ function MetricCard({
   note,
   tone = "neutral",
   help,
-  valueClassName = ""
+  valueClassName = "",
+  onClick,
+  ariaLabel
 }: {
   label: string;
   value: string | number;
@@ -1858,13 +2121,11 @@ function MetricCard({
   tone?: "neutral" | "ok" | "warn" | "bad" | "blue";
   help?: string;
   valueClassName?: string;
+  onClick?: () => void;
+  ariaLabel?: string;
 }) {
-  return (
-    <motion.div
-      className="metric-card"
-      whileHover={{ y: -3 }}
-      transition={{ duration: 0.16 }}
-    >
+  const content = (
+    <>
       <div>
         <div className="metric-label-row">
           <div className="metric-label">{label}</div>
@@ -1873,6 +2134,31 @@ function MetricCard({
         <div className={`metric-value ${valueClassName}`}>{value}</div>
       </div>
       {note && <div className={`metric-note ${tone}`}>{note}</div>}
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <motion.button
+        className="metric-card metric-card-button"
+        type="button"
+        aria-label={ariaLabel ?? label}
+        onClick={onClick}
+        whileHover={{ y: -3 }}
+        transition={{ duration: 0.16 }}
+      >
+        {content}
+      </motion.button>
+    );
+  }
+
+  return (
+    <motion.div
+      className="metric-card"
+      whileHover={{ y: -3 }}
+      transition={{ duration: 0.16 }}
+    >
+      {content}
     </motion.div>
   );
 }
@@ -2010,13 +2296,20 @@ function Dashboard({
   const totalModuleCount = services
     ? serviceCatalog.length || servicesCache?.services_count
     : serviceRoutes?.services_count ?? (serviceStats.length || "—");
-  const backendOk = ready?.ready === true && ready?.status_ok !== false;
+  const backendOk = ready?.ready === true && (ready?.unconfigured === true || ready?.status_ok !== false);
   const healthOk = backendOk && ready?.gobgp_ready === true && !routeMismatch;
   const lastUpdateOk = latestEvent ? latestEvent.ok : lastStatus?.ok;
+  const disk = data.serverResources?.disk;
+  const diskTone: DashboardStatusItem["tone"] =
+    disk?.pressure === "critical" ? "bad" : disk?.pressure === "warning" ? "warn" : "ok";
   const statusItems: DashboardStatusItem[] = [
     {
       label: "Backend API",
-      detail: backendOk ? "отвечает штатно" : "не отвечает или не прошёл ready-check",
+      detail: backendOk
+        ? ready?.unconfigured
+          ? "готов к первичной настройке"
+          : "отвечает штатно"
+        : "не отвечает или не прошёл ready-check",
       tone: backendOk ? "ok" : "bad",
       help: backendOk ? undefined : `Backend API:
 Источник данных: /backend/ready
@@ -2105,6 +2398,20 @@ ${failedServices.map((service) => `- ${service.title ?? service.id}: ${service.e
 1. Вкладку Модули сервисов.
 2. Предпросмотр проблемного модуля.
 3. DNS/HTTP-доступность его провайдеров.` : undefined
+    },
+    {
+      label: "Дисковое пространство",
+      detail: disk ? `${formatBytes(disk.free_bytes)} свободно · ${formatPercent(disk.used_percent)} занято` : "нет данных",
+      tone: disk ? diskTone : "warn",
+      help: diskTone === "ok" && disk ? undefined : `Дисковое пространство:
+Свободно: ${disk ? formatBytes(disk.free_bytes) : "нет данных"}
+Занято: ${formatPercent(disk?.used_percent)}
+Минимум для безопасного обновления: ${disk?.update_min_free_bytes ? formatBytes(disk.update_min_free_bytes) : "нет данных"}
+
+Что проверить:
+1. Старые Docker images и build cache.
+2. Архивы в /opt/the333-bgp/backups.
+3. Свободное место перед обновлением.`
     }
   ];
   const readyErrors = ready?.errors ?? [];
@@ -3109,7 +3416,15 @@ function RouteSetDropdown({
   );
 }
 
-function RoutesPage({ auth }: { auth: AuthState }) {
+function RoutesPage({
+  auth,
+  runtimeSettings,
+  onOpenAutoUpdate
+}: {
+  auth: AuthState;
+  runtimeSettings: RuntimeSettingsResponse | null;
+  onOpenAutoUpdate: () => void;
+}) {
   const [routeKind, setRouteKind] = useState<RouteSetKind>("advertised");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -3254,6 +3569,22 @@ function RoutesPage({ auth }: { auth: AuthState }) {
     setDiffOffset(0);
   };
 
+  const downloadRouteFile = async () => {
+    if (!routesData?.file?.exists) return;
+    try {
+      await downloadAuthenticatedFile(
+        `/api/routes/download?kind=${encodeURIComponent(routeKind)}`,
+        auth,
+        routesData.file.name,
+      );
+      setCopyStatus(`Файл ${routesData.file.name} скачан.`);
+    } catch (err) {
+      setCopyStatus(err instanceof Error ? err.message : "Не удалось скачать файл маршрутов");
+    }
+  };
+
+  const routeAutoUpdate = runtimeSettings?.route_auto_update;
+
   return (
     <motion.div className="dashboard routes-page" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
       <div className="compact-summary-grid">
@@ -3270,16 +3601,21 @@ function RoutesPage({ auth }: { auth: AuthState }) {
           tone={debouncedQuery ? "ok" : undefined}
         />
         <MetricCard
-          label="Показано"
-          value={routesData ? `${formatCount(currentStart)}-${formatCount(currentEnd)}` : "—"}
-          note={`лимит ${formatCount(limit)}`}
+          label="Автообновление маршрутов"
+          value={routeAutoUpdate ? (routeAutoUpdate.enabled ? "Включено" : "Выключено") : "—"}
+          note={routeAutoUpdate ? formatDurationSeconds(routeAutoUpdate.interval_seconds) : "настройки загружаются"}
+          tone={routeAutoUpdate?.enabled ? "ok" : "warn"}
+          onClick={onOpenAutoUpdate}
+          ariaLabel="Настроить автообновление маршрутов"
         />
         <MetricCard
           label="Файл"
           value={routesData?.file?.exists ? routesData.file.name : "нет файла"}
-          note={routesData?.file?.mtime ? formatDate(routesData.file.mtime) : "данные не найдены"}
+          note={routesData?.file?.mtime ? `скачать · ${formatDate(routesData.file.mtime)}` : "данные не найдены"}
           tone={routesData?.file?.exists ? undefined : "bad"}
           valueClassName="route-file-name"
+          onClick={routesData?.file?.exists ? downloadRouteFile : undefined}
+          ariaLabel={routesData?.file?.exists ? `Скачать ${routesData.file.name}` : "Файл маршрутов недоступен"}
         />
       </div>
 
@@ -3644,8 +3980,26 @@ function RoutesPage({ auth }: { auth: AuthState }) {
 
 function DiagnosticsPage({ data, auth }: { data: PortalData; auth: AuthState | null }) {
   const neighborRows = parseGobgpNeighbor(data.diagnostics?.gobgp_neighbor);
+  const establishedNeighbors = neighborRows.filter((row) => bgpStateTone(row.state) === "ok").length;
   const advertisedCount = data.ready?.advertised_count ?? data.diagnostics?.advertised_routes_summary?.count ?? "—";
+  const lastGoodCount = data.ready?.last_good_count ?? data.diagnostics?.last_good_routes_summary?.count ?? "—";
   const bgpCommunity = String(data.diagnostics?.safe_env?.BGP_COMMUNITY ?? "—");
+  const gobgpTechnicalText = [
+    "=== GoBGP global ===",
+    data.diagnostics?.gobgp_global?.trim() || "Нет данных",
+    "",
+    "=== BGP neighbor: краткая сводка ===",
+    data.diagnostics?.gobgp_neighbor?.trim() || "Нет данных",
+    "",
+    "=== BGP neighbor: подробности ===",
+    data.diagnostics?.gobgp_neighbor_detail?.trim() || "Нет данных",
+    "",
+    "=== Целостность маршрутов ===",
+    `GoBGP RIB: ${formatCount(data.diagnostics?.gobgp_rib_count ?? 0)}`,
+    `Опубликованный набор: ${typeof advertisedCount === "number" ? formatCount(advertisedCount) : advertisedCount}`,
+    `Последний удачный набор: ${typeof lastGoodCount === "number" ? formatCount(lastGoodCount) : lastGoodCount}`,
+    `Community: ${bgpCommunity}`,
+  ].join("\n");
   const handleDownloadBundle = async () => {
     if (!auth) return;
     try {
@@ -3676,9 +4030,10 @@ function DiagnosticsPage({ data, auth }: { data: PortalData; auth: AuthState | n
           note="sources.json"
         />
         <MetricCard
-          label="Автообновление"
-          value={formatDurationSeconds(data.diagnostics?.safe_env?.UPDATE_INTERVAL_SECONDS)}
-          note="интервал"
+          label="BGP-сессии"
+          value={`${establishedNeighbors}/${neighborRows.length}`}
+          note="установлено"
+          tone={neighborRows.length > 0 && establishedNeighbors === neighborRows.length ? "ok" : "warn"}
         />
       </div>
 
@@ -3751,9 +4106,9 @@ function DiagnosticsPage({ data, auth }: { data: PortalData; auth: AuthState | n
       <div className="panel-card compact-panel raw-diagnostics">
         <div className="panel-title">
           <div>
-            <h2>Сырой вывод GoBGP global</h2>
+            <h2>Техническая диагностика GoBGP</h2>
             <div className="panel-subtitle">
-              Низкоуровневый вывод GoBGP без обработки. Нужен для диагностики, когда человеческих карточек выше недостаточно.
+              Параметры процесса, подробности BGP-соседа, таймеры, capabilities, статистика сообщений и сверка маршрутных наборов.
             </div>
           </div>
           <button className="small-action-button" type="button" onClick={() => void handleDownloadBundle()}>
@@ -3761,7 +4116,7 @@ function DiagnosticsPage({ data, auth }: { data: PortalData; auth: AuthState | n
             Диагностика ZIP
           </button>
         </div>
-        <div className="code-box">{data.diagnostics?.gobgp_global ?? "Нет данных"}</div>
+        <div className="code-box">{gobgpTechnicalText}</div>
       </div>
     </motion.div>
   );
@@ -4025,6 +4380,9 @@ function jobSummaryText(job: PortalJob): string {
   }
 
   if (job.kind === "system_backup") {
+    if (summary.skipped === true) {
+      return `изменений нет · актуален ${summary.backup_name ?? "последний бэкап"}`;
+    }
     return `файлов ${summary.files_count ?? "—"} · размер ${formatBytes(Number(summary.size_bytes ?? NaN))}`;
   }
 
@@ -4855,16 +5213,16 @@ function ServicesPage({
   const cancelJob = async (jobId: string) => {
     try {
       setBusyAction(`job-cancel:${jobId}`);
-      setActionStatus("Запрашиваю остановку фоновой задачи...");
-      setTaskCenterNotice(makeNotice("warn", "Запрашиваю остановку фоновой задачи..."));
+      setActionStatus("Отменяю задачу до начала выполнения...");
+      setTaskCenterNotice(makeNotice("warn", "Отменяю задачу до начала выполнения..."));
 
       await apiFetch<Record<string, unknown>>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, auth, {
         method: "POST"
       });
 
       await loadJobs();
-      setActionStatus("Остановка запрошена. Если операция уже выполняет сетевой запрос, она завершит текущий шаг и обновит статус.");
-      setTaskCenterNotice(makeNotice("ok", "Остановка запрошена. Если операция уже выполняет сетевой запрос, она завершит текущий шаг и обновит статус."));
+      setActionStatus("Задача отменена до начала выполнения.");
+      setTaskCenterNotice(makeNotice("ok", "Задача отменена до начала выполнения."));
     } catch (error) {
       setActionStatus(error instanceof Error ? error.message : String(error));
       setTaskCenterNotice(makeNotice("bad", error instanceof Error ? error.message : String(error)));
@@ -5089,7 +5447,7 @@ function ServicesPage({
                     {job.duration_seconds !== null && job.duration_seconds !== undefined && (
                       <span>{formatHistoryDuration(job.duration_seconds)}</span>
                     )}
-                    {jobIsActive(job) && job.kind !== "service_apply_preview" && (
+                    {job.cancellable === true && (
                       <button
                         className="small-action-button service-job-cancel-button"
                         disabled={busyAction === `job-cancel:${job.id}`}
@@ -5877,13 +6235,27 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState<CommunityProfile | null>(null);
+  const [mikrotikProfileId, setMikrotikProfileId] = useState("");
+  const [mikrotikConnectionName, setMikrotikConnectionName] = useState("the333-bgp");
+  const [communityCopyStatus, setCommunityCopyStatus] = useState<string | null>(null);
 
   const profiles = data?.config?.profiles ?? [];
   const sourceCatalog = data?.catalog?.sources ?? [];
   const serviceCatalog = data?.catalog?.services ?? [];
   const planProfiles = data?.plan?.profiles ?? [];
   const defaultCommunityValue = String(data?.default_community ?? "—");
-  const communityExample = profiles.find((profile) => profile.enabled) ?? profiles[0] ?? makeCommunityDraft(data?.default_community, 0);
+  const communityExample = profiles.find((profile) => profile.id === mikrotikProfileId)
+    ?? profiles.find((profile) => profile.enabled)
+    ?? profiles[0]
+    ?? makeCommunityDraft(data?.default_community, 0);
+  const safeMikroTikConnectionName = isRouterOsObjectName(mikrotikConnectionName)
+    ? mikrotikConnectionName
+    : "the333-bgp";
+  const communityMikroTikCommands = buildMikroTikCommunityFilterCommands({
+    community: communityExample.community,
+    connectionName: safeMikroTikConnectionName,
+    profileId: communityExample.id,
+  });
 
   const profileStatById = useMemo(() => {
     const result = new Map<string, CommunityProfileStat>();
@@ -6023,6 +6395,15 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
   const openEditor = (profile?: CommunityProfile) => {
     setDraft(profile ? { ...profile, sources: [...profile.sources], services: [...profile.services] } : makeCommunityDraft(data?.default_community, profiles.length));
     setEditorOpen(true);
+  };
+
+  const copyCommunityMikroTikCommands = async () => {
+    try {
+      await navigator.clipboard.writeText(communityMikroTikCommands);
+      setCommunityCopyStatus("Команды скопированы.");
+    } catch (error) {
+      setCommunityCopyStatus(error instanceof Error ? error.message : "Не удалось скопировать команды");
+    }
   };
 
   const toggleDraftListValue = (key: "sources" | "services", value: string) => {
@@ -6214,8 +6595,8 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
           </div>
           <div>
             <span>Что менять на MikroTik</span>
-            <strong>input filter</strong>
-            <small>в фильтре BGP-сессии принимай только маршруты, где есть нужный Large Community.</small>
+            <strong>Routing → BGP → Connections → {safeMikroTikConnectionName}</strong>
+            <small>поле Input Filter (`input.filter`) переключается на отдельную цепочку выбранного профиля.</small>
           </div>
         </div>
 
@@ -6238,13 +6619,42 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
           })}
         </div>
 
-        <pre className="code-box community-mikrotik-code"><code>{[
-          "# RouterOS v7: логика фильтра для выбранного профиля.",
-          "# BGP-сосед остаётся тем же. Меняется только входящий routing filter.",
-          `# Пример выбранного Large Community: ${communityExample.community}`,
-          `# В правиле input filter нужно принять маршруты, где bgp-large-communities содержит ${communityExample.community},`,
-          "# а остальные маршруты отклонить, если нужен строго один профиль.",
-        ].join("\n")}</code></pre>
+        <div className="community-mikrotik-actions">
+          <label className="field">
+            <span>Профиль для MikroTik</span>
+            <select
+              className="select-input"
+              value={communityExample.id}
+              disabled={!profiles.length}
+              onChange={(event) => setMikrotikProfileId(event.target.value)}
+            >
+              {profiles.length > 0 ? profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.title} · {profile.community}</option>
+              )) : <option value={communityExample.id}>Сначала добавь профиль</option>}
+            </select>
+          </label>
+          <label className="field">
+            <span>Имя BGP connection</span>
+            <input
+              value={mikrotikConnectionName}
+              onChange={(event) => setMikrotikConnectionName(event.target.value)}
+              placeholder="the333-bgp"
+            />
+            <small>Точное значение поля `name` из `/routing/bgp/connection/print`.</small>
+          </label>
+          <button className="small-action-button" type="button" onClick={copyCommunityMikroTikCommands}>
+            <IconCopy size={15} stroke={2.2} />
+            Скопировать команды
+          </button>
+        </div>
+        {communityCopyStatus && <div className="route-copy-status">{communityCopyStatus}</div>}
+
+        <div className="mikrotik-risk-warning">
+          <strong>Перед применением</strong>
+          <span>Создай backup RouterOS и включи Safe Mode. Команда сначала проверит точное имя BGP connection и остановится без изменений при ошибке. Длинный блок содержит 14 защитных reject-правил для private/reserved CIDR, затем принимает только выбранный Large Community и отклоняет остальные маршруты. `session reset` кратковременно перезапустит BGP-сессию; маршруты появятся снова после установления соединения.</span>
+        </div>
+
+        <pre className="code-box community-mikrotik-code"><code>{communityMikroTikCommands}</code></pre>
       </section>
 
       {editorOpen && draft && (
@@ -6370,8 +6780,23 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
   const versions = updates?.versions?.length ? updates.versions : fallbackVersions;
   const selectedVersion = versions.find((version) => version.version === selectedVersionId) ?? versions[0];
   const currentVersion = updates?.current_version ?? PRODUCT_VERSION;
-  const currentChannel = updates?.current_channel ?? "stable";
+  const currentChannel = updates?.current_channel ?? "beta";
+  const updateStateKnown = updates !== null;
   const updateEnabled = updates?.update_enabled === true;
+  const selectedIsNewer = selectedVersion
+    ? compareProductVersions(selectedVersion.version, currentVersion) > 0
+    : false;
+  const availableUpdate = versions.some((version) => compareProductVersions(version.version, currentVersion) > 0);
+  const manifestAvailable = Boolean(updates?.manifest_url && !updates?.manifest_unavailable);
+  const updateStatusLabel = !updateStateKnown
+    ? "проверяю"
+    : !manifestAvailable
+      ? "проверка недоступна"
+      : !updateEnabled
+        ? "обновление отключено"
+        : availableUpdate
+          ? "доступно обновление"
+          : "актуальная версия";
 
   const loadUpdates = useCallback(async () => {
     setBusy(true);
@@ -6384,7 +6809,18 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
         if (payload.versions?.some((version) => version.version === current)) return current;
         return payload.latest?.stable || payload.versions?.[0]?.version || PRODUCT_VERSION;
       });
-      setStatusText(payload.ok ? "Проверка обновлений завершена." : `Список обновлений недоступен: ${payload.error ?? "ошибка"}`);
+      const hasNewer = (payload.versions ?? []).some(
+        (version) => compareProductVersions(version.version, payload.current_version ?? PRODUCT_VERSION) > 0
+      );
+      setStatusText(
+        payload.manifest_unavailable
+          ? payload.notice ?? "Список обновлений временно недоступен."
+          : payload.ok
+          ? hasNewer
+            ? "Найдена новая версия. Выбери её в списке для просмотра changelog или обновления."
+            : "Установлена актуальная доступная версия. Обновление не требуется."
+          : `Список обновлений недоступен: ${payload.error ?? "ошибка"}`
+      );
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : String(error));
     } finally {
@@ -6432,7 +6868,11 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
           <span>Текущая версия</span>
           <strong>{formatProductVersion(currentVersion, currentChannel)}</strong>
           <small>
-            {updates?.manifest_url ? "проверка обновлений подключена" : "проверка обновлений недоступна"}
+            {!updateStateKnown
+              ? "подключаю проверку обновлений..."
+              : manifestAvailable
+                ? "проверка обновлений подключена"
+                : "проверка обновлений недоступна"}
           </small>
         </div>
       </section>
@@ -6445,11 +6885,11 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
             <div>
               <h2>Доступные версии</h2>
               <div className="panel-subtitle">
-                Stable — обычные обновления. Beta — ранний доступ, который лучше включать только осознанно.
+                Stable — обычные обновления. Beta — ранний доступ. Предыдущие версии доступны для changelog; восстановление выполняется из бэкапа.
               </div>
             </div>
-            <span className={`pill ${updateEnabled ? "ok" : "warn"}`}>
-              {updateEnabled ? "обновление готово" : "только проверка"}
+            <span className={`pill ${!updateStateKnown ? "" : manifestAvailable && updateEnabled && !availableUpdate ? "ok" : "warn"}`}>
+              {updateStatusLabel}
             </span>
           </div>
 
@@ -6477,11 +6917,15 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
             <button className="ghost-button" type="button" disabled={busy} onClick={loadUpdates}>
               Проверить обновления
             </button>
-            <button className="primary-button" type="button" disabled={busy || !updateEnabled || !selectedVersion} onClick={startProductUpdate}>
-              Обновить выбранную версию
+            <button className="primary-button" type="button" disabled={busy || !updateEnabled || !selectedVersion || !selectedIsNewer} onClick={startProductUpdate}>
+              {selectedIsNewer
+                ? "Обновить выбранную версию"
+                : selectedVersion?.version === currentVersion
+                  ? "Обновление не требуется"
+                  : "Установлена более новая версия"}
             </button>
           </div>
-          {!updateEnabled && (
+          {updateStateKnown && !updateEnabled && (
             <div className="panel-subtitle updates-disabled-note">
               Обновление из портала выключено в настройках сервера. На VM можно обновиться командой:
               <code> /opt/the333-bgp/scripts/the333bgp.sh update</code>
@@ -6531,6 +6975,10 @@ function MikroTikPage({ data }: { data: PortalData }) {
       detectedRouterAs={neighborRows[0]?.asn || "65455"}
       detectedRouterId={neighborRows[0]?.peer || "192.168.1.1"}
       defaultCommunity={String(safeEnv.BGP_COMMUNITY ?? `${serviceAs}:500`)}
+      peerMode={safeEnv.BGP_PEER_MODE === "multihop" ? "multihop" : "direct"}
+      ttlSecurityEnabled={safeEnv.BGP_TTL_SECURITY_ENABLED === true}
+      ttlSecurityMin={Number(safeEnv.BGP_TTL_SECURITY_MIN ?? 255)}
+      tcpMd5Required={safeEnv.BGP_TCP_MD5_CONFIGURED === true}
     />
   );
 }
@@ -6543,6 +6991,7 @@ function AppShell({
   portalTimeLabel,
   timeZone,
   onOpenTimeSettings,
+  onOpenRouteAutoUpdate,
   onOpenBackup,
   onLogout
 }: {
@@ -6553,6 +7002,7 @@ function AppShell({
   portalTimeLabel: string;
   timeZone: string;
   onOpenTimeSettings: () => void;
+  onOpenRouteAutoUpdate: () => void;
   onOpenBackup: () => void;
   onLogout: () => void;
 }) {
@@ -6568,13 +7018,15 @@ function AppShell({
   const updateNotice = productUpdateNotice(data.productUpdates);
   const currentProductVersion = formatProductVersion(
     data.productUpdates?.current_version ?? PRODUCT_VERSION,
-    data.productUpdates?.current_channel ?? "stable"
+    data.productUpdates?.current_channel ?? "beta"
   );
   const updateNoticeLabel = updateNotice
     ? `+NEW ${formatProductVersion(updateNotice.version, updateNotice.channel)}`
-    : data.productUpdates?.manifest_url
+    : data.productUpdates?.manifest_url && !data.productUpdates?.manifest_unavailable
       ? "актуально"
       : "проверка недоступна";
+  const routeAutoUpdate = data.runtimeSettings?.route_auto_update;
+  const runtimeContainers = data.serverResources?.runtime?.containers ?? [];
 
   return (
     <div className="app shell">
@@ -6636,7 +7088,9 @@ function AppShell({
                 <strong>
                   CPU {formatPercent(data.serverResources?.cpu.used_percent)} · RAM {formatPercent(data.serverResources?.ram.used_percent)}
                 </strong>
-                <strong>Disk {formatPercent(data.serverResources?.disk.used_percent)}</strong>
+                <strong title={data.serverResources?.disk ? `${formatBytes(data.serverResources.disk.free_bytes)} свободно` : "Данные о диске недоступны"}>
+                  Disk {formatPercent(data.serverResources?.disk.used_percent)} · {data.serverResources?.disk ? formatBytes(data.serverResources.disk.free_bytes) : "—"}
+                </strong>
               </div>
             </div>
             <div>
@@ -6647,9 +7101,34 @@ function AppShell({
               <span>Backend</span>
               <strong>{backendEndpoint}</strong>
             </div>
-            <div>
-              <span>Автообновление</span>
-              <strong>{formatDurationSeconds(data.diagnostics?.safe_env?.UPDATE_INTERVAL_SECONDS)}</strong>
+            <button
+              className="sidebar-runtime-action"
+              type="button"
+              onClick={onOpenRouteAutoUpdate}
+              title="Открыть настройки автообновления маршрутов"
+              aria-label="Открыть настройки автообновления маршрутов"
+            >
+              <span>Автообновление маршрутов</span>
+              <strong className={routeAutoUpdate?.enabled ? "ok" : "warn"}>
+                {routeAutoUpdate
+                  ? routeAutoUpdate.enabled
+                    ? formatDurationSeconds(routeAutoUpdate.interval_seconds)
+                    : "выключено"
+                  : "—"}
+              </strong>
+            </button>
+            <div className="sidebar-uptime-card">
+              <span>Uptime</span>
+              <div className="sidebar-uptime-values">
+                {runtimeContainers.length > 0 ? runtimeContainers.map((container) => (
+                  <strong
+                    key={container.key}
+                    className={container.status === "running" && container.health !== "unhealthy" ? "ok" : "bad"}
+                  >
+                    {container.label}: {formatCompactUptime(container.uptime_seconds)}
+                  </strong>
+                )) : <strong className="warn">данные недоступны</strong>}
+              </div>
             </div>
           </div>
 
@@ -6732,6 +7211,16 @@ function AppShell({
             Бэкап
           </button>
           <button
+            className={`mobile-update-button ${updateNotice ? "has-update" : ""}`}
+            type="button"
+            onClick={() => setActivePage("updates")}
+            title={updateNotice ? updateNoticeLabel : "Открыть страницу обновлений"}
+            aria-label={updateNotice ? `${updateNoticeLabel}. Открыть обновления` : "Открыть страницу обновлений"}
+          >
+            <IconRefresh size={15} stroke={2} />
+            <span>{updateNotice ? "NEW" : currentProductVersion}</span>
+          </button>
+          <button
             className="mobile-logout-button"
             type="button"
             onClick={onLogout}
@@ -6780,6 +7269,7 @@ export default function App() {
     history: null,
     services: null,
     serverResources: null,
+    runtimeSettings: null,
     productUpdates: null,
     jobs: null
   });
@@ -6787,6 +7277,7 @@ export default function App() {
   const [actionText, setActionText] = useState<string | null>(null);
   const [timeZone, setTimeZoneState] = useState(() => getStoredPortalTimeZone());
   const [timeSettingsOpen, setTimeSettingsOpen] = useState(false);
+  const [routeAutoUpdateOpen, setRouteAutoUpdateOpen] = useState(false);
   const [backupModalOpen, setBackupModalOpen] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const productUpdatesRef = useRef<ProductUpdatesResponse | null>(null);
@@ -6815,13 +7306,14 @@ export default function App() {
     if (!auth) return;
 
     try {
-      const [ready, diagnostics, sources, history, services, serverResources, jobs] = await Promise.all([
+      const [ready, diagnostics, sources, history, services, serverResources, runtimeSettings, jobs] = await Promise.all([
         apiFetch<ReadyResponse>("/ready", auth),
         apiFetch<DiagnosticsResponse>("/api/diagnostics", auth),
         apiFetch<SourcesResponse>("/api/sources", auth),
         apiFetch<UpdateHistoryResponse>("/api/update-history", auth),
         apiFetch<ServicesResponse>("/api/services", auth),
         apiFetch<ServerResourcesResponse>("/api/server-resources", auth),
+        apiFetch<RuntimeSettingsResponse>("/api/runtime-settings", auth),
         apiFetch<JobsResponse>("/api/jobs?limit=30", auth)
       ]);
 
@@ -6839,7 +7331,7 @@ export default function App() {
         }
       }
 
-      setData({ ready, diagnostics, sources, history, services, serverResources, productUpdates, jobs });
+      setData({ ready, diagnostics, sources, history, services, serverResources, runtimeSettings, productUpdates, jobs });
       setLoginError(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -7016,7 +7508,13 @@ export default function App() {
 
     if (activePage === "routes") {
       if (!auth) return null;
-      return <RoutesPage auth={auth} />;
+      return (
+        <RoutesPage
+          auth={auth}
+          runtimeSettings={data.runtimeSettings}
+          onOpenAutoUpdate={() => setRouteAutoUpdateOpen(true)}
+        />
+      );
     }
     if (activePage === "communities") {
       if (!auth) return null;
@@ -7052,6 +7550,7 @@ export default function App() {
         portalTimeLabel={portalTimeLabel}
         timeZone={timeZone}
         onOpenTimeSettings={() => setTimeSettingsOpen(true)}
+        onOpenRouteAutoUpdate={() => setRouteAutoUpdateOpen(true)}
         onOpenBackup={() => setBackupModalOpen(true)}
         onLogout={onLogout}
       >
@@ -7063,6 +7562,15 @@ export default function App() {
           timeZone={timeZone}
           onChange={setTimeZone}
           onClose={() => setTimeSettingsOpen(false)}
+        />
+      )}
+
+      {routeAutoUpdateOpen && (
+        <RouteAutoUpdateModal
+          auth={auth}
+          current={data.runtimeSettings}
+          onSaved={(runtimeSettings) => setData((current) => ({ ...current, runtimeSettings }))}
+          onClose={() => setRouteAutoUpdateOpen(false)}
         />
       )}
 

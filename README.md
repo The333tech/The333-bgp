@@ -5,7 +5,7 @@
 The333-BGP поднимает GoBGP speaker на Linux VM, собирает маршруты из источников и модулей сервисов, дедуплицирует/агрегирует их и публикует в MikroTik через BGP. Управление идёт через веб-портал: источники маршрутов, модули сервисов, Community-профили, диагностика, история, резервные копии, обновления и пошаговый помощник MikroTik.
 
 <p align="center">
-  <a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.78_beta-8e44ad?style=flat-square"></a>
+  <a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.82b-8e44ad?style=flat-square"></a>
   <a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a>
   <a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a>
@@ -24,14 +24,14 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 </p>
 
 > [!NOTE]
-> **v0.78 beta** означает, что проект ещё находится в активной разработке перед stable-релизом. Текущий рабочий стенд на отдельной VM в локальной сети успешно публикует маршруты в MikroTik больше месяца; тесты, документация и сценарии установки продолжают дорабатываться.
+> **v0.82b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Текущий рабочий стенд на отдельной VM в локальной сети успешно публикует маршруты в MikroTik больше месяца; тесты, документация и сценарии установки продолжают дорабатываться.
 
 ## Требования
 
 - Linux VM с Ubuntu/Debian, systemd и заранее установленными Docker и Docker Compose plugin либо возможностью установить их;
 - статический IPv4 для VM;
 - MikroTik с RouterOS v7;
-- минимум 2 ГБ RAM и 8 ГБ свободного места, рекомендуется 10+ ГБ свободного места;
+- минимум 1 ГБ RAM и 8 ГБ свободного места; рекомендуется 2+ ГБ RAM и 12+ ГБ свободного места;
 - доступ VM к Интернету для загрузки образов и списков маршрутов.
 
 ## Быстрый старт
@@ -42,16 +42,23 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 curl -fsSL https://raw.githubusercontent.com/The333tech/The333-bgp/main/install.sh | bash
 ```
 
+Чтобы сначала просмотреть установщик, скачай его отдельно:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/The333tech/The333-bgp/main/install.sh -o /tmp/the333-install.sh
+less /tmp/the333-install.sh
+bash /tmp/the333-install.sh
+```
+
 После установки:
 
 ```text
 Portal:  http://IP_VM:8090
 Backend: http://IP_VM:8088
 BGP:     IP_VM:179
-Login:   admin
 ```
 
-Пароль задаётся при установке. Минимум — **8 символов**. Если оставить поле пустым, установщик сгенерирует и **один раз покажет** пароль; в `.env` сохраняется только его хеш. После входа портал использует ограниченную по времени `HttpOnly`-сессию и CSRF-защиту, не сохраняя пароль в браузере.
+Страница входа запрашивает только пароль. Он задаётся при установке; минимум — **8 символов**. Если оставить поле пустым, установщик сгенерирует и **один раз покажет** пароль; в `.env` сохраняется только его хеш. После входа портал использует ограниченную по времени `HttpOnly`-сессию и CSRF-защиту, не сохраняя пароль в браузере.
 
 ## Что внутри
 
@@ -71,10 +78,15 @@ Login:   admin
 - **Дедупликация и агрегация**: итоговый набор маршрутов собирается без лишних дублей.
 - **Community-профили**: разные наборы маршрутов под разные BGP community.
 - **История и диагностика**: последние события, ready/status, GoBGP output, сравнение наборов маршрутов.
-- **Бэкапы**: создание, скачивание, удаление и восстановление через портал.
+- **Автообновление маршрутов**: включение, отключение и интервал в минутах настраиваются в портале без рестарта контейнеров.
+- **Бэкапы**: создание, скачивание, удаление и восстановление через портал; автобэкап по расписанию создаёт новый архив только после реального изменения состояния.
+- **Runtime**: портал показывает uptime Portal, Backend и GoBGP через ограниченный host-side API без Docker socket в контейнерах.
 - **Обновления**: проверка новых версий и обновление проекта через портал.
-- **Защита обновления**: pre-update backup, проверка готовности после перезапуска и автоматический rollback файлов при неудачном обновлении.
+- **Защита обновления**: verified release, согласованный pre-update backup с краткой паузой только Backend, durable-статус задачи, полная проверка готовности и автоматический rollback кода, `.env`, `config` и `data`; GoBGP продолжает публиковать маршруты.
 - **Изоляция updater**: Docker socket не монтируется в контейнеры; backend обращается к узкому host-side API только через Unix socket и отдельный token.
+- **BGP continuity**: версия routing-core отделена от версии портала, поэтому обычные UI/backend-обновления не перезапускают GoBGP без необходимости.
+- **Direct eBGP через Docker**: MikroTik остаётся в штатном режиме `multihop=no`; единственный Docker bridge hop учитывается минимальным транспортным TTL внутри GoBGP и не превращает peer в routed multihop.
+- **BGP transport security**: GTSM доступна как явная двухсторонняя настройка для direct eBGP; по умолчанию сохраняется совместимый режим. Опциональный TCP MD5 хранится в read-only secret-файле, а не в окружении контейнера.
 - **Помощник MikroTik**: read-only preflight, проверка RouterOS/архитектуры/Containers и поэтапная BGP-настройка через карантинный фильтр, проверку и отдельную активацию.
 - **Версионные профили RouterOS**: отдельная генерация BGP-команд для RouterOS 7.0–7.19 и 7.20+; до успешного preflight команды не выдаются.
 
@@ -105,7 +117,7 @@ cd /opt/the333-bgp
 ./scripts/the333bgp.sh tls-enable /путь/к/portal.crt /путь/к/portal.key
 ```
 
-Команда проверяет пару certificate/key, хранит ключ вне каталога проекта в root-only `/etc/the333-bgp/tls`, тестирует nginx и переключает портал на `https://IP_VM:8090`. Вернуться к локальному HTTP: `./scripts/the333bgp.sh tls-disable`.
+Команда проверяет пару certificate/key, хранит ключ вне каталога проекта в root-owned `/etc/the333-bgp/tls` с доступом только у service-группы портала, тестирует nginx и переключает портал на `https://IP_VM:8090`. Вернуться к локальному HTTP: `./scripts/the333bgp.sh tls-disable`.
 
 Подробнее: [SECURITY.md](SECURITY.md)
 
@@ -124,6 +136,7 @@ cd /opt/the333-bgp
 ## Документация
 
 - [Полная инструкция установки](docs/INSTALL.md)
+- [Как внести вклад](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
 

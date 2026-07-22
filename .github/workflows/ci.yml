@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     name: Validate release tree
@@ -78,13 +82,55 @@ jobs:
       - name: Prepare Docker Compose env
         run: |
           cp .env.example .env
+          sed -i "s/^THE333_BIND_IP=.*/THE333_BIND_IP=127.0.0.1/" .env
+          sed -i "s/^ROUTER_ID=.*/ROUTER_ID=127.0.0.2/" .env
+          sed -i "s/^BGP_NEXTHOP=.*/BGP_NEXTHOP=127.0.0.2/" .env
+          sed -i "s/^PEER_ADDRESS=.*/PEER_ADDRESS=127.0.0.1/" .env
+          sed -i "s/^PUID=.*/PUID=$(id -u)/" .env
+          sed -i "s/^PGID=.*/PGID=$(id -g)/" .env
+          sed -i "s#^HOST_UPDATER_RUN_DIR=.*#HOST_UPDATER_RUN_DIR=/tmp/the333-bgp-run#" .env
+          mkdir -p data/gobgp-state data/secrets /tmp/the333-bgp-run
+          : > data/secrets/bgp_tcp_md5
+          chmod 600 data/secrets/bgp_tcp_md5
           printf 'PRODUCT_VERSION=%s\n' "$(tr -d '[:space:]' < VERSION)" >> "${GITHUB_ENV}"
+          printf 'GOBGP_CORE_IMAGE_VERSION=%s\n' "$(awk -F= '$1 == "GOBGP_CORE_IMAGE_VERSION" {print $2; exit}' .env)" >> "${GITHUB_ENV}"
 
       - name: Validate Docker Compose
         run: docker compose -f docker-compose.yml -f docker-compose.portal.yml config >/tmp/the333-compose.yml
 
       - name: Build Docker images
         run: docker compose -f docker-compose.yml -f docker-compose.portal.yml build
+
+      - name: Smoke-test isolated runtime
+        run: |
+          cleanup() {
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml down --remove-orphans --volumes || true
+          }
+          trap cleanup EXIT
+          docker compose -f docker-compose.yml -f docker-compose.portal.yml up -d --remove-orphans
+          for attempt in $(seq 1 36); do
+            states="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' the333-gobgp-core the333-bgp-backend the333-portal | sort -u)"
+            if [ "${states}" = "healthy" ]; then
+              break
+            fi
+            sleep 5
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-gobgp-core)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-bgp-backend)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-portal)" = healthy
+          curl -fsS http://127.0.0.1:8090/ >/dev/null
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          def networks(container):
+              payload = subprocess.check_output(["docker", "inspect", container], text=True)
+              return set(json.loads(payload)[0]["NetworkSettings"]["Networks"])
+
+          assert "the333-control" not in networks("the333-portal")
+          assert {"the333-frontend", "the333-control"} <= networks("the333-bgp-backend")
+          assert {"the333-bgp-edge", "the333-control"} <= networks("the333-gobgp-core")
+          PY
 
       - name: Scan backend image for fixable Critical vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
@@ -99,7 +145,7 @@ jobs:
       - name: Scan GoBGP core image for fixable Critical vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
-          image: "the333-bgp-core:${{ env.PRODUCT_VERSION }}"
+          image: "the333-bgp-core:${{ env.GOBGP_CORE_IMAGE_VERSION }}"
           fail-build: true
           severity-cutoff: critical
           only-fixed: true
@@ -115,3 +161,18 @@ jobs:
           only-fixed: true
           output-format: table
           cache-db: true
+
+  dependency-review:
+    name: Review dependency changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high

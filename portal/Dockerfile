@@ -23,4 +23,10 @@ LABEL org.opencontainers.image.title="The333-BGP Portal" \
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 80 443
+RUN apk upgrade --no-cache \
+    && sed -i '/^[[:space:]]*user[[:space:]]/d' /etc/nginx/nginx.conf
+
+EXPOSE 8080 8443
+
+ENTRYPOINT []
+CMD ["nginx", "-g", "daemon off;"]
