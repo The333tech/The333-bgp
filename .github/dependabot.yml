@@ -7,6 +7,23 @@ updates:
       day: monday
       time: "05:00"
     open-pull-requests-limit: 5
+    groups:
+      portal-production:
+        applies-to: version-updates
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      portal-toolchain:
+        applies-to: version-updates
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: pip
     directory: /
@@ -15,14 +32,41 @@ updates:
       day: monday
       time: "05:10"
     open-pull-requests-limit: 5
+    groups:
+      backend-dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: docker
-    directory: /
+    directory: /docker
     schedule:
       interval: weekly
       day: monday
       time: "05:20"
     open-pull-requests-limit: 5
+    groups:
+      core-base-images:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: golang
+        update-types:
+          - version-update:semver-major
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: docker
     directory: /portal
@@ -31,11 +75,61 @@ updates:
       day: monday
       time: "05:30"
     open-pull-requests-limit: 5
+    groups:
+      portal-base-images:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major
+      - dependency-name: nginx
+        versions:
+          - "1.31.x"
+
+  - package-ecosystem: docker
+    directory: /extras/docker-awg
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:40"
+    open-pull-requests-limit: 5
+    groups:
+      docker-awg-base-images:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: golang
+        update-types:
+          - version-update:semver-major
+      - dependency-name: alpine
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
-      time: "05:40"
+      time: "05:50"
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major

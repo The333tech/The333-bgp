@@ -2,16 +2,34 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.82b"
+    "beta": "0.82.1b"
   },
   "versions": [
+    {
+      "version": "0.82.1b",
+      "title": "v0.82.1b",
+      "channel": "beta",
+      "status": "текущая beta",
+      "date": "2026-07-23",
+      "recommended": true,
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.1b/the333-bgp-v0.82.1b.tar.gz",
+      "sha256": "",
+      "changelog": [
+        "Дополнительная защита result-путей и symlink-сценариев host-updater.",
+        "CodeQL, CI и supply-chain проверки без открытых предупреждений.",
+        "Совместимые backend/frontend зависимости обновлены и закреплены.",
+        "nginx 1.30.4 stable и Node.js 24 LTS.",
+        "Сгруппированные minor/patch Dependabot updates без автоматических runtime major-переходов.",
+        "GoBGP 4.7.0 и BGP continuity повторно проверены."
+      ]
+    },
     {
       "version": "0.82b",
       "title": "v0.82b",
       "channel": "beta",
-      "status": "текущая beta",
+      "status": "предыдущая beta",
       "date": "2026-07-12",
-      "recommended": true,
+      "recommended": false,
       "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82b/the333-bgp-v0.82b.tar.gz",
       "sha256": "",
       "changelog": [

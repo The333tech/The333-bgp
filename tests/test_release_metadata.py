@@ -26,8 +26,10 @@ class ReleaseMetadataTests(unittest.TestCase):
         package_lock = json.loads((ROOT / "portal" / "package-lock.json").read_text(encoding="utf-8"))
         matching = next(item for item in manifest["versions"] if str(item.get("version")) == version)
         channel = str(matching["channel"])
-        if re.fullmatch(r"[0-9]+\.[0-9]+b", version):
-            package_version = f"{version[:-1]}.0-beta"
+        beta_match = re.fullmatch(r"([0-9]+)\.([0-9]+)(?:\.([0-9]+))?b", version)
+        if beta_match:
+            major, minor, patch = beta_match.groups()
+            package_version = f"{major}.{minor}.{patch or '0'}-beta"
         else:
             package_version = f"{version}.0" if version.count(".") == 1 else version
 
@@ -169,6 +171,17 @@ class ReleaseMetadataTests(unittest.TestCase):
                 if line.startswith("FROM "):
                     with self.subTest(dockerfile=dockerfile.name, line=line):
                         self.assertRegex(line, r"@sha256:[0-9a-f]{64}(?:\s|$)")
+
+    def test_dependabot_covers_every_dockerfile_directory(self) -> None:
+        dependabot = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+
+        for directory in ("/docker", "/portal", "/extras/docker-awg"):
+            with self.subTest(directory=directory):
+                self.assertIn(f"directory: {directory}", dependabot)
+        self.assertNotRegex(
+            dependabot,
+            r"(?m)^\s*- package-ecosystem: docker\s+directory: /\s*$",
+        )
 
     def test_runtime_images_have_oci_identity_labels(self) -> None:
         dockerfiles = [

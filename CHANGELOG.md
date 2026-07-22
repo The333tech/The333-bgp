@@ -1,5 +1,16 @@
 # The333-BGP Changelog
 
+## 0.82.1b - 2026-07-23
+
+- Host-updater дополнительно защищён от выхода result-файлов за доверенный каталог: путь нормализуется и проверяется как непосредственный потомок фиксированного root, а временные имена больше не зависят от входного `request_id`.
+- Добавлены тесты traversal, absolute path, separators, регистра/длины идентификатора и POSIX symlink replacement; внешний файл при атакующей подмене не изменяется.
+- Публичный CodeQL повторно прошёл без открытых alerts; CI, secret scanning, push protection, Dependabot security updates и release attestations проверены на GitHub.
+- Backend зависимости обновлены до FastAPI `0.139.2` и HTTPX2 `2.7.0` с полным hash-lock; portal обновлён до Tabler Icons `3.45.0` и Vite `8.1.5`.
+- Runtime portal остаётся на Node.js 24 LTS; nginx обновлён внутри stable-линейки до `1.30.4` с immutable multi-arch digest.
+- SHA-pinned CodeQL, QEMU, Buildx и Docker build actions обновлены до проверенных совместимых выпусков.
+- Dependabot группирует minor/patch updates по экосистемам; переходы на major runtime и nginx mainline не предлагаются как обычное автоматическое обновление.
+- GoBGP остаётся на актуальной проверенной версии `v4.7.0`; перезапуск host-updater на рабочей VM не прервал BGP-сессию, а global RIB и advertised routes сохранили одинаковые `16483` маршрута.
+
 ## 0.82b - 2026-07-12
 
 - Фоновые product-update задачи получили durable-результат: перезапуск backend больше не превращает выполняющееся обновление в потерянную или фиктивно отменённую задачу.
