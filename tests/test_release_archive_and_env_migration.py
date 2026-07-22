@@ -20,8 +20,8 @@ class EnvMigrationTests(unittest.TestCase):
             env_path.write_text(
                 "\n".join(
                     [
-                        "PRODUCT_VERSION=0.1",
-                        "PRODUCT_VERSION=0.78",
+                        "PRODUCT_VERSION=9.7",
+                        "PRODUCT_VERSION=9.8",
                         "PRODUCT_CHANNEL=stable",
                         "PRODUCT_UPDATE_MANIFEST_URL=https://raw.githubusercontent.com/The333tech/The333-bgp/main/update-manifest.json",
                         "PORTAL_TLS_ENABLED=true",
@@ -51,7 +51,7 @@ class EnvMigrationTests(unittest.TestCase):
                 "--project-dir",
                 str(project),
                 "--version",
-                "0.82b",
+                "9.9b",
                 "--channel",
                 "beta",
                 "--update-url",
@@ -63,7 +63,7 @@ class EnvMigrationTests(unittest.TestCase):
             self.assertEqual(second.returncode, 0, msg=second.stderr)
 
             migrated = env_path.read_text(encoding="utf-8")
-            self.assertIn("PRODUCT_VERSION=0.82b", migrated)
+            self.assertIn("PRODUCT_VERSION=9.9b", migrated)
             self.assertIn("PRODUCT_CHANNEL=beta", migrated)
             self.assertIn(
                 "PRODUCT_UPDATE_MANIFEST_URL=https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20",
@@ -111,7 +111,7 @@ class EnvMigrationTests(unittest.TestCase):
                     "--project-dir",
                     str(project),
                     "--version",
-                    "0.82b",
+                    "9.9b",
                     "--channel",
                     "beta",
                 ],
@@ -151,7 +151,7 @@ class EnvMigrationTests(unittest.TestCase):
                     "--project-dir",
                     str(project),
                     "--version",
-                    "0.82b",
+                    "9.9b",
                     "--channel",
                     "beta",
                 ],
@@ -182,19 +182,19 @@ class ReleaseArchiveExtractionTests(unittest.TestCase):
             archive = root / "release.tar.gz"
             destination = root / "out"
             with tarfile.open(archive, "w:gz") as handle:
-                data = b"0.82b\n"
-                member = tarfile.TarInfo("The333-bgp-v0.82b/VERSION")
+                data = b"9.9b\n"
+                member = tarfile.TarInfo("The333-bgp-v9.9b/VERSION")
                 member.size = len(data)
                 member.mode = 0o644
                 handle.addfile(member, io.BytesIO(data))
             result = self.run_extractor(archive, destination)
             self.assertEqual(result.returncode, 0, msg=result.stderr)
-            self.assertEqual((destination / "VERSION").read_text(encoding="utf-8"), "0.82b\n")
+            self.assertEqual((destination / "VERSION").read_text(encoding="utf-8"), "9.9b\n")
 
     def test_path_traversal_and_links_are_rejected(self) -> None:
         for member_name, link_target in (
-            ("The333-bgp-v0.82b/../../escape", None),
-            ("The333-bgp-v0.82b/link", "/etc/passwd"),
+            ("The333-bgp-v9.9b/../../escape", None),
+            ("The333-bgp-v9.9b/link", "/etc/passwd"),
         ):
             with self.subTest(member=member_name), tempfile.TemporaryDirectory() as temp_dir:
                 root = Path(temp_dir)

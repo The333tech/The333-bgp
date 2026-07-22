@@ -57,7 +57,7 @@ class BackgroundJobRecoveryTests(unittest.TestCase):
                 {
                     "ok": True,
                     "status": "succeeded",
-                    "version": "0.82b",
+                    "version": "9.9b",
                     "channel": "beta",
                     "returncode": 0,
                     "duration_seconds": 42,
@@ -70,7 +70,7 @@ class BackgroundJobRecoveryTests(unittest.TestCase):
         self.assertTrue(main.reconcile_jobs_state(state))
         job = state["jobs"][0]
         self.assertEqual(job["status"], "succeeded")
-        self.assertEqual(job["result_summary"]["version"], "0.82b")
+        self.assertEqual(job["result_summary"]["version"], "9.9b")
         self.assertEqual(job["progress_percent"], 100)
 
     def test_interrupted_non_update_job_fails_closed_after_restart(self) -> None:

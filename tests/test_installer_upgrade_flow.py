@@ -168,12 +168,12 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 printf '%s\\n' "${url}" > "${THE333_CURL_URL_LOG:?}"
                 cat > "${output:?}" <<'JSON'
                 {
-                  "latest": {"stable": null, "beta": "0.82b"},
+                  "latest": {"stable": null, "beta": "9.9b"},
                   "versions": [
                     {
-                      "version": "0.82b",
+                      "version": "9.9b",
                       "channel": "beta",
-                      "archive_url": "https://release.example/the333-bgp-v0.82b.tar.gz",
+                      "archive_url": "https://release.example/the333-bgp-v9.9b.tar.gz",
                       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
                     }
                   ]
@@ -270,11 +270,11 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
 
     def test_download_release_returns_only_the_extracted_directory(self) -> None:
-        archive_root = self.root / "archive-root" / "The333-bgp-v0.82b"
+        archive_root = self.root / "archive-root" / "The333-bgp-v9.9b"
         self._write(archive_root / "app" / "main.py", "# release backend\n")
         archive = self.root / "release.tar.gz"
         with tarfile.open(archive, "w:gz") as handle:
-            handle.add(archive_root, arcname="The333-bgp-v0.82b")
+            handle.add(archive_root, arcname="The333-bgp-v9.9b")
 
         self._copy_text("scripts/extract-release.py")
         archive_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -309,7 +309,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         )
         environment["PATH"] = f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}"
         version_json = (
-            '{"archive_url":"https://release.example/the333-bgp-v0.82b.tar.gz",'
+            '{"archive_url":"https://release.example/the333-bgp-v9.9b.tar.gz",'
             f'"sha256":"{archive_sha256}"}}'
         )
         patched = self._patched_update_controller()

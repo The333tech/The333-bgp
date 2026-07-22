@@ -246,7 +246,7 @@ THE333_PROJECT_DIR=/opt/the333-bgp ./install.sh --action update
 
 ### Переход с ранних установок
 
-Если установка была сделана до появления host-side updater, на VM может ещё работать старый контейнер `the333-host-updater` с Docker socket. В v0.78+ это считается legacy-режимом; установщик v0.82.1b переносит обновление в systemd-сервис.
+Если установка была сделана до появления host-side updater, на VM может ещё работать старый контейнер `the333-host-updater` с Docker socket. Это legacy-режим; текущий установщик переносит обновление в изолированный systemd-сервис.
 
 Проверка:
 

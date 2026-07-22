@@ -15,57 +15,16 @@
       "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.1b/the333-bgp-v0.82.1b.tar.gz",
       "sha256": "",
       "changelog": [
-        "Host-updater получил дополнительную проверку нормализованных result-путей и защиту от symlink-подмены.",
-        "CodeQL, CI, secret scanning, push protection и release attestations проверены без открытых предупреждений.",
-        "FastAPI, HTTPX2, Tabler Icons и Vite обновлены до совместимых проверенных выпусков.",
-        "nginx обновлён до актуального stable 1.30.4; portal остаётся на Node.js 24 LTS.",
-        "GitHub Actions закреплены полными commit SHA; CI и Release блокируют исправимые High/Critical CVE через Grype 0.112.0.",
-        "Dependabot группирует minor/patch updates и не предлагает Current runtime как production LTS.",
-        "GoBGP 4.7.0 core revision r5 переведена на Alpine 3.24 и собирается из точного commit с исправленными x/net, x/sys, x/text и grpc; BGP continuity повторно проверена на рабочей VM."
-      ]
-    },
-    {
-      "version": "0.82b",
-      "title": "v0.82b",
-      "channel": "beta",
-      "status": "предыдущая beta",
-      "date": "2026-07-12",
-      "recommended": false,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82b/the333-bgp-v0.82b.tar.gz",
-      "sha256": "",
-      "changelog": [
-        "Фоновые обновления переживают перезапуск backend и восстанавливают статус из durable-результата host-updater.",
-        "Перед обновлением Backend кратко приостанавливается для согласованного бэкапа и гарантированно запускается снова; GoBGP остаётся онлайн.",
-        "Установка и обновление используют GitHub Releases API, SHA-256 и безопасную распаковку без path traversal и ссылок.",
-        "Rollback восстанавливает код, .env, config и data; миграция .env сохраняет пользовательские TLS/auth-настройки.",
-        "GoBGP core изолирован от портала, TCP MD5 вынесен в secret-файл, а GTSM включается только как согласованная двухсторонняя настройка.",
-        "Версия routing-core отделена от версии портала, чтобы обычные UI/backend-обновления не сбрасывали BGP-сессию.",
-        "Критические JSON-состояния обрабатываются fail-closed, DNS-кэш обновляется пакетно, история хранит provenance и fingerprint маршрутов.",
-        "CI дополнен runtime smoke-тестом Docker-сетей и контейнеров, dependency review и запретом перезаписи уже опубликованного release-тега.",
-        "Автообновление маршрутов настраивается в минутах из портала и применяется без перезапуска контейнеров.",
-        "Автоматические бэкапы создаются только при изменении состояния; расписание и количество архивов настраиваются пользователем.",
-        "В сайдбаре показывается Uptime Portal, Backend и GoBGP через защищённый host-updater без монтирования Docker socket.",
-        "Маршруты можно скачать файлом, а Community-профили формируют точные RouterOS v7 Large Community фильтры с проверкой и rollback.",
-        "Техническая диагностика GoBGP показывает подробности BGP-соседа, таймеры, capabilities, статистику сообщений и сверку маршрутных наборов.",
-        "Настройки автоматических бэкапов получили компактный нижний блок, явное включение и нейтральное оформление."
-      ]
-    },
-    {
-      "version": "0.78",
-      "title": "v0.78 beta",
-      "channel": "beta",
-      "status": "предыдущая beta",
-      "date": "2026-07-09",
-      "recommended": false,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.78/the333-bgp-v0.78.tar.gz",
-      "sha256": "",
-      "changelog": [
-        "Beta-релиз перед stable-релизом; проект находится в активной разработке.",
-        "GoBGP обновлён до 4.7.0; core/backend проверены на новой версии.",
-        "Backend переведён на Python 3.14 hash-locked runtime, portal на Node 24/nginx 1.30.",
-        "Добавлены session auth, TLS-вариант, host-updater isolation, route transaction rollback и проверки внешних источников.",
-        "Supply-chain: digest-pinned base images, pinned GitHub Actions, SBOM, attestations и CVE gates.",
-        "Экспериментальный docker-awg candidate вынесен отдельно и собирается из официальных AmneziaWG upstream-компонентов."
+        "Транзакционное применение маршрутов, проверенный GoBGP 4.7.0 и сохранение BGP continuity при обновлениях portal/backend.",
+        "Изолированный host-side updater с durable-задачами, согласованным backup, readiness-check и автоматическим rollback.",
+        "Безопасная установка и обновление через GitHub Releases API, HTTPS, SHA-256 и защищённую распаковку архива.",
+        "Persistent-настройки автообновления маршрутов, автоматические бэкапы, uptime контейнеров и расширенная GoBGP-диагностика.",
+        "Session auth, CSRF, rate limiting, TLS-вариант, SSRF-защита источников и отсутствие Docker socket в portal/backend.",
+        "FastAPI 0.139.2, HTTPX2 2.7.0, React 19.2.8, Vite 8.1.5, Node.js 24 LTS, nginx 1.30.4 и Alpine 3.24.",
+        "Digest-pinned образы и SHA-pinned Actions; CI и Release блокируют известные исправимые High/Critical CVE через Grype 0.112.0.",
+        "Release публикует SHA256SUMS, SPDX SBOM и build provenance; SBOM строится из точного содержимого релизного архива.",
+        "CodeQL, dependency audits, Docker runtime smoke-тесты, проверка сетевой изоляции и release metadata tests проходят до публикации.",
+        "Host-updater защищён от path traversal и symlink replacement; критические JSON-состояния обрабатываются fail-closed."
       ]
     }
   ]

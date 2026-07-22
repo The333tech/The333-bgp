@@ -158,11 +158,11 @@ class ReadinessTests(unittest.TestCase):
 
 class ProductVersionTests(unittest.TestCase):
     def test_beta_to_stable_and_newer_beta_ordering(self) -> None:
-        self.assertTrue(main.product_version_is_newer("0.82", "0.82b"))
-        self.assertTrue(main.product_version_is_newer("0.82.1b", "0.82b"))
-        self.assertTrue(main.product_version_is_newer("0.82b", "0.78"))
-        self.assertFalse(main.product_version_is_newer("0.82b", "0.82b"))
-        self.assertFalse(main.product_version_is_newer("0.78", "0.82b"))
+        self.assertTrue(main.product_version_is_newer("1.2", "1.2b"))
+        self.assertTrue(main.product_version_is_newer("1.2.1b", "1.2b"))
+        self.assertTrue(main.product_version_is_newer("1.2b", "1.1"))
+        self.assertFalse(main.product_version_is_newer("1.2b", "1.2b"))
+        self.assertFalse(main.product_version_is_newer("1.1", "1.2b"))
 
     def test_github_release_without_verified_digest_is_ignored(self) -> None:
         release = {
