@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import os
 import tempfile
 import threading
 import unittest
@@ -108,6 +110,51 @@ class HostUpdaterApiTests(unittest.TestCase):
 
 
 class HostUpdaterHelpersTests(unittest.TestCase):
+    def test_result_path_accepts_only_a_direct_child_of_result_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            result_dir = Path(temporary_directory).resolve()
+            request_id = "a" * 32
+
+            with patch.object(updater, "RESULT_DIR", result_dir):
+                self.assertEqual(
+                    updater.result_path(request_id),
+                    result_dir / f"{request_id}.json",
+                )
+                for invalid in (
+                    "../" + request_id,
+                    request_id + "/child",
+                    "/tmp/" + request_id,
+                    "A" * 32,
+                    "a" * 31,
+                    "a" * 33,
+                ):
+                    with self.subTest(request_id=invalid):
+                        with self.assertRaises(ValueError):
+                            updater.result_path(invalid)
+
+    @unittest.skipUnless(hasattr(os, "O_DIRECTORY"), "requires POSIX directory operations")
+    def test_write_result_replaces_symlink_without_touching_its_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            result_dir = root / "results"
+            result_dir.mkdir()
+            outside = root / "outside.json"
+            outside.write_text('{"protected": true}\n', encoding="utf-8")
+            request_id = "b" * 32
+            target = result_dir / f"{request_id}.json"
+            target.symlink_to(outside)
+
+            with (
+                patch.object(updater, "RESULT_DIR", result_dir),
+                patch.object(updater.os, "chown"),
+                patch.object(updater, "prune_result_files"),
+            ):
+                updater.write_result(request_id, {"ok": True})
+
+            self.assertFalse(target.is_symlink())
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"ok": True})
+            self.assertEqual(outside.read_text(encoding="utf-8"), '{"protected": true}\n')
+
     def test_runtime_inspection_uses_only_fixed_container_names(self) -> None:
         def completed(command, **_kwargs):
             name = command[-1]

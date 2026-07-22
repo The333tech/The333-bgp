@@ -109,14 +109,20 @@ def prune_result_files(max_files: int = 100) -> None:
 def result_path(request_id: str) -> Path:
     if not REQUEST_ID_RE.fullmatch(request_id):
         raise ValueError("invalid request_id")
-    return RESULT_DIR / f"{request_id}.json"
+
+    result_root = os.path.realpath(RESULT_DIR)
+    candidate = os.path.normpath(os.path.join(result_root, f"{request_id}.json"))
+    result_prefix = result_root.rstrip(os.sep) + os.sep
+    if not candidate.startswith(result_prefix) or os.path.dirname(candidate) != result_root:
+        raise ValueError("invalid result path")
+    return Path(candidate)
 
 
 def write_result(request_id: str, payload: dict[str, Any]) -> None:
     target = result_path(request_id)
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
     fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.name}.",
+        prefix=".result-",
         suffix=".tmp",
         dir=str(RESULT_DIR),
     )
