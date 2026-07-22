@@ -391,6 +391,136 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         self.assertEqual(request_log.read_text(encoding="utf-8").strip(), "https://explicit.example/manifest.json")
 
+    def test_release_config_replacement_is_atomic_for_read_only_builtin_file(self) -> None:
+        patched = self._patched_update_controller()
+        installed = self.project / "config" / "default_sources.json"
+        release = self.source / "config" / "default_sources.json"
+        self._write(installed, '[{"old": true}]\n', 0o444)
+        self._write(release, '[{"new": true}]\n', 0o644)
+        harness = self.root / "replace-release-config.sh"
+        self._write(
+            harness,
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export THE333_UPDATE_TEST_HARNESS=true
+                source "$1"
+                replace_release_config_file "$2" "$3"
+                """
+            ).lstrip(),
+            0o755,
+        )
+
+        result = subprocess.run(
+            ["bash", str(harness), str(patched), str(release), str(installed)],
+            cwd=self.root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        self.assertEqual(installed.read_text(encoding="utf-8"), '[{"new": true}]\n')
+        self.assertEqual(list(installed.parent.glob(f".{installed.name}.update.*")), [])
+
+    def test_update_rolls_back_when_activation_fails_before_runtime_build(self) -> None:
+        patched = self._patched_update_controller()
+        event_log = self.root / "early-update-failure.log"
+        backup = self.root / "verified-backup.tar.gz"
+        release_dir = self.root / "release-download" / "src"
+        release_dir.mkdir(parents=True)
+        harness = self.root / "run-early-update-failure.sh"
+        self._write(
+            harness,
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export THE333_UPDATE_TEST_HARNESS=true
+                export THE333_PROJECT_DIR="$2"
+                source "$1"
+                event_log="$3"
+                backup="$4"
+                fixture_release_dir="$5"
+                NON_INTERACTIVE=true
+                CHANNEL=beta
+
+                fetch_manifest() { printf '%s\n' '{"versions":[]}'; }
+                select_version_json() { printf '%s\n' '{"version":"9.9b"}'; }
+                version_is_newer() { return 0; }
+                check_update_disk_space() { printf 'disk-preflight\n' >> "${event_log}"; }
+                make_backup() {
+                  printf 'backup\n' >> "${event_log}"
+                  printf 'verified fixture\n' > "${backup}"
+                  LAST_BACKUP_ARCHIVE="${backup}"
+                }
+                download_release() { printf '%s\n' "${fixture_release_dir}"; }
+                copy_release_files() {
+                  printf 'copy\n' >> "${event_log}"
+                  printf '9.9b\n' > "${PROJECT_DIR}/VERSION"
+                }
+                migrate_release_env() {
+                  printf 'migrate-failed\n' >> "${event_log}"
+                  return 47
+                }
+                stop_runtime_for_rollback() { printf 'stop\n' >> "${event_log}"; }
+                restore_release_files_from_backup() {
+                  printf 'restore\n' >> "${event_log}"
+                  printf '0.1\n' > "${PROJECT_DIR}/VERSION"
+                }
+                load_env() { printf 'reload-env\n' >> "${event_log}"; }
+                configure_compose_files() { printf 'reload-compose\n' >> "${event_log}"; }
+                build_and_restart() {
+                  printf 'build:%s\n' "$1" >> "${event_log}"
+                  [[ "$1" == "legacy" ]]
+                }
+
+                update_project
+                """
+            ).lstrip(),
+            0o755,
+        )
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(harness),
+                str(patched),
+                str(self.project),
+                str(event_log),
+                str(backup),
+                str(release_dir),
+            ],
+            cwd=self.root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.project / "VERSION").read_text(encoding="utf-8"), "0.1\n")
+        self.assertTrue(
+            event_log.exists(),
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertEqual(
+            event_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "disk-preflight",
+                "backup",
+                "copy",
+                "migrate-failed",
+                "stop",
+                "restore",
+                "reload-env",
+                "reload-compose",
+                "build:legacy",
+            ],
+        )
+        self.assertIn("environment migration", result.stderr)
+        self.assertIn("previous version was restored automatically", result.stderr)
+
     def test_bootstrap_installer_reports_index_download_failure_without_python_traceback(self) -> None:
         patched = self._patched_installer()
         environment = self._environment_with_failing_curl()

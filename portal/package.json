@@ -1,6 +1,6 @@
 {
   "name": "the333-portal",
-  "version": "0.82.1-beta",
+  "version": "0.82.2-beta",
   "private": true,
   "description": "The333 Portal UI for The333-BGP",
   "type": "module",

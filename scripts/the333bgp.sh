@@ -835,22 +835,56 @@ download_release() {
   printf '%s\n' "${tmp}/src"
 }
 
+replace_release_config_file() {
+  local source="$1"
+  local target="$2"
+  local target_dir temporary
+
+  if [[ ! -f "${source}" || -L "${source}" ]]; then
+    log "Refusing unsafe release config file: ${source}"
+    return 1
+  fi
+  if [[ -L "${target}" || ( -e "${target}" && ! -f "${target}" ) ]]; then
+    log "Refusing unsafe installed config target: ${target}"
+    return 1
+  fi
+
+  target_dir="$(dirname "${target}")"
+  mkdir -p "${target_dir}" || return 1
+  temporary="$(mktemp "${target_dir}/.$(basename "${target}").update.XXXXXX")" || return 1
+
+  if ! cp --preserve=mode,timestamps -- "${source}" "${temporary}"; then
+    rm -f -- "${temporary}"
+    return 1
+  fi
+  if ! mv -f -- "${temporary}" "${target}"; then
+    rm -f -- "${temporary}"
+    return 1
+  fi
+}
+
 copy_release_files() {
   local src="$1"
-  [[ -d "${src}/app" ]] || fail "release archive has no app/"
-  [[ -d "${src}/portal" ]] || fail "release archive has no portal/"
+  if [[ ! -d "${src}/app" ]]; then
+    log "Release archive has no app/."
+    return 1
+  fi
+  if [[ ! -d "${src}/portal" ]]; then
+    log "Release archive has no portal/."
+    return 1
+  fi
 
   log "Copying release files while preserving .env, data and user state..."
-  mkdir -p "${PROJECT_DIR}"
+  mkdir -p "${PROJECT_DIR}" || return 1
 
   for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md README.md LICENSE SECURITY.md install.sh scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitattributes .gitignore; do
     if [[ -e "${src}/${item}" ]]; then
-      rm -rf "${PROJECT_DIR:?}/${item}"
-      cp -a "${src}/${item}" "${PROJECT_DIR}/${item}"
+      rm -rf "${PROJECT_DIR:?}/${item}" || return 1
+      cp -a "${src}/${item}" "${PROJECT_DIR}/${item}" || return 1
     fi
   done
 
-  rm -f "${PROJECT_DIR}/Dockerfile" "${PROJECT_DIR}/entrypoint.sh" "${PROJECT_DIR}/app/updater.py"
+  rm -f "${PROJECT_DIR}/Dockerfile" "${PROJECT_DIR}/entrypoint.sh" "${PROJECT_DIR}/app/updater.py" || return 1
 
   chmod +x \
     "${PROJECT_DIR}/docker/gobgp-entrypoint.sh" \
@@ -860,55 +894,65 @@ copy_release_files() {
     "${PROJECT_DIR}/scripts/migrate-env.py" \
     "${PROJECT_DIR}/scripts/release-check.sh" \
     "${PROJECT_DIR}/scripts/the333bgp.sh" \
-    "${PROJECT_DIR}/install.sh"
+    "${PROJECT_DIR}/install.sh" || return 1
 
-  mkdir -p "${PROJECT_DIR}/config" "${PROJECT_DIR}/data"
+  mkdir -p "${PROJECT_DIR}/config" "${PROJECT_DIR}/data" || return 1
   if [[ -d "${src}/config" ]]; then
     for cfg in "${src}"/config/*; do
       [[ -e "${cfg}" ]] || continue
       local target
       target="${PROJECT_DIR}/config/$(basename "${cfg}")"
-      cp -a "${cfg}" "${target}"
+      replace_release_config_file "${cfg}" "${target}" || return 1
     done
   fi
 }
 
 migrate_release_env() {
   local version update_url
-  version="$(current_version)"
+  version="$(current_version)" || return 1
   update_url="${MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
   python3 "${PROJECT_DIR}/scripts/migrate-env.py" \
     --env "${PROJECT_DIR}/.env" \
     --project-dir "${PROJECT_DIR}" \
     --version "${version}" \
     --channel "${CHANNEL}" \
-    --update-url "${update_url}"
-  load_env
-  configure_compose_files
+    --update-url "${update_url}" || return 1
+  load_env || return 1
+  configure_compose_files || return 1
 }
 
 restore_release_files_from_backup() {
   local archive="$1"
-  [[ -f "${archive}" ]] || fail "rollback archive not found: ${archive}"
+  if [[ ! -f "${archive}" ]]; then
+    log "Rollback archive not found: ${archive}"
+    return 1
+  fi
 
   local tmp
-  tmp="$(mktemp -d)"
-  tar -xzf "${archive}" -C "${tmp}"
+  tmp="$(mktemp -d)" || return 1
+  if ! tar -xzf "${archive}" -C "${tmp}"; then
+    rm -rf "${tmp}"
+    return 1
+  fi
 
   log "Восстановление файлов предыдущей версии из ${archive}..."
   for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md README.md LICENSE SECURITY.md install.sh scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitattributes .gitignore; do
     if [[ -e "${tmp}/${item}" ]]; then
-      rm -rf "${PROJECT_DIR:?}/${item}"
-      cp -a "${tmp}/${item}" "${PROJECT_DIR}/${item}"
+      rm -rf "${PROJECT_DIR:?}/${item}" || { rm -rf "${tmp}"; return 1; }
+      cp -a "${tmp}/${item}" "${PROJECT_DIR}/${item}" || { rm -rf "${tmp}"; return 1; }
     fi
   done
 
   for state_item in .env config data; do
-    [[ -e "${tmp}/${state_item}" ]] || fail "rollback archive has no ${state_item}"
-    rm -rf "${PROJECT_DIR:?}/${state_item}"
-    cp -a "${tmp}/${state_item}" "${PROJECT_DIR}/${state_item}"
+    if [[ ! -e "${tmp}/${state_item}" ]]; then
+      log "Rollback archive has no ${state_item}."
+      rm -rf "${tmp}"
+      return 1
+    fi
+    rm -rf "${PROJECT_DIR:?}/${state_item}" || { rm -rf "${tmp}"; return 1; }
+    cp -a "${tmp}/${state_item}" "${PROJECT_DIR}/${state_item}" || { rm -rf "${tmp}"; return 1; }
   done
-  chmod 600 "${PROJECT_DIR}/.env"
+  chmod 600 "${PROJECT_DIR}/.env" || { rm -rf "${tmp}"; return 1; }
 
   rm -rf "${tmp}"
 }
@@ -928,41 +972,47 @@ build_update_images() {
   local core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
   if [[ "${readiness_mode}" == "legacy" ]]; then
     log "Rollback: выполняется полная сборка предыдущего runtime."
-    compose build
-    return
+    compose build || return 1
+    return 0
   fi
   if docker_cli image inspect "${core_image}" >/dev/null 2>&1; then
     log "Routing-core ${core_image} уже установлен; собираются только backend и portal."
-    compose build the333-bgp-backend the333-portal
-    return
+    compose build the333-bgp-backend the333-portal || return 1
+    return 0
   fi
 
   log "Routing-core ${core_image} отсутствует; выполняется полная сборка."
-  compose build
+  compose build || return 1
+}
+
+host_updater_service_ready() {
+  systemctl is-active --quiet "${HOST_UPDATER_SERVICE}" \
+    && [[ -S /run/the333-bgp/updater.sock ]]
 }
 
 build_and_restart() {
   local readiness_mode="${1:-strict}"
-  cd "${PROJECT_DIR}"
-  if [[ "${THE333_HOST_UPDATER_ACTIVE:-false}" == "true" ]]; then
+  cd "${PROJECT_DIR}" || return 1
+  if [[ "${THE333_HOST_UPDATER_ACTIVE:-false}" == "true" ]] || host_updater_service_ready; then
     log "Host updater выполняет обновление: стабильный systemd unit будет переиспользован."
   else
-    install_host_updater_service
+    install_host_updater_service || return 1
   fi
   log "Building images..."
-  build_update_images "${readiness_mode}"
+  build_update_images "${readiness_mode}" || return 1
   log "Restarting services..."
-  compose up -d --remove-orphans
+  compose up -d --remove-orphans || return 1
   wait_for_services "${readiness_mode}" || return 1
   if [[ "${readiness_mode}" == "legacy" ]]; then
-    compose ps
+    compose ps || return 1
     return 0
   fi
-  status
+  status || return 1
 }
 
 update_project() {
   local manifest version_json selected_version installed_version release_dir backup_archive release_tmp
+  local update_rc failed_stage
   manifest="$(fetch_manifest)"
   version_json="$(printf '%s' "${manifest}" | select_version_json)"
   selected_version="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version") or "")')"
@@ -987,19 +1037,42 @@ update_project() {
   make_backup
   backup_archive="${LAST_BACKUP_ARCHIVE}"
   release_dir="$(download_release "${version_json}")"
-  copy_release_files "${release_dir}"
-  migrate_release_env
   release_tmp="$(dirname "${release_dir}")"
-  [[ "${release_tmp}" == /tmp/* ]] && rm -rf "${release_tmp}"
+  update_rc=0
+  failed_stage=""
 
-  if build_and_restart strict; then
+  if copy_release_files "${release_dir}"; then
+    if migrate_release_env; then
+      if build_and_restart strict; then
+        update_rc=0
+      else
+        update_rc=$?
+        failed_stage="runtime build or readiness check"
+      fi
+    else
+      update_rc=$?
+      failed_stage="environment migration"
+    fi
+  else
+    update_rc=$?
+    failed_stage="release file activation"
+  fi
+
+  if [[ "${release_tmp}" == /tmp/* ]]; then
+    rm -rf "${release_tmp}" || true
+  fi
+
+  if (( update_rc == 0 )); then
     log "Обновление успешно завершено."
     return 0
   fi
 
-  log "Обновление не прошло проверку готовности. Запускается автоматический rollback."
+  log "Update failed during ${failed_stage} (exit ${update_rc}). Starting automatic rollback."
   stop_runtime_for_rollback || fail "update failed and runtime could not be stopped safely; inspect ${backup_archive}"
-  restore_release_files_from_backup "${backup_archive}"
+  restore_release_files_from_backup "${backup_archive}" \
+    || fail "update failed and backup restoration failed; inspect ${backup_archive}"
+  load_env
+  configure_compose_files
   if build_and_restart legacy; then
     fail "update failed; the previous version was restored automatically"
   fi
