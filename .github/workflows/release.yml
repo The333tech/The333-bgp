@@ -70,8 +70,9 @@ jobs:
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
           archive="the333-bgp-v${version}.tar.gz"
-          mkdir -p dist
+          mkdir -p dist/release-tree
           git archive --format=tar.gz --prefix="The333-bgp-v${version}/" --output="dist/${archive}" HEAD
+          python3 scripts/extract-release.py "dist/${archive}" dist/release-tree
           sha="$(sha256sum "dist/${archive}" | awk '{print $1}')"
           python3 - "${version}" "${archive}" "${sha}" <<'PY'
           import json
@@ -113,7 +114,7 @@ jobs:
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          path: .
+          path: dist/release-tree
           format: spdx-json
           output-file: dist/the333-bgp.spdx.json
           upload-artifact: false

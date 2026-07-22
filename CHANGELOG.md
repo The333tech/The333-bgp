@@ -9,6 +9,7 @@
 - Runtime portal остаётся на Node.js 24 LTS; nginx обновлён внутри stable-линейки до `1.30.4`, а все Alpine-based build/runtime stages — до Alpine `3.24`; базовые образы закреплены immutable multi-arch digest, ревизия GoBGP core поднята до `4.7.0-r5`.
 - GoBGP `v4.7.0` собирается с отдельной проверкой SHA аннотированного тега `982fa664245fcd0dac3c8c408205bb2198b2cad3` и исходного commit `8b5edc2c55cbec9e7df33123a07811a119d44542`; уязвимые транзитивные `x/net`, `x/sys`, `x/text` и `grpc` заменены на проверенные исправленные версии, а сборка выполняет `go mod verify` и компиляционные тесты CLI/daemon.
 - SHA-pinned GitHub Actions, включая Node 24-based checkout, CodeQL, attest, setup-node, QEMU, Buildx и Docker build, обновлены до проверенных совместимых выпусков; CI, Release и multi-arch `docker-awg` используют Grype `v0.112.0` и блокируют известные исправимые High/Critical CVE.
+- Release SBOM формируется только из безопасно распакованного публикуемого архива, поэтому временные зависимости runner и `portal/node_modules` не искажают состав релиза и CVE gate.
 - Dependabot группирует minor/patch updates по экосистемам; переходы на major runtime и nginx mainline не предлагаются как обычное автоматическое обновление.
 - GoBGP остаётся на актуальной проверенной версии `v4.7.0`; перезапуск host-updater на рабочей VM не прервал BGP-сессию, а global RIB и advertised routes сохранили одинаковые `16483` маршрута.
 
