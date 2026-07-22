@@ -15,6 +15,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         manifest = json.loads((ROOT / "update-manifest.json").read_text(encoding="utf-8"))
         versions = manifest.get("versions", [])
 
+        self.assertEqual(len(versions), 1)
         matching = [item for item in versions if str(item.get("version")) == version]
         self.assertEqual(len(matching), 1)
         self.assertIn(matching[0].get("channel"), {"stable", "beta"})
