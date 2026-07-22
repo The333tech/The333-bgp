@@ -1,7 +1,8 @@
 FROM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS gobgp-builder
 
 ARG GOBGP_VERSION=v4.7.0
-ARG GOBGP_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3
+ARG GOBGP_TAG_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3
+ARG GOBGP_REF=8b5edc2c55cbec9e7df33123a07811a119d44542
 ARG GOBGP_X_NET_VERSION=v0.56.0
 ARG GOBGP_X_SYS_VERSION=v0.46.0
 ARG GOBGP_X_TEXT_VERSION=v0.39.0
@@ -16,7 +17,8 @@ FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec4
 
 ARG GOBGP_CORE_IMAGE_VERSION=4.7.0-r5
 ARG GOBGP_VERSION=v4.7.0
-ARG GOBGP_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3
+ARG GOBGP_TAG_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3
+ARG GOBGP_REF=8b5edc2c55cbec9e7df33123a07811a119d44542
 ARG GOBGP_X_NET_VERSION=v0.56.0
 ARG GOBGP_X_SYS_VERSION=v0.46.0
 ARG GOBGP_X_TEXT_VERSION=v0.39.0
@@ -29,6 +31,7 @@ LABEL org.opencontainers.image.title="The333-BGP Core" \
       org.opencontainers.image.version="${GOBGP_CORE_IMAGE_VERSION}" \
       org.opencontainers.image.revision="${GOBGP_REF}" \
       org.opencontainers.image.the333.gobgp.version="${GOBGP_VERSION}" \
+      org.opencontainers.image.the333.gobgp.tag-revision="${GOBGP_TAG_REF}" \
       org.opencontainers.image.the333.gobgp.modules="x-net:${GOBGP_X_NET_VERSION};x-sys:${GOBGP_X_SYS_VERSION};x-text:${GOBGP_X_TEXT_VERSION};grpc:${GOBGP_GRPC_VERSION}"
 
 RUN apk add --no-cache ca-certificates tzdata \

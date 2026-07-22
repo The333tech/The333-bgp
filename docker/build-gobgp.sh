@@ -2,6 +2,7 @@
 set -eu
 
 : "${GOBGP_VERSION:?GOBGP_VERSION is required}"
+: "${GOBGP_TAG_REF:?GOBGP_TAG_REF is required}"
 : "${GOBGP_REF:?GOBGP_REF is required}"
 : "${GOBGP_X_NET_VERSION:?GOBGP_X_NET_VERSION is required}"
 : "${GOBGP_X_SYS_VERSION:?GOBGP_X_SYS_VERSION is required}"
@@ -10,6 +11,7 @@ set -eu
 
 git clone --depth 1 --branch "${GOBGP_VERSION}" \
   https://github.com/osrg/gobgp.git /src/gobgp
+test "$(git -C /src/gobgp rev-parse "refs/tags/${GOBGP_VERSION}")" = "${GOBGP_TAG_REF}"
 test "$(git -C /src/gobgp rev-parse HEAD)" = "${GOBGP_REF}"
 
 cd /src/gobgp

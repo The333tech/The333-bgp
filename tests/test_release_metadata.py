@@ -210,7 +210,8 @@ class ReleaseMetadataTests(unittest.TestCase):
             (ROOT / "docker" / "gobgp.Dockerfile").read_text(encoding="utf-8"),
         ]
         expected_values = [
-            "GOBGP_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3",
+            "GOBGP_TAG_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3",
+            "GOBGP_REF=8b5edc2c55cbec9e7df33123a07811a119d44542",
             "GOBGP_X_NET_VERSION=v0.56.0",
             "GOBGP_X_SYS_VERSION=v0.46.0",
             "GOBGP_X_TEXT_VERSION=v0.39.0",
@@ -224,6 +225,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.assertIn("COPY docker/build-gobgp.sh", dockerfile)
             self.assertNotIn("go install github.com/osrg/gobgp", dockerfile)
 
+        self.assertIn('rev-parse "refs/tags/${GOBGP_VERSION}"', build_script)
         self.assertIn('test "$(git -C /src/gobgp rev-parse HEAD)" = "${GOBGP_REF}"', build_script)
         self.assertIn('"golang.org/x/net@${GOBGP_X_NET_VERSION}"', build_script)
         self.assertIn('"google.golang.org/grpc@${GOBGP_GRPC_VERSION}"', build_script)
