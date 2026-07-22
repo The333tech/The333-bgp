@@ -82,6 +82,30 @@ jobs:
       - name: Prepare Docker Compose env
         run: |
           cp .env.example .env
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          env_path = Path(".env")
+          iterations = 600_000
+          salt = bytes.fromhex("00112233445566778899aabbccddeeff")
+          digest = hashlib.pbkdf2_hmac("sha256", b"ci-test-password", salt, iterations)
+          replacements = {
+              "WEB_PASSWORD": "",
+              "WEB_PASSWORD_HASH": (
+                  f"pbkdf2_sha256:{iterations}:{salt.hex()}:{digest.hex()}"
+              ),
+              "HOST_UPDATER_TOKEN": "ci-host-updater-token-0123456789abcdef",
+          }
+
+          lines = []
+          for line in env_path.read_text(encoding="utf-8").splitlines():
+              key, separator, _value = line.partition("=")
+              if separator and key in replacements:
+                  line = f"{key}={replacements[key]}"
+              lines.append(line)
+          env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
           sed -i "s/^THE333_BIND_IP=.*/THE333_BIND_IP=127.0.0.1/" .env
           sed -i "s/^ROUTER_ID=.*/ROUTER_ID=127.0.0.2/" .env
           sed -i "s/^BGP_NEXTHOP=.*/BGP_NEXTHOP=127.0.0.2/" .env
@@ -103,10 +127,23 @@ jobs:
 
       - name: Smoke-test isolated runtime
         run: |
+          diagnostics() {
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml ps || true
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml logs --no-color --tail=200 || true
+          }
           cleanup() {
             docker compose -f docker-compose.yml -f docker-compose.portal.yml down --remove-orphans --volumes || true
           }
-          trap cleanup EXIT
+          finish() {
+            status="$?"
+            trap - EXIT
+            if [ "${status}" -ne 0 ]; then
+              diagnostics
+            fi
+            cleanup
+            exit "${status}"
+          }
+          trap finish EXIT
           docker compose -f docker-compose.yml -f docker-compose.portal.yml up -d --remove-orphans
           for attempt in $(seq 1 36); do
             states="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' the333-gobgp-core the333-bgp-backend the333-portal | sort -u)"
