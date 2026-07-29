@@ -1,0 +1,26 @@
+{
+  "name": "the333-portal",
+  "version": "0.82.2-beta",
+  "private": true,
+  "description": "The333 Portal UI for The333-BGP",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "test": "node scripts/test-mikrotik-logic.mjs",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@tabler/icons-react": "3.45.0",
+    "motion": "12.42.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.4",
+    "typescript": "7.0.2",
+    "vite": "8.1.5"
+  }
+}

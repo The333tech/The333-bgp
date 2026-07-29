@@ -1,0 +1,54 @@
+# The333-BGP Changelog
+
+## 0.82.2b - 2026-07-23
+
+### Маршрутизация и BGP
+
+- GoBGP `v4.7.0` собирается из проверенного upstream commit; версия routing-core отделена от версии portal/backend, поэтому обычные обновления интерфейса не пересоздают GoBGP без необходимости.
+- Для direct eBGP через Docker bridge используется явный `BGP_DOCKER_BRIDGE_HOPS`: MikroTik работает с `multihop=no`, а GoBGP учитывает единственный внутренний hop минимальным TTL `2`.
+- GTSM доступна как явная двухсторонняя opt-in настройка; TCP MD5 хранится в read-only secret-файле, а не в окружении контейнера.
+- Применение маршрутов транзакционное: добавление выполняется до удаления, операции сериализуются, при ошибке выполняется rollback и восстанавливается last-good набор.
+- История маршрутов сохраняет выбранные источники, модули, итоговое количество и SHA-256 fingerprint набора.
+- DNS-кэш модулей сервисов самовосстанавливается при повреждённом JSON и отбрасывает malformed, private, reserved и sinkhole-адреса до расчёта маршрутов.
+- На рабочей VM подтверждено совпадение global RIB и advertised routes; перезапуск host-updater не прервал BGP-сессию.
+
+### Установка, обновление и восстановление
+
+- Весь этап активации релиза теперь транзакционный: сбой копирования, миграции `.env`, сборки или readiness-check запускает автоматическое восстановление согласованного backup и прежнего runtime.
+- Встроенные каталоги обновляются атомарной заменой файлов, поэтому обновление корректно работает даже после установки, где эти файлы принадлежат root; пользовательские каталоги и состояние по-прежнему сохраняются.
+- Интерактивная установка проверяет IP VM, BGP-параметры, Docker, занятые порты и существующую установку до изменения системы.
+- Fresh install и update используют GitHub Releases API, HTTPS-only redirects, SHA-256 release assets и безопасную распаковку без path traversal, symlink и device-файлов.
+- Host-updater вынесен в отдельный systemd-сервис и доступен backend только через Unix socket и ограниченный token; Docker socket не монтируется в portal или backend.
+- Фоновые update-задачи сохраняют durable-результат, поэтому перезапуск backend не превращает выполняющееся обновление в потерянную задачу.
+- Перед заменой файлов backend кратковременно останавливается для согласованного снимка `data/config`, затем гарантированно запускается снова; GoBGP продолжает публиковать маршруты.
+- Readiness-check проверяет backend, GoBGP, маршруты и portal; rollback восстанавливает код, `.env`, `config` и `data` и повторно проверяет предыдущий runtime.
+- Идемпотентная миграция `.env` сохраняет пользовательские TLS/auth-настройки, UID/GID и режим `0600`; TCP MD5 переносится в secret-файл.
+- Host-updater запускает дочерний update в минимальном системном окружении и при каждом запуске читает актуальный `.env`.
+- Result-файлы host-updater ограничены доверенным каталогом: нормализованный путь обязан быть его непосредственным потомком, временные имена не зависят от входного `request_id`, POSIX symlink replacement покрыт тестами.
+- Автоматические системные бэкапы поддерживают расписание, retention и fingerprint: неизменившееся состояние не дублируется новым архивом.
+
+### Portal и эксплуатация
+
+- Portal управляет источниками маршрутов, модулями сервисов, Community-профилями, диагностикой, историей, резервными копиями и обновлениями.
+- Авторизация использует серверный PBKDF2-хеш, session cookies, CSRF-защиту, rate limiting и безопасный reset password flow; пароль не хранится в `localStorage`.
+- Portal, backend и GoBGP разделены по frontend/control/BGP-edge сетям; control network изолирована, portal работает без Linux capabilities под непривилегированным UID.
+- Автообновление маршрутов настраивается в минутах через portal, применяется без рестарта и сохраняется при обновлении проекта.
+- Uptime Portal, Backend и GoBGP передаётся через allowlist-ручку host-updater без доступа контейнеров к Docker socket.
+- Файл выбранного набора маршрутов можно скачать из portal.
+- Community-профили формируют RouterOS v7 Large Community фильтры, проверяют уникальность BGP connection и предоставляют команды проверки и rollback.
+- Техническая диагностика GoBGP показывает global state, состояние соседа, таймеры, capabilities, статистику сообщений, advertised routes и сверку RIB/last-good.
+- Внешние источники защищены HTTPS-only политикой, SSRF/private-address validation, проверкой redirects, лимитами ответа и verified cache fallback.
+- Встроенный каталог сервисов отделён от пользовательского каталога, поэтому обновление исходных данных не перезаписывает пользовательский выбор.
+
+### Runtime и supply chain
+
+- Backend работает на Python `3.14` с полным hash-lock; FastAPI обновлён до `0.139.2`, HTTPX2 до `2.7.0`.
+- Portal работает на Node.js 24 LTS и nginx `1.30.4`; React обновлён до `19.2.8`, Tabler Icons до `3.45.0`, Vite до `8.1.5`, Vite React plugin до `6.0.4`.
+- Все Alpine-based build/runtime stages используют Alpine `3.24`; базовые образы закреплены immutable multi-arch digest.
+- GoBGP tag и исходный commit проверяются отдельно; исправленные версии `x/net`, `x/sys`, `x/text` и `grpc` закреплены, выполняются `go mod verify` и компиляционные тесты CLI/daemon.
+- GitHub Actions закреплены полными commit SHA; CI, Release и multi-arch `docker-awg` используют Grype `v0.112.0` и блокируют известные исправимые High/Critical CVE.
+- Release SBOM формируется из безопасно распакованного публикуемого архива, поэтому временные зависимости GitHub runner не искажают состав релиза и CVE gate.
+- Release workflow публикует SHA256SUMS, SPDX SBOM и build provenance attestations и запрещает перезапись уже опубликованного release-тега.
+- CodeQL анализирует Python и JavaScript/TypeScript; CI выполняет dependency audit, Docker runtime smoke-тест, проверку сетевой изоляции и Dependency Review.
+- Dependabot группирует совместимые minor/patch updates и не предлагает major-переходы runtime как обычное автоматическое обновление.
+- Экспериментальный `docker-awg` candidate собирается отдельно из официальных компонентов AmneziaWG и не входит в обязательный runtime The333-BGP.

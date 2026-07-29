@@ -1,0 +1,32 @@
+{
+  "product": "The333-BGP",
+  "latest": {
+    "stable": null,
+    "beta": "0.82.2b"
+  },
+  "versions": [
+    {
+      "version": "0.82.2b",
+      "title": "v0.82.2b",
+      "channel": "beta",
+      "status": "текущая beta",
+      "date": "2026-07-23",
+      "recommended": true,
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.2b/the333-bgp-v0.82.2b.tar.gz",
+      "sha256": "",
+      "changelog": [
+        "Транзакционное обновление восстанавливает backup при любом сбое активации релиза; встроенные каталоги заменяются атомарно даже при root-владельце старых файлов.",
+        "Транзакционное применение маршрутов, проверенный GoBGP 4.7.0 и сохранение BGP continuity при обновлениях portal/backend.",
+        "Изолированный host-side updater с durable-задачами, согласованным backup, readiness-check и автоматическим rollback.",
+        "Безопасная установка и обновление через GitHub Releases API, HTTPS, SHA-256 и защищённую распаковку архива.",
+        "Persistent-настройки автообновления маршрутов, автоматические бэкапы, uptime контейнеров и расширенная GoBGP-диагностика.",
+        "Session auth, CSRF, rate limiting, TLS-вариант, SSRF-защита источников и отсутствие Docker socket в portal/backend.",
+        "FastAPI 0.139.2, HTTPX2 2.7.0, React 19.2.8, Vite 8.1.5, Node.js 24 LTS, nginx 1.30.4 и Alpine 3.24.",
+        "Digest-pinned образы и SHA-pinned Actions; CI и Release блокируют известные исправимые High/Critical CVE через Grype 0.112.0.",
+        "Release публикует SHA256SUMS, SPDX SBOM и build provenance; SBOM строится из точного содержимого релизного архива.",
+        "CodeQL, dependency audits, Docker runtime smoke-тесты, проверка сетевой изоляции и release metadata tests проходят до публикации.",
+        "Host-updater защищён от path traversal и symlink replacement; критические JSON-состояния обрабатываются fail-closed."
+      ]
+    }
+  ]
+}

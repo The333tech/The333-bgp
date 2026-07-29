@@ -1,0 +1,221 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  GRYPE_VERSION: v0.112.0
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate release tree
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Check release tree
+        run: ./scripts/release-check.sh
+
+      - name: Compile backend
+        run: python3 -m py_compile app/main.py
+
+      - name: Install backend dependencies
+        run: python3 -m pip install --require-hashes -r requirements.txt
+
+      - name: Run backend and release metadata tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Install Python audit tool
+        run: python3 -m pip install --user pip-audit
+
+      - name: Audit Python dependencies
+        run: python3 -m pip_audit -r requirements.txt
+
+      - name: Build portal
+        working-directory: portal
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npm audit --omit=dev --audit-level=moderate
+
+      - name: Exercise installer preflight
+        env:
+          THE333_BIND_IP: 192.168.1.10
+          LOCAL_AS: "64512"
+          ROUTER_ID: 192.168.1.10
+          BGP_NEXTHOP: 192.168.1.10
+          PEER_ADDRESS: 192.168.1.1
+          PEER_AS: "65455"
+          BGP_COMMUNITY: "64512:500"
+          WEB_PASSWORD: ci-test-password
+        run: bash install.sh --dry-run --non-interactive
+
+      - name: Prepare Docker Compose env
+        run: |
+          cp .env.example .env
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          env_path = Path(".env")
+          iterations = 600_000
+          salt = bytes.fromhex("00112233445566778899aabbccddeeff")
+          digest = hashlib.pbkdf2_hmac("sha256", b"ci-test-password", salt, iterations)
+          replacements = {
+              "WEB_PASSWORD": "",
+              "WEB_PASSWORD_HASH": (
+                  f"pbkdf2_sha256:{iterations}:{salt.hex()}:{digest.hex()}"
+              ),
+              "HOST_UPDATER_TOKEN": "ci-host-updater-token-0123456789abcdef",
+          }
+
+          lines = []
+          for line in env_path.read_text(encoding="utf-8").splitlines():
+              key, separator, _value = line.partition("=")
+              if separator and key in replacements:
+                  line = f"{key}={replacements[key]}"
+              lines.append(line)
+          env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+          sed -i "s/^THE333_BIND_IP=.*/THE333_BIND_IP=127.0.0.1/" .env
+          sed -i "s/^ROUTER_ID=.*/ROUTER_ID=127.0.0.2/" .env
+          sed -i "s/^BGP_NEXTHOP=.*/BGP_NEXTHOP=127.0.0.2/" .env
+          sed -i "s/^PEER_ADDRESS=.*/PEER_ADDRESS=127.0.0.1/" .env
+          sed -i "s/^PUID=.*/PUID=$(id -u)/" .env
+          sed -i "s/^PGID=.*/PGID=$(id -g)/" .env
+          sed -i "s#^HOST_UPDATER_RUN_DIR=.*#HOST_UPDATER_RUN_DIR=/tmp/the333-bgp-run#" .env
+          mkdir -p data/gobgp-state data/secrets /tmp/the333-bgp-run
+          : > data/secrets/bgp_tcp_md5
+          chmod 600 data/secrets/bgp_tcp_md5
+          printf 'PRODUCT_VERSION=%s\n' "$(tr -d '[:space:]' < VERSION)" >> "${GITHUB_ENV}"
+          printf 'GOBGP_CORE_IMAGE_VERSION=%s\n' "$(awk -F= '$1 == "GOBGP_CORE_IMAGE_VERSION" {print $2; exit}' .env)" >> "${GITHUB_ENV}"
+
+      - name: Validate Docker Compose
+        run: docker compose -f docker-compose.yml -f docker-compose.portal.yml config >/tmp/the333-compose.yml
+
+      - name: Build Docker images
+        run: docker compose -f docker-compose.yml -f docker-compose.portal.yml build
+
+      - name: Smoke-test isolated runtime
+        run: |
+          diagnostics() {
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml ps || true
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml logs --no-color --tail=200 || true
+          }
+          cleanup() {
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml down --remove-orphans --volumes || true
+          }
+          finish() {
+            status="$?"
+            trap - EXIT
+            if [ "${status}" -ne 0 ]; then
+              diagnostics
+            fi
+            cleanup
+            exit "${status}"
+          }
+          trap finish EXIT
+          docker compose -f docker-compose.yml -f docker-compose.portal.yml up -d --remove-orphans
+          for attempt in $(seq 1 36); do
+            states="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' the333-gobgp-core the333-bgp-backend the333-portal | sort -u)"
+            if [ "${states}" = "healthy" ]; then
+              break
+            fi
+            sleep 5
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-gobgp-core)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-bgp-backend)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-portal)" = healthy
+          curl -fsS http://127.0.0.1:8090/ >/dev/null
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          def networks(container):
+              payload = subprocess.check_output(["docker", "inspect", container], text=True)
+              return set(json.loads(payload)[0]["NetworkSettings"]["Networks"])
+
+          assert "the333-control" not in networks("the333-portal")
+          assert {"the333-frontend", "the333-control"} <= networks("the333-bgp-backend")
+          assert {"the333-bgp-edge", "the333-control"} <= networks("the333-gobgp-core")
+          PY
+
+      - name: Scan backend image for fixable High/Critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: "the333-bgp-backend:${{ env.PRODUCT_VERSION }}"
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+          cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+      - name: Scan GoBGP core image for fixable High/Critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: "the333-bgp-core:${{ env.GOBGP_CORE_IMAGE_VERSION }}"
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+          cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+      - name: Scan portal image for fixable High/Critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: "the333-bgp-portal:${{ env.PRODUCT_VERSION }}"
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+          cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+  dependency-review:
+    name: Review dependency changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
