@@ -62,6 +62,8 @@ class ReleaseMetadataTests(unittest.TestCase):
         badge_rows = re.findall(r'<p align="center">([^\n]+)</p>', readme)
         self.assertEqual(len(badge_rows), 5)
         self.assertTrue(all("&nbsp;" in row for row in badge_rows))
+        self.assertEqual(sum(row.count("<ruby>") for row in badge_rows), 12)
+        self.assertTrue(all(row.count("<ruby>") == row.count("</ruby>") for row in badge_rows))
         self.assertIn(f"v{version} (beta)", readme)
         self.assertIn(f"Версия: **v{version} (beta)**", install_doc)
         self.assertIn(f"**v{version} (beta)**", security)
