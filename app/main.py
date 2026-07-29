@@ -169,7 +169,7 @@ HOST_UPDATER_RESULT_STALE_SECONDS = max(
     PRODUCT_UPDATE_TIMEOUT_SECONDS + 300,
     int(os.getenv("HOST_UPDATER_RESULT_STALE_SECONDS", "2100")),
 )
-UPDATE_MIN_FREE_BYTES = int(os.getenv("UPDATE_MIN_FREE_BYTES", str(2 * 1024 * 1024 * 1024)))
+UPDATE_MIN_FREE_BYTES = int(os.getenv("UPDATE_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
 
 PUBLIC_OPERATION_ERROR = "Операция не выполнена. Подробности смотри в логах backend."
 
@@ -499,7 +499,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.82.2b"
+    return "0.82.3b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:

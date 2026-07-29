@@ -35,6 +35,7 @@ class EnvMigrationTests(unittest.TestCase):
                         "BGP_TCP_MD5_KEY=private-test-key",
                         "HOST_UPDATER_TOKEN=existing-token",
                         "HOST_UPDATER_RESULT_DIR=/data/host-updater-results",
+                        "UPDATE_MIN_FREE_BYTES=2147483648",
                         "CUSTOM_SETTING=old-value",
                         "CUSTOM_SETTING=keep-me",
                     ]
@@ -84,6 +85,7 @@ class EnvMigrationTests(unittest.TestCase):
             self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=2", migrated)
             self.assertIn("BGP_TTL_SECURITY_ENABLED=true", migrated)
+            self.assertIn("UPDATE_MIN_FREE_BYTES=1073741824", migrated)
             self.assertNotIn("BGP_TCP_MD5_KEY=", migrated)
             self.assertEqual(migrated.count("PRODUCT_VERSION="), 1)
 
@@ -126,6 +128,45 @@ class EnvMigrationTests(unittest.TestCase):
             self.assertIn("BGP_TTL_SECURITY_ENABLED=false", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=1", migrated)
             self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", migrated)
+            self.assertIn("UPDATE_MIN_FREE_BYTES=1073741824", migrated)
+
+    def test_migration_preserves_custom_update_disk_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir) / "the333-bgp"
+            project.mkdir()
+            env_path = project / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "ROUTER_ID=192.168.1.10",
+                        "PEER_ADDRESS=192.168.1.1",
+                        "UPDATE_MIN_FREE_BYTES=1610612736",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "migrate-env.py"),
+                    "--env",
+                    str(env_path),
+                    "--project-dir",
+                    str(project),
+                    "--version",
+                    "9.9b",
+                    "--channel",
+                    "beta",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("UPDATE_MIN_FREE_BYTES=1610612736", env_path.read_text(encoding="utf-8"))
 
     @unittest.skipUnless(os.name == "posix", "ownership semantics require POSIX")
     def test_migration_preserves_env_owner_and_group_with_strict_mode(self) -> None:

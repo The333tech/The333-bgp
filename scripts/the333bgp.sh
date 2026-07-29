@@ -16,7 +16,12 @@ DOCKER_CMD=(docker)
 DOCKER_ACCESS_READY="false"
 LAST_BACKUP_ARCHIVE=""
 HOST_UPDATER_SERVICE="the333-bgp-updater.service"
-DEFAULT_MIN_UPDATE_FREE_BYTES=2147483648
+DEFAULT_MIN_UPDATE_FREE_BYTES=1073741824
+DEFAULT_RECOMMENDED_UPDATE_FREE_BYTES=2147483648
+DEFAULT_MIN_CORE_UPDATE_FREE_BYTES=2147483648
+DEFAULT_RECOMMENDED_CORE_UPDATE_FREE_BYTES=4294967296
+DEFAULT_MIN_PROJECT_UPDATE_FREE_BYTES=536870912
+DEFAULT_RECOMMENDED_PROJECT_UPDATE_FREE_BYTES=1073741824
 
 log() {
   printf '[the333bgp] %s\n' "$*" >&2
@@ -135,23 +140,111 @@ current_version() {
   fi
 }
 
-check_update_disk_space() {
-  local disk_kb min_bytes min_kb
-  disk_kb="$(df -Pk "${PROJECT_DIR}" 2>/dev/null | awk 'NR==2 {print $4}' || true)"
-  if [[ -z "${disk_kb}" || ! "${disk_kb}" =~ ^[0-9]+$ ]]; then
-    fail "cannot determine free disk space for ${PROJECT_DIR}"
+existing_path_for_update_df() {
+  local path="$1"
+  while [[ ! -e "${path}" && "${path}" != "/" ]]; do
+    path="$(dirname "${path}")"
+  done
+  printf '%s\n' "${path}"
+}
+
+update_disk_stats_for_path() {
+  local path probe
+  path="$1"
+  probe="$(existing_path_for_update_df "${path}")"
+  df -Pk "${probe}" 2>/dev/null | awk 'NR==2 {print $1, $4}'
+}
+
+check_update_storage_target() {
+  local label="$1"
+  local path="$2"
+  local min_bytes="$3"
+  local recommended_bytes="$4"
+  local stats device free_kb min_kb recommended_kb free_mb
+
+  stats="$(update_disk_stats_for_path "${path}")"
+  device="${stats%% *}"
+  free_kb="${stats##* }"
+  if [[ -z "${device}" || -z "${free_kb}" || ! "${free_kb}" =~ ^[0-9]+$ ]]; then
+    log "ERROR: cannot determine free disk space for ${label} (${path})"
+    return 1
   fi
 
-  min_bytes="${UPDATE_MIN_FREE_BYTES:-${DEFAULT_MIN_UPDATE_FREE_BYTES}}"
-  [[ "${min_bytes}" =~ ^[0-9]+$ ]] || fail "UPDATE_MIN_FREE_BYTES must be a positive integer"
-  (( min_bytes > 0 )) || fail "UPDATE_MIN_FREE_BYTES must be greater than zero"
   min_kb=$(((min_bytes + 1023) / 1024))
+  recommended_kb=$(((recommended_bytes + 1023) / 1024))
+  free_mb=$((free_kb / 1024))
 
-  if (( disk_kb < min_kb )); then
-    fail "not enough free disk space for a safe update: $((disk_kb / 1024)) MB available, at least $(((min_kb + 1023) / 1024)) MB required. Free disk space and retry; existing containers were not changed"
+  if (( free_kb < min_kb )); then
+    log "ERROR: not enough free disk space for ${label}: ${free_mb} MB available on ${device}, at least $(((min_bytes + 1048575) / 1048576)) MB required"
+    return 1
   fi
 
-  log "Disk preflight passed: $((disk_kb / 1024)) MB available."
+  if (( free_kb < recommended_kb )); then
+    log "Warning: ${label} has ${free_mb} MB free on ${device}; $(((recommended_bytes + 1048575) / 1048576)) MB or more is recommended."
+  else
+    log "Disk preflight passed for ${label}: ${free_mb} MB free on ${device}."
+  fi
+}
+
+check_update_disk_space() {
+  local configured_min_bytes configured_recommended_bytes min_bytes recommended_bytes
+  local project_min_bytes project_recommended_bytes value_name value core_image
+  local docker_root project_stats docker_stats project_device docker_device
+
+  configured_min_bytes="${UPDATE_MIN_FREE_BYTES:-${DEFAULT_MIN_UPDATE_FREE_BYTES}}"
+  configured_recommended_bytes="${UPDATE_RECOMMENDED_FREE_BYTES:-${DEFAULT_RECOMMENDED_UPDATE_FREE_BYTES}}"
+  project_min_bytes="${UPDATE_MIN_PROJECT_FREE_BYTES:-${DEFAULT_MIN_PROJECT_UPDATE_FREE_BYTES}}"
+  project_recommended_bytes="${UPDATE_RECOMMENDED_PROJECT_FREE_BYTES:-${DEFAULT_RECOMMENDED_PROJECT_UPDATE_FREE_BYTES}}"
+
+  for value_name in configured_min_bytes configured_recommended_bytes project_min_bytes project_recommended_bytes; do
+    value="${!value_name}"
+    [[ "${value}" =~ ^[0-9]+$ ]] || fail "${value_name} must be a positive integer"
+    (( value > 0 )) || fail "${value_name} must be greater than zero"
+  done
+  (( configured_recommended_bytes >= configured_min_bytes )) || fail "UPDATE_RECOMMENDED_FREE_BYTES must be greater than or equal to UPDATE_MIN_FREE_BYTES"
+  (( project_recommended_bytes >= project_min_bytes )) || fail "UPDATE_RECOMMENDED_PROJECT_FREE_BYTES must be greater than or equal to UPDATE_MIN_PROJECT_FREE_BYTES"
+
+  configure_docker_access
+  docker_root="$(docker_cli info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [[ -n "${docker_root}" ]] || fail "cannot determine Docker Root Dir"
+
+  min_bytes="${configured_min_bytes}"
+  recommended_bytes="${configured_recommended_bytes}"
+  core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
+  if ! docker_cli image inspect "${core_image}" >/dev/null 2>&1; then
+    if (( min_bytes < DEFAULT_MIN_CORE_UPDATE_FREE_BYTES )); then
+      min_bytes="${DEFAULT_MIN_CORE_UPDATE_FREE_BYTES}"
+    fi
+    if (( recommended_bytes < DEFAULT_RECOMMENDED_CORE_UPDATE_FREE_BYTES )); then
+      recommended_bytes="${DEFAULT_RECOMMENDED_CORE_UPDATE_FREE_BYTES}"
+    fi
+    log "Routing-core ${core_image} is absent; full-build disk thresholds are active."
+  fi
+
+  project_stats="$(update_disk_stats_for_path "${PROJECT_DIR}")"
+  docker_stats="$(update_disk_stats_for_path "${docker_root}")"
+  project_device="${project_stats%% *}"
+  docker_device="${docker_stats%% *}"
+
+  if [[ -n "${project_device}" && "${project_device}" == "${docker_device}" ]]; then
+    check_update_storage_target \
+      "project and Docker storage" \
+      "${docker_root}" \
+      "${min_bytes}" \
+      "${recommended_bytes}"
+    return $?
+  fi
+
+  check_update_storage_target \
+    "project storage" \
+    "${PROJECT_DIR}" \
+    "${project_min_bytes}" \
+    "${project_recommended_bytes}" || return 1
+  check_update_storage_target \
+    "Docker storage" \
+    "${docker_root}" \
+    "${min_bytes}" \
+    "${recommended_bytes}"
 }
 
 create_update_backup_archive() {
@@ -1033,11 +1126,18 @@ update_project() {
     [[ "${answer}" == "YES" ]] || fail "cancelled"
   fi
 
-  check_update_disk_space
+  check_update_disk_space \
+    || fail "disk preflight failed; free disk space and retry. Existing containers were not changed"
   make_backup
   backup_archive="${LAST_BACKUP_ARCHIVE}"
   release_dir="$(download_release "${version_json}")"
   release_tmp="$(dirname "${release_dir}")"
+  if ! check_update_disk_space; then
+    if [[ "${release_tmp}" == /tmp/* ]]; then
+      rm -rf "${release_tmp}"
+    fi
+    fail "disk-space recheck failed before release activation; existing containers and project files were not changed"
+  fi
   update_rc=0
   failed_stage=""
 
