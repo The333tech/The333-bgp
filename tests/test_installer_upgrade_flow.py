@@ -502,13 +502,14 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertEqual((self.project / "VERSION").read_text(encoding="utf-8"), "0.1\n")
         self.assertTrue(
             event_log.exists(),
-            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            msg=f"returncode: {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
         self.assertEqual(
             event_log.read_text(encoding="utf-8").splitlines(),
             [
                 "disk-preflight",
                 "backup",
+                "disk-preflight",
                 "copy",
                 "migrate-failed",
                 "stop",
@@ -520,6 +521,154 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         )
         self.assertIn("environment migration", result.stderr)
         self.assertIn("previous version was restored automatically", result.stderr)
+
+    def test_installer_disk_policy_uses_stage_specific_thresholds(self) -> None:
+        patched = self._patched_installer()
+        harness = self.root / "run-disk-policy.sh"
+        self._write(
+            harness,
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export THE333_INSTALL_TEST_HARNESS=true
+                source "$1"
+                disk_stats_for_path() {
+                  printf '/dev/test %s\n' "${TEST_FREE_KB:?}"
+                }
+                docker_root_dir() {
+                  printf '/var/lib/docker\n'
+                }
+                check_disk_policy "${TEST_DISK_MODE:?}"
+                """
+            ).lstrip(),
+            0o755,
+        )
+
+        cases = (
+            ("fresh-docker-ready", 4096, True),
+            ("fresh-docker-ready", 4095, False),
+            ("fresh-docker-install", 5120, True),
+            ("fresh-docker-install", 5119, False),
+            ("repair", 3072, True),
+            ("repair", 3071, False),
+        )
+        for mode, free_mb, should_pass in cases:
+            with self.subTest(mode=mode, free_mb=free_mb):
+                environment = os.environ.copy()
+                environment["TEST_DISK_MODE"] = mode
+                environment["TEST_FREE_KB"] = str(free_mb * 1024)
+                result = subprocess.run(
+                    ["bash", str(harness), str(patched)],
+                    cwd=self.root,
+                    env=environment,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                if should_pass:
+                    self.assertEqual(
+                        result.returncode,
+                        0,
+                        msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+                    )
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("not enough free disk space", result.stderr)
+
+    def test_installer_dry_run_never_installs_docker(self) -> None:
+        patched = self._patched_installer()
+        harness = self.root / "run-dry-run-docker-check.sh"
+        self._write(
+            harness,
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export THE333_INSTALL_TEST_HARNESS=true
+                source "$1"
+                DRY_RUN=true
+                NON_INTERACTIVE=false
+                docker_stack_available() { return 1; }
+                ensure_docker
+                """
+            ).lstrip(),
+            0o755,
+        )
+        result = subprocess.run(
+            ["bash", str(harness), str(patched)],
+            cwd=self.root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        self.assertIn("Dry-run: Docker installation would be offered", result.stderr)
+
+    def test_update_disk_policy_accounts_for_missing_routing_core(self) -> None:
+        patched = self._patched_update_controller()
+        harness = self.root / "run-update-disk-policy.sh"
+        self._write(
+            harness,
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export THE333_UPDATE_TEST_HARNESS=true
+                source "$1"
+                configure_docker_access() { :; }
+                docker_cli() {
+                  if [[ "$1" == "info" ]]; then
+                    printf '/var/lib/docker\n'
+                    return 0
+                  fi
+                  if [[ "$1 $2" == "image inspect" && "${TEST_CORE_PRESENT:?}" == "true" ]]; then
+                    return 0
+                  fi
+                  return 1
+                }
+                update_disk_stats_for_path() {
+                  printf '/dev/test %s\n' "${TEST_FREE_KB:?}"
+                }
+                unset UPDATE_MIN_FREE_BYTES UPDATE_RECOMMENDED_FREE_BYTES
+                GOBGP_CORE_IMAGE_VERSION=test
+                check_update_disk_space
+                """
+            ).lstrip(),
+            0o755,
+        )
+
+        cases = (
+            (True, 1024, True),
+            (True, 1023, False),
+            (False, 2048, True),
+            (False, 2047, False),
+        )
+        for core_present, free_mb, should_pass in cases:
+            with self.subTest(core_present=core_present, free_mb=free_mb):
+                environment = os.environ.copy()
+                environment["TEST_CORE_PRESENT"] = str(core_present).lower()
+                environment["TEST_FREE_KB"] = str(free_mb * 1024)
+                result = subprocess.run(
+                    ["bash", str(harness), str(patched)],
+                    cwd=self.root,
+                    env=environment,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                if should_pass:
+                    self.assertEqual(
+                        result.returncode,
+                        0,
+                        msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+                    )
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("not enough free disk space", result.stderr)
 
     def test_bootstrap_installer_reports_index_download_failure_without_python_traceback(self) -> None:
         patched = self._patched_installer()

@@ -542,13 +542,13 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.82.2b";
+const PRODUCT_VERSION = "0.82.3b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.82.2b",
-    version: "0.82.2b",
-    title: "v0.82.2b",
+    id: "0.82.3b",
+    version: "0.82.3b",
+    title: "v0.82.3b",
     channel: "beta",
     status: "текущая версия",
     date: "июль 2026",
@@ -559,7 +559,9 @@ const UPDATE_VERSIONS = [
       "Обновлённые совместимые backend/frontend зависимости и SHA-pinned GitHub Actions.",
       "CodeQL, CI, dependency audit и release-проверки без открытых предупреждений.",
       "Сохранена непрерывность GoBGP: обновление portal/backend не перезапускает routing-core.",
-      "Уточнённая политика Dependabot без автоматического перехода с LTS на Current runtime."
+      "Уточнённая политика Dependabot без автоматического перехода с LTS на Current runtime.",
+      "Проверка диска учитывает этап установки, наличие routing-core и реальный Docker Root Dir.",
+      "Badge-ряды README адаптированы для мобильного GitHub без вертикального распада."
     ]
   }
 ];

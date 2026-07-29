@@ -10,8 +10,14 @@ DRY_RUN="false"
 NON_INTERACTIVE="false"
 INSTALL_ACTION="${THE333_INSTALL_ACTION:-}"
 DOCKER_CMD=(docker)
-MIN_FREE_DISK_KB=8388608
-RECOMMENDED_FREE_DISK_GB=12
+MIN_PROJECT_FREE_MB=512
+RECOMMENDED_PROJECT_FREE_MB=1024
+MIN_FRESH_DOCKER_READY_MB=4096
+RECOMMENDED_FRESH_DOCKER_READY_MB=6144
+MIN_FRESH_DOCKER_INSTALL_MB=5120
+RECOMMENDED_FRESH_DOCKER_INSTALL_MB=8192
+MIN_REPAIR_FREE_MB=3072
+RECOMMENDED_REPAIR_FREE_MB=5120
 
 usage() {
   cat <<'USAGE'
@@ -346,10 +352,9 @@ check_os() {
   fi
 }
 
-check_resources() {
-  local mem_kb disk_kb
+check_memory() {
+  local mem_kb
   mem_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || true)"
-  disk_kb="$(df -Pk "$(dirname "${PROJECT_DIR}")" 2>/dev/null | awk 'NR==2 {print $4}' || true)"
 
   if [[ -n "${mem_kb}" && "${mem_kb}" =~ ^[0-9]+$ && "${mem_kb}" -lt 900000 ]]; then
     fail "not enough RAM: $((mem_kb / 1024)) MB available. Need at least 1 GB; recommended 2 GB+."
@@ -357,14 +362,111 @@ check_resources() {
   if [[ -n "${mem_kb}" && "${mem_kb}" =~ ^[0-9]+$ && "${mem_kb}" -lt 1800000 ]]; then
     log "Warning: RAM is below the recommended 2 GB level ($((mem_kb / 1024)) MB)."
   fi
+}
 
-  if [[ -n "${disk_kb}" && "${disk_kb}" =~ ^[0-9]+$ && "${disk_kb}" -lt "${MIN_FREE_DISK_KB}" ]]; then
-    fail "not enough free disk space near ${PROJECT_DIR}: $((disk_kb / 1024)) MB available. Fresh installation needs at least 8 GB free; recommended ${RECOMMENDED_FREE_DISK_GB}+ GB."
+existing_path_for_df() {
+  local path="$1"
+  while [[ ! -e "${path}" && "${path}" != "/" ]]; do
+    path="$(dirname "${path}")"
+  done
+  printf '%s\n' "${path}"
+}
+
+disk_stats_for_path() {
+  local path probe
+  path="$1"
+  probe="$(existing_path_for_df "${path}")"
+  df -Pk "${probe}" 2>/dev/null | awk 'NR==2 {print $1, $4}'
+}
+
+check_storage_target() {
+  local label="$1"
+  local path="$2"
+  local min_mb="$3"
+  local recommended_mb="$4"
+  local stats device free_kb free_mb
+
+  stats="$(disk_stats_for_path "${path}")"
+  device="${stats%% *}"
+  free_kb="${stats##* }"
+  if [[ -z "${device}" || -z "${free_kb}" || ! "${free_kb}" =~ ^[0-9]+$ ]]; then
+    fail "cannot determine free disk space for ${label} (${path})"
+  fi
+  free_mb=$((free_kb / 1024))
+
+  if (( free_mb < min_mb )); then
+    fail "not enough free disk space for ${label}: ${free_mb} MB available on ${device}, at least ${min_mb} MB required"
   fi
 
-  if [[ -n "${disk_kb}" && "${disk_kb}" =~ ^[0-9]+$ && "${disk_kb}" -lt $((RECOMMENDED_FREE_DISK_GB * 1024 * 1024)) ]]; then
-    log "Warning: free disk space is below recommended level ($((disk_kb / 1024)) MB). Recommended: ${RECOMMENDED_FREE_DISK_GB}+ GB."
+  if (( free_mb < recommended_mb )); then
+    log "Warning: ${label} has ${free_mb} MB free on ${device}; ${recommended_mb} MB or more is recommended."
+  else
+    log "Disk preflight passed for ${label}: ${free_mb} MB free on ${device}."
   fi
+
+  printf '%s\n' "${device}"
+}
+
+docker_stack_available() {
+  need_cmd docker && docker compose version >/dev/null 2>&1
+}
+
+docker_root_dir() {
+  docker_cli info --format '{{.DockerRootDir}}' 2>/dev/null
+}
+
+check_disk_policy() {
+  local mode="$1"
+  local docker_path docker_min_mb docker_recommended_mb
+  local project_stats docker_stats project_device docker_device
+
+  case "${mode}" in
+    fresh-docker-install)
+      docker_path="/var/lib/docker"
+      docker_min_mb="${MIN_FRESH_DOCKER_INSTALL_MB}"
+      docker_recommended_mb="${RECOMMENDED_FRESH_DOCKER_INSTALL_MB}"
+      ;;
+    fresh-docker-ready)
+      docker_path="$(docker_root_dir)"
+      [[ -n "${docker_path}" ]] || fail "cannot determine Docker Root Dir"
+      docker_min_mb="${MIN_FRESH_DOCKER_READY_MB}"
+      docker_recommended_mb="${RECOMMENDED_FRESH_DOCKER_READY_MB}"
+      ;;
+    repair)
+      docker_path="$(docker_root_dir)"
+      [[ -n "${docker_path}" ]] || fail "cannot determine Docker Root Dir"
+      docker_min_mb="${MIN_REPAIR_FREE_MB}"
+      docker_recommended_mb="${RECOMMENDED_REPAIR_FREE_MB}"
+      ;;
+    *)
+      fail "unknown disk preflight mode: ${mode}"
+      ;;
+  esac
+
+  project_stats="$(disk_stats_for_path "${PROJECT_DIR}")"
+  docker_stats="$(disk_stats_for_path "${docker_path}")"
+  project_device="${project_stats%% *}"
+  docker_device="${docker_stats%% *}"
+
+  if [[ -n "${project_device}" && "${project_device}" == "${docker_device}" ]]; then
+    check_storage_target \
+      "project and Docker storage" \
+      "${docker_path}" \
+      "${docker_min_mb}" \
+      "${docker_recommended_mb}" >/dev/null
+    return 0
+  fi
+
+  check_storage_target \
+    "project storage" \
+    "${PROJECT_DIR}" \
+    "${MIN_PROJECT_FREE_MB}" \
+    "${RECOMMENDED_PROJECT_FREE_MB}" >/dev/null
+  check_storage_target \
+    "Docker storage" \
+    "${docker_path}" \
+    "${docker_min_mb}" \
+    "${docker_recommended_mb}" >/dev/null
 }
 
 check_project_dir_safety() {
@@ -415,13 +517,18 @@ check_ports() {
 }
 
 ensure_docker() {
-  if need_cmd docker && docker compose version >/dev/null 2>&1; then
+  if docker_stack_available; then
     log "Step 1/7: Docker and Docker Compose plugin are already installed. Skipping Docker installation."
     configure_docker_access
     return 0
   fi
 
   log "Step 1/7: Docker or Docker Compose plugin not found."
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log "Dry-run: Docker installation would be offered on supported Ubuntu/Debian systems."
+    return 0
+  fi
+
   if [[ "${NON_INTERACTIVE}" == "true" ]]; then
     fail "Docker is required. Install Docker first, or rerun installer interactively to allow apt installation."
   fi
@@ -748,7 +855,7 @@ write_env() {
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
   host_updater_token="${HOST_UPDATER_TOKEN:-$(make_token)}"
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.82.2b}"
+  product_version="${product_version:-0.82.3b}"
   log "Update manifest: ${update_url}"
 
   if [[ -f "${PROJECT_DIR}/.env" ]]; then
@@ -823,7 +930,7 @@ PRODUCT_UPDATE_MANIFEST_URL=${update_url}
 PRODUCT_UPDATE_ENABLED=true
 PRODUCT_UPDATE_MODE=host-updater
 PRODUCT_UPDATE_TIMEOUT_SECONDS=1800
-UPDATE_MIN_FREE_BYTES=2147483648
+UPDATE_MIN_FREE_BYTES=1073741824
 HOST_UPDATER_SOCKET=/run/the333-bgp/updater.sock
 HOST_UPDATER_RUN_DIR=/run/the333-bgp
 HOST_UPDATER_RESULT_DIR=${PROJECT_DIR}/data/host-updater-results
@@ -967,7 +1074,7 @@ ensure_env_defaults() {
 
   local product_version update_url backup_env
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.82.2b}"
+  product_version="${product_version:-0.82.3b}"
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-$(awk -F= '$1 == "PRODUCT_UPDATE_MANIFEST_URL" {print $2; exit}' "${PROJECT_DIR}/.env" | tr -d '[:space:]')}"
   update_url="${update_url:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
 
@@ -1045,10 +1152,16 @@ PY
 
 first_install() {
   local src="$1"
+  local initial_disk_mode="fresh-docker-install"
   check_project_dir_safety
   check_basic_tools
   check_os
-  check_resources
+  check_memory
+  if docker_stack_available; then
+    initial_disk_mode="fresh-docker-ready"
+    configure_docker_access
+  fi
+  check_disk_policy "${initial_disk_mode}"
   show_firewall_notice
   ensure_docker
   log "Step 2/7: Checking required ports 179, 8088 and 8090."
@@ -1065,6 +1178,7 @@ first_install() {
   install_host_updater_service
 
   cd "${PROJECT_DIR}"
+  check_disk_policy "fresh-docker-ready"
   log "Step 6/7: Building Docker images."
   docker_compose build
   log "Step 7/7: Starting The333-BGP containers."
@@ -1118,6 +1232,8 @@ existing_install_flow() {
       ;;
     r|R|repair|REPAIR)
       local src
+      check_memory
+      check_disk_policy "repair"
       src="$(download_repo_if_needed)"
       if [[ -x "${control}" ]]; then
         "${control}" backup || fallback_backup_existing_install
@@ -1128,6 +1244,7 @@ existing_install_flow() {
       ensure_env_defaults
       install_host_updater_service
       cd "${PROJECT_DIR}"
+      check_disk_policy "repair"
       docker_compose build
       docker_compose up -d --remove-orphans
       wait_for_services "$(awk -F= '$1 == "THE333_BIND_IP" {print $2; exit}' .env)"

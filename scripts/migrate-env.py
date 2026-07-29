@@ -98,6 +98,11 @@ def main() -> int:
 
     peer_mode = values.get("BGP_PEER_MODE") or detect_peer_mode(values.get("PEER_ADDRESS", ""))
     updater_token = values.get("HOST_UPDATER_TOKEN") or secrets.token_hex(32)
+    update_min_free_bytes = values.get("UPDATE_MIN_FREE_BYTES", "").strip()
+    if not update_min_free_bytes or update_min_free_bytes == "2147483648":
+        update_min_free_bytes = "1073741824"
+    elif not update_min_free_bytes.isdigit() or int(update_min_free_bytes) <= 0:
+        raise SystemExit("UPDATE_MIN_FREE_BYTES must be a positive integer")
     manifest_url = values.get("PRODUCT_UPDATE_MANIFEST_URL", "").strip()
     if not manifest_url or any(marker in manifest_url for marker in LEGACY_OFFICIAL_MANIFEST_MARKERS):
         requested_url = (args.update_url or "").strip()
@@ -119,7 +124,7 @@ def main() -> int:
         "HOST_UPDATER_RUN_DIR": "/run/the333-bgp",
         "HOST_UPDATER_RESULT_DIR": str(project_dir / "data" / "host-updater-results"),
         "HOST_UPDATER_TOKEN": updater_token,
-        "UPDATE_MIN_FREE_BYTES": "2147483648",
+        "UPDATE_MIN_FREE_BYTES": update_min_free_bytes,
         "AUTH_ALLOW_BASIC": "false",
         "SESSION_COOKIE_NAME": "the333_session",
         "SESSION_TTL_SECONDS": "43200",
@@ -149,6 +154,7 @@ def main() -> int:
         "BGP_TCP_MD5_CONFIGURED",
         "GOBGP_CORE_IMAGE_VERSION",
         "HOST_UPDATER_RESULT_DIR",
+        "UPDATE_MIN_FREE_BYTES",
     }
 
     updated: list[str] = []

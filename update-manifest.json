@@ -2,19 +2,23 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.82.2b"
+    "beta": "0.82.3b"
   },
   "versions": [
     {
-      "version": "0.82.2b",
-      "title": "v0.82.2b",
+      "version": "0.82.3b",
+      "title": "v0.82.3b",
       "channel": "beta",
       "status": "текущая beta",
-      "date": "2026-07-23",
+      "date": "2026-07-30",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.2b/the333-bgp-v0.82.2b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.3b/the333-bgp-v0.82.3b.tar.gz",
       "sha256": "",
       "changelog": [
+        "Stage-aware disk preflight различает новую установку, update и repair, повторяет проверку перед сборкой и учитывает реальный Docker Root Dir.",
+        "Обычный update требует 1 ГБ свободного места; при отсутствии routing-core порог автоматически повышается до 2 ГБ для полной сборки.",
+        "Dry-run больше не предлагает и не запускает установку Docker; документация объясняет реальный размер проекта и временный запас.",
+        "Badge-ряды README адаптированы для GitHub Mobile и сохраняют горизонтальную компоновку.",
         "Транзакционное обновление восстанавливает backup при любом сбое активации релиза; встроенные каталоги заменяются атомарно даже при root-владельце старых файлов.",
         "Транзакционное применение маршрутов, проверенный GoBGP 4.7.0 и сохранение BGP continuity при обновлениях portal/backend.",
         "Изолированный host-side updater с durable-задачами, согласованным backup, readiness-check и автоматическим rollback.",
