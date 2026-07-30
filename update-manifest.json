@@ -2,17 +2,17 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.82.3b"
+    "beta": "0.82.4b"
   },
   "versions": [
     {
-      "version": "0.82.3b",
-      "title": "v0.82.3b",
+      "version": "0.82.4b",
+      "title": "v0.82.4b",
       "channel": "beta",
       "status": "текущая beta",
       "date": "2026-07-30",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.3b/the333-bgp-v0.82.3b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.4b/the333-bgp-v0.82.4b.tar.gz",
       "sha256": "",
       "changelog": [
         "Stage-aware disk preflight различает новую установку, update и repair, повторяет проверку перед сборкой и учитывает реальный Docker Root Dir.",

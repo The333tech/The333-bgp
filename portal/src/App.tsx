@@ -542,13 +542,13 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.82.3b";
+const PRODUCT_VERSION = "0.82.4b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.82.3b",
-    version: "0.82.3b",
-    title: "v0.82.3b",
+    id: "0.82.4b",
+    version: "0.82.4b",
+    title: "v0.82.4b",
     channel: "beta",
     status: "текущая версия",
     date: "июль 2026",
