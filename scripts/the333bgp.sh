@@ -18,6 +18,7 @@ LAST_BACKUP_ARCHIVE=""
 HOST_UPDATER_SERVICE="the333-bgp-updater.service"
 DEFAULT_MIN_UPDATE_FREE_BYTES=1073741824
 DEFAULT_RECOMMENDED_UPDATE_FREE_BYTES=2147483648
+LEGACY_DEFAULT_MIN_UPDATE_FREE_BYTES=2147483648
 DEFAULT_MIN_CORE_UPDATE_FREE_BYTES=2147483648
 DEFAULT_RECOMMENDED_CORE_UPDATE_FREE_BYTES=4294967296
 DEFAULT_MIN_PROJECT_UPDATE_FREE_BYTES=536870912
@@ -195,6 +196,11 @@ check_update_disk_space() {
   configured_recommended_bytes="${UPDATE_RECOMMENDED_FREE_BYTES:-${DEFAULT_RECOMMENDED_UPDATE_FREE_BYTES}}"
   project_min_bytes="${UPDATE_MIN_PROJECT_FREE_BYTES:-${DEFAULT_MIN_PROJECT_UPDATE_FREE_BYTES}}"
   project_recommended_bytes="${UPDATE_RECOMMENDED_PROJECT_FREE_BYTES:-${DEFAULT_RECOMMENDED_PROJECT_UPDATE_FREE_BYTES}}"
+
+  if [[ "${configured_min_bytes}" == "${LEGACY_DEFAULT_MIN_UPDATE_FREE_BYTES}" ]]; then
+    configured_min_bytes="${DEFAULT_MIN_UPDATE_FREE_BYTES}"
+    log "Legacy update disk threshold detected; using the current 1024 MB minimum."
+  fi
 
   for value_name in configured_min_bytes configured_recommended_bytes project_min_bytes project_recommended_bytes; do
     value="${!value_name}"

@@ -4,14 +4,14 @@
 
 The333-BGP поднимает GoBGP speaker на Linux VM, собирает маршруты из источников и модулей сервисов, дедуплицирует/агрегирует их и публикует в MikroTik через BGP. Управление идёт через веб-портал: источники маршрутов, модули сервисов, Community-профили, диагностика, история, резервные копии, обновления и пошаговый помощник MikroTik.
 
-<p align="center"><ruby><a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.82.3b-8e44ad?style=flat-square"></a></ruby>&nbsp;<ruby><a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a></ruby>&nbsp;<ruby><a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a></ruby></p>
+<p align="center"><ruby><a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.82.4b-8e44ad?style=flat-square"></a></ruby>&nbsp;<ruby><a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a></ruby>&nbsp;<ruby><a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a></ruby></p>
 <p align="center"><ruby><a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a></ruby>&nbsp;<ruby><a href="docs/INSTALL.md"><img alt="MikroTik" src="https://img.shields.io/badge/MikroTik-RouterOS_v7-c88616?style=flat-square"></a></ruby></p>
 <p align="center"><ruby><img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776ab?style=flat-square&logo=python&logoColor=white"></ruby>&nbsp;<ruby><img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-3c873a?style=flat-square&logo=node.js&logoColor=white"></ruby></p>
 <p align="center"><ruby><img alt="GoBGP" src="https://img.shields.io/badge/GoBGP-v4.7.0-00a6a6?style=flat-square"></ruby>&nbsp;<ruby><img alt="SBOM" src="https://img.shields.io/badge/SBOM-SPDX-546e7a?style=flat-square"></ruby>&nbsp;<ruby><a href="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml/badge.svg?branch=main"></a></ruby></p>
 <p align="center"><ruby><a href="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml/badge.svg?branch=main"></a></ruby>&nbsp;<ruby><a href="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml"><img alt="Release" src="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml/badge.svg"></a></ruby></p>
 
 > [!NOTE]
-> **v0.82.3b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Текущий рабочий стенд на отдельной VM в локальной сети успешно публикует маршруты в MikroTik больше месяца; тесты, документация и сценарии установки продолжают дорабатываться.
+> **v0.82.4b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Текущий рабочий стенд на отдельной VM в локальной сети успешно публикует маршруты в MikroTik больше месяца; тесты, документация и сценарии установки продолжают дорабатываться.
 
 ## Требования
 
@@ -24,11 +24,11 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 
 ### Почему нужен запас на диске
 
-Сам проект лёгкий: для `v0.82.3b` release archive занимает около **350 КБ**, а исходный код и встроенные конфигурации после распаковки — около **3 МБ**. На тестовом стенде каталог проекта вместе с текущими данными и резервными копиями занимает около **100 МБ**.
+Сам проект лёгкий: для `v0.82.4b` release archive занимает около **350 КБ**, а исходный код и встроенные конфигурации после распаковки — около **3 МБ**. На тестовом стенде каталог проекта вместе с текущими данными и резервными копиями занимает около **100 МБ**.
 
 Основное место требуется Docker и процессу обновления:
 
-| Что занимает место | Ориентир для `v0.82.3b` |
+| Что занимает место | Ориентир для `v0.82.4b` |
 |---|---:|
 | Рабочие Docker images | около 1 ГБ |
 | Docker build cache | около 0,5 ГБ |

@@ -632,7 +632,12 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 update_disk_stats_for_path() {
                   printf '/dev/test %s\n' "${TEST_FREE_KB:?}"
                 }
-                unset UPDATE_MIN_FREE_BYTES UPDATE_RECOMMENDED_FREE_BYTES
+                if [[ -n "${TEST_CONFIGURED_MIN:-}" ]]; then
+                  UPDATE_MIN_FREE_BYTES="${TEST_CONFIGURED_MIN}"
+                else
+                  unset UPDATE_MIN_FREE_BYTES
+                fi
+                unset UPDATE_RECOMMENDED_FREE_BYTES
                 GOBGP_CORE_IMAGE_VERSION=test
                 check_update_disk_space
                 """
@@ -641,16 +646,24 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         )
 
         cases = (
-            (True, 1024, True),
-            (True, 1023, False),
-            (False, 2048, True),
-            (False, 2047, False),
+            (True, 1024, "", True),
+            (True, 1023, "", False),
+            (False, 2048, "", True),
+            (False, 2047, "", False),
+            (True, 1024, "2147483648", True),
+            (True, 1536, "1610612736", True),
+            (True, 1535, "1610612736", False),
         )
-        for core_present, free_mb, should_pass in cases:
-            with self.subTest(core_present=core_present, free_mb=free_mb):
+        for core_present, free_mb, configured_min, should_pass in cases:
+            with self.subTest(
+                core_present=core_present,
+                free_mb=free_mb,
+                configured_min=configured_min,
+            ):
                 environment = os.environ.copy()
                 environment["TEST_CORE_PRESENT"] = str(core_present).lower()
                 environment["TEST_FREE_KB"] = str(free_mb * 1024)
+                environment["TEST_CONFIGURED_MIN"] = configured_min
                 result = subprocess.run(
                     ["bash", str(harness), str(patched)],
                     cwd=self.root,
@@ -666,6 +679,8 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                         0,
                         msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
                     )
+                    if configured_min == "2147483648":
+                        self.assertIn("Legacy update disk threshold detected", result.stderr)
                 else:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("not enough free disk space", result.stderr)
