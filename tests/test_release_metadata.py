@@ -245,21 +245,30 @@ class ReleaseMetadataTests(unittest.TestCase):
 
     def test_grype_exception_is_narrow_and_version_scoped(self) -> None:
         config = (ROOT / ".grype.yaml").read_text(encoding="utf-8")
-        backend_tree = ast.parse((ROOT / "app" / "main.py").read_text(encoding="utf-8"))
         imported_modules: set[str] = set()
-        for node in ast.walk(backend_tree):
-            if isinstance(node, ast.Import):
-                imported_modules.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported_modules.add(node.module)
+        for source_path in (ROOT / "app").rglob("*.py"):
+            backend_tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            for node in ast.walk(backend_tree):
+                if isinstance(node, ast.Import):
+                    imported_modules.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported_modules.add(node.module)
 
-        self.assertEqual(config.count("- vulnerability:"), 1)
-        self.assertIn("vulnerability: CVE-2026-15308", config)
-        self.assertIn("name: python", config)
-        self.assertIn("version: 3.14.6", config)
-        self.assertIn("type: binary", config)
+        ignored_cves = (
+            "CVE-2026-15308",
+            "CVE-2026-11940",
+            "CVE-2026-11972",
+        )
+        self.assertEqual(config.count("- vulnerability:"), len(ignored_cves))
+        for cve in ignored_cves:
+            with self.subTest(cve=cve):
+                self.assertIn(f"vulnerability: {cve}", config)
+        self.assertEqual(config.count("name: python"), len(ignored_cves))
+        self.assertEqual(config.count("version: 3.14.6"), len(ignored_cves))
+        self.assertEqual(config.count("type: binary"), len(ignored_cves))
         self.assertIn("neither imports nor", config)
         self.assertFalse(any(name == "html" or name.startswith("html.") for name in imported_modules))
+        self.assertFalse(any(name == "tarfile" or name.startswith("tarfile.") for name in imported_modules))
 
     def test_github_actions_are_pinned_and_release_is_attested(self) -> None:
         workflow_dir = ROOT / ".github" / "workflows"
