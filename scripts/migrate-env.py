@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import secrets
 import subprocess
 import tempfile
@@ -13,6 +14,46 @@ LEGACY_OFFICIAL_MANIFEST_MARKERS = (
     "raw.githubusercontent.com/The333tech/The333-bgp/",
     "api.github.com/repos/The333tech/The333-bgp/releases/latest",
 )
+IMAGE_REPOSITORIES = {
+    "THE333_GOBGP_IMAGE": "ghcr.io/the333tech/the333-bgp-core",
+    "THE333_BACKEND_IMAGE": "ghcr.io/the333tech/the333-bgp-backend",
+    "THE333_PORTAL_IMAGE": "ghcr.io/the333tech/the333-bgp-portal",
+}
+
+
+def validate_prebuilt_image_ref(key: str, value: str) -> str:
+    repository = IMAGE_REPOSITORIES[key]
+    pattern = rf"{re.escape(repository)}@sha256:[0-9a-f]{{64}}"
+    if not re.fullmatch(pattern, value):
+        raise ValueError(f"{key} must be an immutable {repository}@sha256:<digest> reference")
+    return value
+
+
+def release_image_refs(project_dir: Path, version: str) -> dict[str, str]:
+    manifest_path = project_dir / "update-manifest.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise ValueError("release update-manifest.json is missing or unsafe")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError("release update-manifest.json is invalid") from exc
+
+    matches = [item for item in manifest.get("versions", []) if str(item.get("version")) == version]
+    if len(matches) != 1:
+        raise ValueError(f"release manifest must contain exactly one entry for version {version}")
+    images = matches[0].get("images")
+    if not isinstance(images, dict):
+        raise ValueError(f"release {version} has no prebuilt image manifest")
+
+    manifest_keys = {
+        "THE333_GOBGP_IMAGE": "core",
+        "THE333_BACKEND_IMAGE": "backend",
+        "THE333_PORTAL_IMAGE": "portal",
+    }
+    return {
+        env_key: validate_prebuilt_image_ref(env_key, str(images.get(manifest_key, "")).strip())
+        for env_key, manifest_key in manifest_keys.items()
+    }
 
 
 def parse_env(lines: list[str]) -> dict[str, str]:
@@ -87,6 +128,26 @@ def main() -> int:
     lines = env_path.read_text(encoding="utf-8").splitlines()
     values = parse_env(lines)
 
+    image_mode = values.get("THE333_IMAGE_MODE", "source").strip().lower() or "source"
+    if image_mode not in {"source", "prebuilt"}:
+        raise SystemExit("THE333_IMAGE_MODE must be source or prebuilt")
+    if image_mode == "prebuilt":
+        try:
+            image_refs = release_image_refs(project_dir, args.version)
+        except ValueError as exc:
+            current_version = values.get("PRODUCT_VERSION", "").strip()
+            if current_version != args.version:
+                raise SystemExit(str(exc)) from exc
+            try:
+                image_refs = {
+                    key: validate_prebuilt_image_ref(key, values.get(key, "").strip())
+                    for key in IMAGE_REPOSITORIES
+                }
+            except ValueError:
+                raise SystemExit(str(exc)) from exc
+    else:
+        image_refs = {key: "" for key in IMAGE_REPOSITORIES}
+
     secret_file = project_dir / "data" / "secrets" / "bgp_tcp_md5"
     secret_file.parent.mkdir(parents=True, exist_ok=True)
     legacy_md5 = values.get("BGP_TCP_MD5_KEY", "")
@@ -137,6 +198,8 @@ def main() -> int:
         "REMOTE_FETCH_MAX_REDIRECTS": "5",
         "REMOTE_FETCH_CACHE_GRACE_SECONDS": "86400",
         "GOBGP_CORE_IMAGE_VERSION": "4.7.0-r5",
+        "THE333_IMAGE_MODE": image_mode,
+        **image_refs,
         "BGP_PEER_MODE": peer_mode,
         "BGP_DOCKER_BRIDGE_HOPS": "1",
         "BGP_TTL_SECURITY_ENABLED": "false",
@@ -153,6 +216,10 @@ def main() -> int:
         "PRODUCT_UPDATE_MANIFEST_URL",
         "BGP_TCP_MD5_CONFIGURED",
         "GOBGP_CORE_IMAGE_VERSION",
+        "THE333_IMAGE_MODE",
+        "THE333_GOBGP_IMAGE",
+        "THE333_BACKEND_IMAGE",
+        "THE333_PORTAL_IMAGE",
         "HOST_UPDATER_RESULT_DIR",
         "UPDATE_MIN_FREE_BYTES",
     }
@@ -196,6 +263,7 @@ def main() -> int:
         "legacy_md5_migrated": bool(legacy_md5),
         "legacy_md5_key_removed": removed_legacy_key,
         "peer_mode": peer_mode,
+        "image_mode": image_mode,
     }, ensure_ascii=False))
     return 0
 

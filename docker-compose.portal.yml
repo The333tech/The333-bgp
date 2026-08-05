@@ -1,6 +1,6 @@
 services:
   the333-portal:
-    image: "the333-bgp-portal:${PRODUCT_VERSION:-dev}"
+    image: "${THE333_PORTAL_IMAGE:-the333-bgp-portal:${PRODUCT_VERSION:-dev}}"
     build:
       context: ./portal
       args:

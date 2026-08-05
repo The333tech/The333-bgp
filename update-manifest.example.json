@@ -14,6 +14,7 @@
       "recommended": true,
       "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.4b/the333-bgp-v0.82.4b.tar.gz",
       "sha256": "",
+      "images": {},
       "changelog": [
         "Stage-aware disk preflight для install, update и repair с проверкой Docker Root Dir.",
         "Динамический порог update: 1 ГБ при готовом routing-core и 2 ГБ при его полной сборке.",

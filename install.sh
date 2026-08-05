@@ -10,6 +10,9 @@ DRY_RUN="false"
 NON_INTERACTIVE="false"
 INSTALL_ACTION="${THE333_INSTALL_ACTION:-}"
 DOCKER_CMD=(docker)
+RESOLVED_GOBGP_IMAGE=""
+RESOLVED_BACKEND_IMAGE=""
+RESOLVED_PORTAL_IMAGE=""
 MIN_PROJECT_FREE_MB=512
 RECOMMENDED_PROJECT_FREE_MB=1024
 MIN_FRESH_DOCKER_READY_MB=4096
@@ -18,6 +21,12 @@ MIN_FRESH_DOCKER_INSTALL_MB=5120
 RECOMMENDED_FRESH_DOCKER_INSTALL_MB=8192
 MIN_REPAIR_FREE_MB=3072
 RECOMMENDED_REPAIR_FREE_MB=5120
+MIN_FRESH_PREBUILT_DOCKER_READY_MB=2048
+RECOMMENDED_FRESH_PREBUILT_DOCKER_READY_MB=3072
+MIN_FRESH_PREBUILT_DOCKER_INSTALL_MB=3072
+RECOMMENDED_FRESH_PREBUILT_DOCKER_INSTALL_MB=4096
+MIN_PREBUILT_REPAIR_FREE_MB=1536
+RECOMMENDED_PREBUILT_REPAIR_FREE_MB=3072
 
 usage() {
   cat <<'USAGE'
@@ -37,6 +46,10 @@ Environment for --non-interactive:
   PRODUCT_UPDATE_MANIFEST_URL=https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20
   THE333_CHANNEL=beta
   THE333_VERSION=
+  THE333_IMAGE_MODE=source|prebuilt
+  THE333_GOBGP_IMAGE=ghcr.io/the333tech/the333-bgp-core@sha256:...
+  THE333_BACKEND_IMAGE=ghcr.io/the333tech/the333-bgp-backend@sha256:...
+  THE333_PORTAL_IMAGE=ghcr.io/the333tech/the333-bgp-portal@sha256:...
   THE333_INSTALL_ACTION=update
 USAGE
 }
@@ -99,7 +112,100 @@ docker_cli() {
 }
 
 docker_compose() {
-  docker_cli compose -f docker-compose.yml -f docker-compose.portal.yml "$@"
+  local compose_files=(-f docker-compose.yml -f docker-compose.portal.yml)
+  local tls_enabled="false"
+  if [[ -f .env ]]; then
+    tls_enabled="$(awk -F= '$1 == "PORTAL_TLS_ENABLED" {print tolower($2); exit}' .env | tr -d '[:space:]')"
+  fi
+  case "${tls_enabled}" in
+    1|true|yes|on) compose_files+=(-f docker-compose.tls.yml) ;;
+  esac
+  docker_cli compose "${compose_files[@]}" "$@"
+}
+
+runtime_image_mode() {
+  local mode=""
+  if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    mode="$(awk -F= '$1 == "THE333_IMAGE_MODE" {print tolower($2); exit}' "${PROJECT_DIR}/.env" | tr -d '[:space:]')"
+  fi
+  mode="${mode:-${THE333_IMAGE_MODE:-source}}"
+  case "${mode}" in
+    source|prebuilt) printf '%s\n' "${mode}" ;;
+    *) fail "THE333_IMAGE_MODE must be source or prebuilt" ;;
+  esac
+}
+
+validate_prebuilt_image_ref() {
+  local key="$1"
+  local repository="$2"
+  local reference="$3"
+  [[ "${reference}" =~ ^${repository}@sha256:[0-9a-f]{64}$ ]] \
+    || fail "${key} must be an immutable ${repository}@sha256:<digest> reference"
+}
+
+resolve_prebuilt_image_refs() {
+  local manifest="$1"
+  local version="$2"
+  local refs=()
+
+  if [[ -n "${THE333_GOBGP_IMAGE:-}" || -n "${THE333_BACKEND_IMAGE:-}" || -n "${THE333_PORTAL_IMAGE:-}" ]]; then
+    [[ -n "${THE333_GOBGP_IMAGE:-}" && -n "${THE333_BACKEND_IMAGE:-}" && -n "${THE333_PORTAL_IMAGE:-}" ]] \
+      || fail "all three THE333_*_IMAGE references are required in prebuilt mode"
+    refs=("${THE333_GOBGP_IMAGE}" "${THE333_BACKEND_IMAGE}" "${THE333_PORTAL_IMAGE}")
+  else
+    [[ -f "${manifest}" && ! -L "${manifest}" ]] \
+      || fail "verified release has no safe update-manifest.json for prebuilt images"
+    mapfile -t refs < <(python3 - "${manifest}" "${version}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+version = sys.argv[2]
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    raise SystemExit("release image manifest is invalid") from exc
+matches = [item for item in manifest.get("versions", []) if str(item.get("version")) == version]
+if len(matches) != 1 or not isinstance(matches[0].get("images"), dict):
+    raise SystemExit(f"release {version} has no prebuilt image manifest")
+images = matches[0]["images"]
+for name in ("core", "backend", "portal"):
+    print(str(images.get(name, "")).strip())
+PY
+    )
+    [[ "${#refs[@]}" -eq 3 ]] || fail "release ${version} has an incomplete prebuilt image manifest"
+  fi
+
+  validate_prebuilt_image_ref THE333_GOBGP_IMAGE 'ghcr\.io/the333tech/the333-bgp-core' "${refs[0]}"
+  validate_prebuilt_image_ref THE333_BACKEND_IMAGE 'ghcr\.io/the333tech/the333-bgp-backend' "${refs[1]}"
+  validate_prebuilt_image_ref THE333_PORTAL_IMAGE 'ghcr\.io/the333tech/the333-bgp-portal' "${refs[2]}"
+  RESOLVED_GOBGP_IMAGE="${refs[0]}"
+  RESOLVED_BACKEND_IMAGE="${refs[1]}"
+  RESOLVED_PORTAL_IMAGE="${refs[2]}"
+}
+
+prepare_runtime_images() {
+  local mode
+  mode="$(runtime_image_mode)"
+  if [[ "${mode}" == "prebuilt" ]]; then
+    log "Step 6/7: Pulling immutable prebuilt images from GHCR."
+    docker_compose pull the333-gobgp-core the333-bgp-backend the333-portal
+    return
+  fi
+  log "Step 6/7: Building Docker images from source."
+  docker_compose build
+}
+
+start_runtime() {
+  local mode
+  mode="$(runtime_image_mode)"
+  log "Step 7/7: Starting The333-BGP containers (${mode} image mode)."
+  if [[ "${mode}" == "prebuilt" ]]; then
+    docker_compose up -d --no-build --remove-orphans
+  else
+    docker_compose up -d --remove-orphans
+  fi
 }
 
 configure_docker_access() {
@@ -417,8 +523,11 @@ docker_root_dir() {
 
 check_disk_policy() {
   local mode="$1"
+  local image_mode
   local docker_path docker_min_mb docker_recommended_mb
   local project_stats docker_stats project_device docker_device
+
+  image_mode="$(runtime_image_mode)"
 
   case "${mode}" in
     fresh-docker-install)
@@ -442,6 +551,24 @@ check_disk_policy() {
       fail "unknown disk preflight mode: ${mode}"
       ;;
   esac
+
+  if [[ "${image_mode}" == "prebuilt" ]]; then
+    case "${mode}" in
+      fresh-docker-install)
+        docker_min_mb="${MIN_FRESH_PREBUILT_DOCKER_INSTALL_MB}"
+        docker_recommended_mb="${RECOMMENDED_FRESH_PREBUILT_DOCKER_INSTALL_MB}"
+        ;;
+      fresh-docker-ready)
+        docker_min_mb="${MIN_FRESH_PREBUILT_DOCKER_READY_MB}"
+        docker_recommended_mb="${RECOMMENDED_FRESH_PREBUILT_DOCKER_READY_MB}"
+        ;;
+      repair)
+        docker_min_mb="${MIN_PREBUILT_REPAIR_FREE_MB}"
+        docker_recommended_mb="${RECOMMENDED_PREBUILT_REPAIR_FREE_MB}"
+        ;;
+    esac
+    log "Prebuilt image mode is active; local build-cache reserve is not required."
+  fi
 
   project_stats="$(disk_stats_for_path "${PROJECT_DIR}")"
   docker_stats="$(disk_stats_for_path "${docker_path}")"
@@ -810,7 +937,7 @@ copy_project_files() {
 
 write_env() {
   log "Step 4/7: Creating .env with network, BGP and portal settings."
-  local bind_ip local_as router_id nexthop peer_ip peer_as community bgp_peer_mode bgp_ttl_security_enabled web_user web_password web_password_hash update_url host_updater_token generated_password product_version
+  local bind_ip local_as router_id nexthop peer_ip peer_as community bgp_peer_mode bgp_ttl_security_enabled web_user web_password web_password_hash update_url host_updater_token generated_password product_version image_mode
   bind_ip="$(ask_ipv4 "IP VM, на котором слушать портал/BGP" "${THE333_BIND_IP:-$(detect_ip || true)}" "THE333_BIND_IP")"
   [[ -n "${bind_ip}" ]] || bind_ip="0.0.0.0"
   local_as="$(ask_asn "ASN сервиса The333-BGP (private ASN: 64512-65534)" "${LOCAL_AS:-64512}" "LOCAL_AS")"
@@ -856,7 +983,15 @@ write_env() {
   host_updater_token="${HOST_UPDATER_TOKEN:-$(make_token)}"
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
   product_version="${product_version:-0.82.4b}"
+  image_mode="$(runtime_image_mode)"
+  RESOLVED_GOBGP_IMAGE=""
+  RESOLVED_BACKEND_IMAGE=""
+  RESOLVED_PORTAL_IMAGE=""
+  if [[ "${image_mode}" == "prebuilt" ]]; then
+    resolve_prebuilt_image_refs "${PROJECT_DIR}/update-manifest.json" "${product_version}"
+  fi
   log "Update manifest: ${update_url}"
+  log "Runtime image mode: ${image_mode}"
 
   if [[ -f "${PROJECT_DIR}/.env" ]]; then
     cp "${PROJECT_DIR}/.env" "${PROJECT_DIR}/.env.backup-$(date +%Y%m%d-%H%M%S)"
@@ -873,6 +1008,10 @@ ROUTER_ID=${router_id}
 BGP_NEXTHOP=${nexthop}
 BGP_LISTEN_PORT=1179
 GOBGP_CORE_IMAGE_VERSION=4.7.0-r5
+THE333_IMAGE_MODE=${image_mode}
+THE333_GOBGP_IMAGE=${RESOLVED_GOBGP_IMAGE}
+THE333_BACKEND_IMAGE=${RESOLVED_BACKEND_IMAGE}
+THE333_PORTAL_IMAGE=${RESOLVED_PORTAL_IMAGE}
 PEER_ADDRESS=${peer_ip}
 PEER_AS=${peer_as}
 BGP_COMMUNITY=${community}
@@ -1179,10 +1318,8 @@ first_install() {
 
   cd "${PROJECT_DIR}"
   check_disk_policy "fresh-docker-ready"
-  log "Step 6/7: Building Docker images."
-  docker_compose build
-  log "Step 7/7: Starting The333-BGP containers."
-  docker_compose up -d --remove-orphans
+  prepare_runtime_images
+  start_runtime
   wait_for_services "$(awk -F= '$1 == "THE333_BIND_IP" {print $2; exit}' .env)"
   "${PROJECT_DIR}/scripts/the333bgp.sh" status
 }
@@ -1245,8 +1382,8 @@ existing_install_flow() {
       install_host_updater_service
       cd "${PROJECT_DIR}"
       check_disk_policy "repair"
-      docker_compose build
-      docker_compose up -d --remove-orphans
+      prepare_runtime_images
+      start_runtime
       wait_for_services "$(awk -F= '$1 == "THE333_BIND_IP" {print $2; exit}' .env)"
       "${PROJECT_DIR}/scripts/the333bgp.sh" status
       ;;

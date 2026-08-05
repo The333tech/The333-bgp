@@ -45,6 +45,8 @@ Usage:
   scripts/the333bgp.sh set-password
   scripts/the333bgp.sh tls-enable CERT_FILE KEY_FILE
   scripts/the333bgp.sh tls-disable
+  scripts/the333bgp.sh image-mode source
+  scripts/the333bgp.sh image-mode prebuilt CORE_REF BACKEND_REF PORTAL_REF
   scripts/the333bgp.sh install-updater-service
   scripts/the333bgp.sh backup
   scripts/the333bgp.sh check-update [--manifest URL] [--channel stable|beta]
@@ -120,6 +122,30 @@ load_env() {
   fi
 }
 
+runtime_image_mode() {
+  local mode="${THE333_IMAGE_MODE:-source}"
+  mode="${mode,,}"
+  case "${mode}" in
+    source|prebuilt) printf '%s\n' "${mode}" ;;
+    *) fail "THE333_IMAGE_MODE must be source or prebuilt" ;;
+  esac
+}
+
+validate_prebuilt_image_ref() {
+  local key="$1"
+  local repository="$2"
+  local reference="$3"
+  [[ "${reference}" =~ ^${repository}@sha256:[0-9a-f]{64}$ ]] \
+    || fail "${key} must be an immutable ${repository}@sha256:<digest> reference"
+}
+
+validate_prebuilt_images() {
+  [[ "$(runtime_image_mode)" == "prebuilt" ]] || return 0
+  validate_prebuilt_image_ref THE333_GOBGP_IMAGE 'ghcr\.io/the333tech/the333-bgp-core' "${THE333_GOBGP_IMAGE:-}"
+  validate_prebuilt_image_ref THE333_BACKEND_IMAGE 'ghcr\.io/the333tech/the333-bgp-backend' "${THE333_BACKEND_IMAGE:-}"
+  validate_prebuilt_image_ref THE333_PORTAL_IMAGE 'ghcr\.io/the333tech/the333-bgp-portal' "${THE333_PORTAL_IMAGE:-}"
+}
+
 configure_compose_files() {
   COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.portal.yml)
   case "${PORTAL_TLS_ENABLED:-false}" in
@@ -131,6 +157,27 @@ configure_compose_files() {
 
 compose() {
   docker_cli compose "${COMPOSE_FILES[@]}" "$@"
+}
+
+prepare_service_images() {
+  local mode
+  mode="$(runtime_image_mode)"
+  if [[ "${mode}" == "prebuilt" ]]; then
+    validate_prebuilt_images
+    compose pull "$@"
+  else
+    compose build "$@"
+  fi
+}
+
+compose_up_services() {
+  local mode
+  mode="$(runtime_image_mode)"
+  if [[ "${mode}" == "prebuilt" ]]; then
+    compose up -d --no-build "$@"
+  else
+    compose up -d "$@"
+  fi
 }
 
 current_version() {
@@ -189,7 +236,7 @@ check_update_storage_target() {
 
 check_update_disk_space() {
   local configured_min_bytes configured_recommended_bytes min_bytes recommended_bytes
-  local project_min_bytes project_recommended_bytes value_name value core_image
+  local project_min_bytes project_recommended_bytes value_name value core_image image_mode
   local docker_root project_stats docker_stats project_device docker_device
 
   configured_min_bytes="${UPDATE_MIN_FREE_BYTES:-${DEFAULT_MIN_UPDATE_FREE_BYTES}}"
@@ -216,8 +263,12 @@ check_update_disk_space() {
 
   min_bytes="${configured_min_bytes}"
   recommended_bytes="${configured_recommended_bytes}"
-  core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
-  if ! docker_cli image inspect "${core_image}" >/dev/null 2>&1; then
+  image_mode="$(runtime_image_mode)"
+  core_image="${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}}"
+  if [[ "${image_mode}" == "prebuilt" ]]; then
+    validate_prebuilt_images
+    log "Prebuilt image mode is active; local build-cache reserve is not required."
+  elif ! docker_cli image inspect "${core_image}" >/dev/null 2>&1; then
     if (( min_bytes < DEFAULT_MIN_CORE_UPDATE_FREE_BYTES )); then
       min_bytes="${DEFAULT_MIN_CORE_UPDATE_FREE_BYTES}"
     fi
@@ -452,6 +503,8 @@ wait_for_services() {
 status() {
   cd "${PROJECT_DIR}"
   log "Version: $(current_version)"
+  log "Runtime image mode: $(runtime_image_mode)"
+  validate_prebuilt_images
   compose ps
 
   if ! systemctl is-active --quiet "${HOST_UPDATER_SERVICE}" || [[ ! -S /run/the333-bgp/updater.sock ]]; then
@@ -686,7 +739,7 @@ tls_enable() {
   configure_compose_files
 
   if ! compose config >/dev/null \
-    || ! compose build the333-portal \
+    || ! prepare_service_images the333-portal \
     || ! compose run --rm --no-deps the333-portal nginx -t; then
     cp "${backup_env}" "${PROJECT_DIR}/.env"
     chmod 600 "${PROJECT_DIR}/.env"
@@ -696,12 +749,12 @@ tls_enable() {
     fail "TLS preflight failed; .env was restored from ${backup_env}"
   fi
 
-  if ! compose up -d --build the333-bgp-backend the333-portal; then
+  if ! compose_up_services the333-bgp-backend the333-portal; then
     cp "${backup_env}" "${PROJECT_DIR}/.env"
     chmod 600 "${PROJECT_DIR}/.env"
     export PORTAL_TLS_ENABLED=false SESSION_COOKIE_SECURE=false
     configure_compose_files
-    compose up -d --build the333-bgp-backend the333-portal || true
+    compose_up_services the333-bgp-backend the333-portal || true
     fail "TLS activation failed; HTTP configuration was restored from ${backup_env}"
   fi
   log "TLS включён. Портал: https://${THE333_BIND_IP:-${ROUTER_ID}}:8090/"
@@ -719,15 +772,87 @@ tls_disable() {
   export PORTAL_TLS_ENABLED=false SESSION_COOKIE_SECURE=false
   configure_compose_files
   compose config >/dev/null
-  if ! compose up -d --build the333-bgp-backend the333-portal; then
+  if ! compose_up_services the333-bgp-backend the333-portal; then
     cp "${backup_env}" "${PROJECT_DIR}/.env"
     chmod 600 "${PROJECT_DIR}/.env"
     export PORTAL_TLS_ENABLED="${original_tls}" SESSION_COOKIE_SECURE="${original_secure}"
     configure_compose_files
-    compose up -d --build the333-bgp-backend the333-portal || true
+    compose_up_services the333-bgp-backend the333-portal || true
     fail "TLS deactivation failed; previous configuration was restored from ${backup_env}"
   fi
   log "TLS выключен. Портал: http://${THE333_BIND_IP:-${ROUTER_ID}}:8090/"
+}
+
+restore_image_mode_env() {
+  local backup_env="$1"
+  cp "${backup_env}" "${PROJECT_DIR}/.env"
+  chmod 600 "${PROJECT_DIR}/.env"
+  unset THE333_IMAGE_MODE THE333_GOBGP_IMAGE THE333_BACKEND_IMAGE THE333_PORTAL_IMAGE
+  load_env
+  configure_compose_files
+}
+
+set_image_mode() {
+  local requested="${1:-}"
+  shift || true
+  local backup_env previous_mode
+  previous_mode="$(runtime_image_mode)"
+  backup_env="${PROJECT_DIR}/.env.backup-before-image-mode-$(date +%Y%m%d-%H%M%S)"
+
+  case "${requested}" in
+    source)
+      [[ $# -eq 0 ]] || fail "source image mode does not accept image references"
+      export THE333_IMAGE_MODE=source
+      export THE333_GOBGP_IMAGE="" THE333_BACKEND_IMAGE="" THE333_PORTAL_IMAGE=""
+      ;;
+    prebuilt)
+      [[ $# -eq 3 ]] || fail "prebuilt image mode requires CORE_REF BACKEND_REF PORTAL_REF"
+      export THE333_IMAGE_MODE=prebuilt
+      export THE333_GOBGP_IMAGE="$1" THE333_BACKEND_IMAGE="$2" THE333_PORTAL_IMAGE="$3"
+      validate_prebuilt_images
+      ;;
+    *)
+      fail "image mode must be source or prebuilt"
+      ;;
+  esac
+
+  cp "${PROJECT_DIR}/.env" "${backup_env}"
+  chmod 600 "${backup_env}"
+  set_env_values \
+    THE333_IMAGE_MODE "${THE333_IMAGE_MODE}" \
+    THE333_GOBGP_IMAGE "${THE333_GOBGP_IMAGE}" \
+    THE333_BACKEND_IMAGE "${THE333_BACKEND_IMAGE}" \
+    THE333_PORTAL_IMAGE "${THE333_PORTAL_IMAGE}"
+  load_env
+  configure_compose_files
+
+  if ! check_update_disk_space; then
+    restore_image_mode_env "${backup_env}"
+    fail "image mode preflight failed; runtime was not changed and .env was restored"
+  fi
+
+  if ! build_update_images strict; then
+    restore_image_mode_env "${backup_env}"
+    fail "image preparation failed; runtime was not changed and .env was restored"
+  fi
+
+  if ! host_updater_service_ready && ! install_host_updater_service; then
+    restore_image_mode_env "${backup_env}"
+    fail "host updater preflight failed; runtime was not changed and .env was restored"
+  fi
+
+  if compose_up_services --remove-orphans \
+    && wait_for_services strict \
+    && status; then
+    log "Runtime image mode changed from ${previous_mode} to ${requested}."
+    return 0
+  fi
+
+  log "Image mode switch failed; restoring ${previous_mode} mode from ${backup_env}."
+  restore_image_mode_env "${backup_env}"
+  build_and_restart legacy \
+    || fail "image mode switch and automatic rollback both failed; inspect ${backup_env} and container logs"
+  fail "image mode switch failed; previous runtime was restored"
 }
 
 doctor() {
@@ -1068,7 +1193,16 @@ stop_runtime_for_rollback() {
 
 build_update_images() {
   local readiness_mode="${1:-strict}"
-  local core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
+  local image_mode core_image
+  image_mode="$(runtime_image_mode)"
+  if [[ "${image_mode}" == "prebuilt" ]]; then
+    validate_prebuilt_images
+    log "Pulling immutable prebuilt runtime images from GHCR."
+    compose pull the333-gobgp-core the333-bgp-backend the333-portal || return 1
+    return 0
+  fi
+
+  core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
   if [[ "${readiness_mode}" == "legacy" ]]; then
     log "Rollback: выполняется полная сборка предыдущего runtime."
     compose build || return 1
@@ -1097,10 +1231,14 @@ build_and_restart() {
   else
     install_host_updater_service || return 1
   fi
-  log "Building images..."
+  log "Preparing runtime images ($(runtime_image_mode) mode)..."
   build_update_images "${readiness_mode}" || return 1
   log "Restarting services..."
-  compose up -d --remove-orphans || return 1
+  if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+    compose up -d --no-build --remove-orphans || return 1
+  else
+    compose up -d --remove-orphans || return 1
+  fi
   wait_for_services "${readiness_mode}" || return 1
   if [[ "${readiness_mode}" == "legacy" ]]; then
     compose ps || return 1
@@ -1247,6 +1385,9 @@ main() {
     tls-disable)
       parse_common_args "$@"
       tls_disable
+      ;;
+    image-mode)
+      set_image_mode "$@"
       ;;
     install-updater-service)
       parse_common_args "$@"
