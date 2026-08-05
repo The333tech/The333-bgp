@@ -159,6 +159,7 @@ class ImageDeliveryTests(unittest.TestCase):
 
     def test_ghcr_workflows_are_multiarch_scanned_and_attested(self) -> None:
         candidate = (ROOT / ".github" / "workflows" / "ghcr-candidate.yml").read_text(encoding="utf-8")
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         for workflow in (candidate, release):
             self.assertIn("packages: write", workflow)
@@ -168,6 +169,10 @@ class ImageDeliveryTests(unittest.TestCase):
             self.assertIn("only-fixed: true", workflow)
             self.assertIn("push-to-registry: true", workflow)
         self.assertIn("candidate-${{ github.sha }}", candidate)
+        self.assertIn("workflow_call:", candidate)
+        self.assertIn("build-ghcr-candidate", ci)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", ci)
+        self.assertIn("uses: ./.github/workflows/ghcr-candidate.yml", ci)
         self.assertIn('matches[0]["images"] = images', release)
         self.assertIn("@sha256:[0-9a-f]", release)
 
