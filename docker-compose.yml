@@ -1,6 +1,6 @@
 services:
   the333-gobgp-core:
-    image: "the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
+    image: "${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}}"
     build:
       context: .
       dockerfile: docker/gobgp.Dockerfile
@@ -55,7 +55,7 @@ services:
       start_period: 20s
 
   the333-bgp-backend:
-    image: "the333-bgp-backend:${PRODUCT_VERSION:-dev}"
+    image: "${THE333_BACKEND_IMAGE:-the333-bgp-backend:${PRODUCT_VERSION:-dev}}"
     build:
       context: .
       dockerfile: docker/backend.Dockerfile

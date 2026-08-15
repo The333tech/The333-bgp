@@ -11,6 +11,7 @@ permissions:
   attestations: write
   contents: write
   id-token: write
+  packages: write
 
 env:
   GRYPE_VERSION: v0.112.0
@@ -20,8 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish release
+  validate:
+    name: Validate release source
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout tag
@@ -66,13 +67,192 @@ jobs:
           npm run build
           npm audit --omit=dev --audit-level=moderate
 
+  images:
+    name: Publish ${{ matrix.service }} image
+    needs: validate
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: core
+            image: the333-bgp-core
+            context: .
+            dockerfile: docker/gobgp.Dockerfile
+          - service: backend
+            image: the333-bgp-backend
+            context: .
+            dockerfile: docker/backend.Dockerfile
+          - service: portal
+            image: the333-bgp-portal
+            context: portal
+            dockerfile: portal/Dockerfile
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Validate release tag
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; image tags are immutable." >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push release image
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/the333tech/${{ matrix.image }}:${{ steps.version.outputs.version }}
+            ghcr.io/the333tech/${{ matrix.image }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          build-args: |
+            PRODUCT_VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            GOBGP_CORE_IMAGE_VERSION=4.7.0-r5
+          cache-from: type=gha,scope=runtime-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=runtime-${{ matrix.service }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Scan release image for fixable High/Critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ghcr.io/the333tech/${{ matrix.image }}@${{ steps.push.outputs.digest }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+          cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+      - name: Attest release image
+        if: github.event.repository.private == false
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ghcr.io/the333tech/${{ matrix.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record immutable image reference
+        shell: bash
+        run: |
+          mkdir -p dist/image-digests
+          printf '%s@%s\n' \
+            'ghcr.io/the333tech/${{ matrix.image }}' \
+            '${{ steps.push.outputs.digest }}' \
+            > 'dist/image-digests/${{ matrix.service }}.ref'
+
+      - name: Upload image reference
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image-${{ matrix.service }}
+          path: dist/image-digests/${{ matrix.service }}.ref
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Build and publish release
+    needs: images
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Download immutable image references
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-image-*
+          path: dist/image-digests
+          merge-multiple: true
+
       - name: Build release assets
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
           archive="the333-bgp-v${version}.tar.gz"
           mkdir -p dist/release-tree
-          git archive --format=tar.gz --prefix="The333-bgp-v${version}/" --output="dist/${archive}" HEAD
-          python3 scripts/extract-release.py "dist/${archive}" dist/release-tree
+          git archive --format=tar.gz --prefix="The333-bgp-v${version}/" --output=dist/source-tree.tar.gz HEAD
+          python3 scripts/extract-release.py dist/source-tree.tar.gz dist/release-tree
+          python3 - "${version}" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          source = Path("dist/release-tree/update-manifest.json")
+          manifest = json.loads(source.read_text(encoding="utf-8"))
+          matches = [item for item in manifest.get("versions", []) if str(item.get("version")) == version]
+          if len(matches) != 1:
+              raise SystemExit(f"manifest must contain exactly one entry for version {version}")
+
+          repositories = {
+              "core": "ghcr.io/the333tech/the333-bgp-core",
+              "backend": "ghcr.io/the333tech/the333-bgp-backend",
+              "portal": "ghcr.io/the333tech/the333-bgp-portal",
+          }
+          images = {}
+          for name, repository in repositories.items():
+              reference = Path(f"dist/image-digests/{name}.ref").read_text(encoding="utf-8").strip()
+              if not re.fullmatch(rf"{re.escape(repository)}@sha256:[0-9a-f]{{64}}", reference):
+                  raise SystemExit(f"invalid immutable image reference for {name}")
+              images[name] = reference
+          matches[0]["images"] = images
+          source.write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          source_date_epoch="$(git log -1 --format=%ct HEAD)"
+          package_root="dist/package/The333-bgp-v${version}"
+          mkdir -p "${package_root}"
+          cp -a dist/release-tree/. "${package_root}/"
+          tar \
+            --sort=name \
+            --mtime="@${source_date_epoch}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C dist/package \
+            -czf "dist/${archive}" \
+            "The333-bgp-v${version}"
           sha="$(sha256sum "dist/${archive}" | awk '{print $1}')"
           python3 - "${version}" "${archive}" "${sha}" <<'PY'
           import json
@@ -80,15 +260,12 @@ jobs:
           from pathlib import Path
 
           version, archive, sha256 = sys.argv[1:]
-          source = Path("update-manifest.json")
+          source = Path("dist/release-tree/update-manifest.json")
           manifest = json.loads(source.read_text(encoding="utf-8"))
-          release_url = f"https://github.com/The333tech/The333-bgp/releases/download/v{version}/{archive}"
-
           matches = [item for item in manifest.get("versions", []) if str(item.get("version")) == version]
           if len(matches) != 1:
               raise SystemExit(f"manifest must contain exactly one entry for version {version}")
-
-          matches[0]["archive_url"] = release_url
+          matches[0]["archive_url"] = f"https://github.com/The333tech/The333-bgp/releases/download/v{version}/{archive}"
           matches[0]["sha256"] = sha256
           Path("dist/update-manifest.json").write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",

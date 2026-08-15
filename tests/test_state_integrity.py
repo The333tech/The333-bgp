@@ -155,6 +155,59 @@ class ReadinessTests(unittest.TestCase):
             self.assertTrue(payload["unconfigured"])
             self.assertEqual(payload["advertised_count"], 0)
 
+    def test_startup_unconfigured_status_remains_ready_for_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            advertised = root / "advertised.txt"
+            last_good = root / "last-good.txt"
+            status = root / "status.json"
+            status.write_text(
+                json.dumps({"ok": True, "mode": "startup_unconfigured"}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(main, "ADVERTISED_FILE", advertised),
+                patch.object(main, "LAST_GOOD_FILE", last_good),
+                patch.object(main, "STATUS_FILE", status),
+                patch.object(main, "gobgp_ready", return_value=True),
+                patch.object(main, "gobgp_rib_count", return_value=0),
+            ):
+                payload, status_code = main.build_readiness_payload()
+
+            self.assertEqual(status_code, 200)
+            self.assertTrue(payload["ready"])
+            self.assertTrue(payload["unconfigured"])
+
+
+class StartupRestoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_clean_install_skips_empty_last_good_restore(self) -> None:
+        with (
+            patch.object(main, "read_last_good_snapshot", return_value=([], {})),
+            patch.object(main, "apply_last_good") as apply_last_good,
+            patch.object(main, "save_status") as save_status,
+        ):
+            await main.startup_update_once()
+
+        apply_last_good.assert_not_called()
+        saved = save_status.call_args.args[0]
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["mode"], "startup_unconfigured")
+        self.assertFalse(saved["startup_restore"])
+
+    async def test_configured_install_restores_last_good_routes(self) -> None:
+        restore_result = {"ok": True, "mode": "apply_last_good"}
+        with (
+            patch.object(main, "read_last_good_snapshot", return_value=(["10.0.0.0/24"], {})),
+            patch.object(main, "apply_last_good", return_value=restore_result) as apply_last_good,
+            patch.object(main, "save_status") as save_status,
+        ):
+            await main.startup_update_once()
+
+        apply_last_good.assert_called_once_with(False)
+        saved = save_status.call_args.args[0]
+        self.assertTrue(saved["startup_restore"])
+        self.assertTrue(saved["startup_restore_ok"])
+
 
 class ProductVersionTests(unittest.TestCase):
     def test_beta_to_stable_and_newer_beta_ordering(self) -> None:

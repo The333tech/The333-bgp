@@ -1,0 +1,232 @@
+name: Build GHCR image candidate
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  artifact-metadata: write
+  attestations: write
+  contents: read
+  id-token: write
+  packages: write
+
+env:
+  GRYPE_VERSION: v0.112.0
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: ghcr-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.service }} candidate
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: core
+            image: the333-bgp-core
+            context: .
+            dockerfile: docker/gobgp.Dockerfile
+          - service: backend
+            image: the333-bgp-backend
+            context: .
+            dockerfile: docker/backend.Dockerfile
+          - service: portal
+            image: the333-bgp-portal
+            context: portal
+            dockerfile: portal/Dockerfile
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read product version
+        id: version
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-platform candidate
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/the333tech/${{ matrix.image }}:candidate-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          build-args: |
+            PRODUCT_VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            GOBGP_CORE_IMAGE_VERSION=4.7.0-r5
+          cache-from: type=gha,scope=runtime-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=runtime-${{ matrix.service }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Scan pushed candidate for fixable High/Critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ env.REGISTRY }}/the333tech/${{ matrix.image }}@${{ steps.push.outputs.digest }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+          cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+      - name: Attest candidate image
+        if: github.event.repository.private == false
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ${{ env.REGISTRY }}/the333tech/${{ matrix.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record immutable candidate reference
+        shell: bash
+        run: |
+          mkdir -p dist/image-digests
+          printf '%s@%s\n' \
+            '${{ env.REGISTRY }}/the333tech/${{ matrix.image }}' \
+            '${{ steps.push.outputs.digest }}' \
+            > 'dist/image-digests/${{ matrix.service }}.ref'
+
+      - name: Upload candidate reference
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ghcr-${{ matrix.service }}-${{ github.sha }}
+          path: dist/image-digests/${{ matrix.service }}.ref
+          if-no-files-found: error
+          retention-days: 14
+
+  clean-install:
+    name: Smoke-test clean prebuilt install
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Download immutable candidate references
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ghcr-*-${{ github.sha }}
+          path: dist/image-digests
+          merge-multiple: true
+
+      - name: Validate candidate references
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          repositories = {
+              "core": ("EXPECTED_GOBGP_IMAGE", "core.ref", "ghcr.io/the333tech/the333-bgp-core"),
+              "backend": ("EXPECTED_BACKEND_IMAGE", "backend.ref", "ghcr.io/the333tech/the333-bgp-backend"),
+              "portal": ("EXPECTED_PORTAL_IMAGE", "portal.ref", "ghcr.io/the333tech/the333-bgp-portal"),
+          }
+          output = Path(os.environ["GITHUB_ENV"])
+          lines = []
+          images = {}
+          for name, (variable, filename, repository) in repositories.items():
+              reference = (Path("dist/image-digests") / filename).read_text(encoding="utf-8").strip()
+              if not re.fullmatch(rf"{re.escape(repository)}@sha256:[0-9a-f]{{64}}", reference):
+                  raise SystemExit(f"invalid immutable candidate reference: {filename}")
+              lines.append(f"{variable}={reference}")
+              images[name] = reference
+
+          version = Path("VERSION").read_text(encoding="utf-8").strip()
+          manifest_path = Path("update-manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          matches = [item for item in manifest.get("versions", []) if str(item.get("version")) == version]
+          if len(matches) != 1:
+              raise SystemExit(f"manifest must contain exactly one entry for version {version}")
+          matches[0]["images"] = images
+          manifest_path.write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          lines.append("THE333_SMOKE_DIR=/opt/the333-prebuilt-smoke")
+          with output.open("a", encoding="utf-8") as stream:
+              stream.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Install clean prebuilt runtime
+        shell: bash
+        run: |
+          export THE333_PROJECT_DIR="${THE333_SMOKE_DIR}"
+          export THE333_IMAGE_MODE=prebuilt
+          export THE333_BIND_IP=127.0.0.1
+          export LOCAL_AS=64512
+          export ROUTER_ID=127.0.0.2
+          export BGP_NEXTHOP=127.0.0.2
+          export PEER_ADDRESS=127.0.0.1
+          export PEER_AS=64513
+          export BGP_COMMUNITY=64512:500
+          export BGP_TTL_SECURITY_ENABLED=false
+          export WEB_PASSWORD=ci-prebuilt-password
+          bash ./install.sh --non-interactive
+
+      - name: Verify clean prebuilt runtime
+        shell: bash
+        run: |
+          test "$(awk -F= '$1 == "THE333_IMAGE_MODE" {print $2; exit}' "${THE333_SMOKE_DIR}/.env")" = prebuilt
+          test "$(docker inspect -f '{{.Config.Image}}' the333-gobgp-core)" = "${EXPECTED_GOBGP_IMAGE}"
+          test "$(docker inspect -f '{{.Config.Image}}' the333-bgp-backend)" = "${EXPECTED_BACKEND_IMAGE}"
+          test "$(docker inspect -f '{{.Config.Image}}' the333-portal)" = "${EXPECTED_PORTAL_IMAGE}"
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-gobgp-core)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-bgp-backend)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-portal)" = healthy
+          curl -fsS http://127.0.0.1:8090/ >/dev/null
+          THE333_PROJECT_DIR="${THE333_SMOKE_DIR}" bash "${THE333_SMOKE_DIR}/scripts/the333bgp.sh" status
+
+      - name: Show diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          if [ -d "${THE333_SMOKE_DIR}" ]; then
+            cd "${THE333_SMOKE_DIR}"
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml ps || true
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml logs --no-color --tail=200 || true
+          fi
+          sudo systemctl status --no-pager the333-bgp-updater.service || true
+
+      - name: Clean up smoke runtime
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "${THE333_SMOKE_DIR}/.env" ]; then
+            cd "${THE333_SMOKE_DIR}"
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml down --remove-orphans --volumes || true
+          fi
+          sudo systemctl disable --now the333-bgp-updater.service || true
+          sudo rm -f /etc/systemd/system/the333-bgp-updater.service
+          sudo systemctl daemon-reload
+          sudo rm -rf "${THE333_SMOKE_DIR}" /run/the333-bgp
