@@ -2,23 +2,25 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.82.4b"
+    "beta": "0.83b"
   },
   "versions": [
     {
-      "version": "0.82.4b",
-      "title": "v0.82.4b",
+      "version": "0.83b",
+      "title": "v0.83b",
       "channel": "beta",
       "status": "текущая beta",
-      "date": "2026-07-30",
+      "date": "2026-08-15",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.4b/the333-bgp-v0.82.4b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.83b/the333-bgp-v0.83b.tar.gz",
       "sha256": "",
       "images": {},
       "changelog": [
-        "Stage-aware disk preflight для install, update и repair с проверкой Docker Root Dir.",
-        "Динамический порог update: 1 ГБ при готовом routing-core и 2 ГБ при его полной сборке.",
-        "Безопасный dry-run и адаптивные badge-ряды README для GitHub Mobile.",
+        "Опциональная установка готовых amd64/arm64 GHCR-образов по immutable SHA-256 digest.",
+        "Одна интерактивная команда без локальной сборки и без docker login.",
+        "SBOM, provenance, attestations и High/Critical CVE gate для release images.",
+        "Сниженные дисковые пороги prebuilt-режима при сохранённой source-сборке как резервном пути.",
+        "Docker health и прикладные readiness-проверки чистой установки.",
         "Транзакционное обновление восстанавливает backup при любом сбое активации релиза; встроенные каталоги заменяются атомарно даже при root-владельце старых файлов.",
         "Транзакционное применение маршрутов и сохранение BGP continuity при обновлениях portal/backend.",
         "Изолированный host-side updater с backup, readiness-check и автоматическим rollback.",

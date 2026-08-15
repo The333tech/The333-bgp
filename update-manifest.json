@@ -2,24 +2,27 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.82.4b"
+    "beta": "0.83b"
   },
   "versions": [
     {
-      "version": "0.82.4b",
-      "title": "v0.82.4b",
+      "version": "0.83b",
+      "title": "v0.83b",
       "channel": "beta",
       "status": "текущая beta",
-      "date": "2026-07-30",
+      "date": "2026-08-15",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.82.4b/the333-bgp-v0.82.4b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.83b/the333-bgp-v0.83b.tar.gz",
       "sha256": "",
       "images": {},
       "changelog": [
-        "Stage-aware disk preflight различает новую установку, update и repair, повторяет проверку перед сборкой и учитывает реальный Docker Root Dir.",
-        "Обычный update требует 1 ГБ свободного места; при отсутствии routing-core порог автоматически повышается до 2 ГБ для полной сборки.",
-        "Dry-run больше не предлагает и не запускает установку Docker; документация объясняет реальный размер проекта и временный запас.",
-        "Badge-ряды README адаптированы для GitHub Mobile и сохраняют горизонтальную компоновку.",
+        "Добавлен опциональный prebuilt-режим: готовые multi-platform GHCR-образы загружаются по неизменяемым SHA-256 digest без локальной сборки и docker login.",
+        "Официальная prebuilt-установка запускается одной командой через тот же интерактивный installer; архитектура и digest-ссылки выбираются автоматически из проверенного release manifest.",
+        "Release workflow публикует amd64/arm64 images, SBOM, provenance и attestations и блокирует исправимые High/Critical CVE до публикации.",
+        "Предсобранная установка требует меньше пикового места: 2 ГБ с готовым Docker или 3 ГБ вместе с установкой Docker; source-сборка сохранена как резервный режим.",
+        "Readiness новой установки ожидает Docker health всех трёх контейнеров и прикладные проверки backend/portal.",
+        "Чистая установка без ранее опубликованных маршрутов корректно переходит в состояние первичной настройки вместо ложной ошибки восстановления.",
+        "Переключение runtime-режима транзакционное: backup, проверка готовности и автоматический rollback защищают действующую установку.",
         "Транзакционное обновление восстанавливает backup при любом сбое активации релиза; встроенные каталоги заменяются атомарно даже при root-владельце старых файлов.",
         "Транзакционное применение маршрутов, проверенный GoBGP 4.7.0 и сохранение BGP continuity при обновлениях portal/backend.",
         "Изолированный host-side updater с durable-задачами, согласованным backup, readiness-check и автоматическим rollback.",
