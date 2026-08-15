@@ -4,10 +4,10 @@
 
 The333-BGP поднимает GoBGP speaker на Linux VM, собирает маршруты из источников и модулей сервисов, дедуплицирует/агрегирует их и публикует в MikroTik через BGP. Управление идёт через веб-портал: источники маршрутов, модули сервисов, Community-профили, диагностика, история, резервные копии, обновления и пошаговый помощник MikroTik.
 
-<p align="center"><kbd><a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.82.4b-8e44ad?style=flat-square"></a></kbd>&nbsp;<kbd><a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a></kbd>&nbsp;<kbd><a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a></kbd>&nbsp;<kbd><a href=".github/workflows/release.yml"><img alt="SBOM" src="https://img.shields.io/badge/SBOM-SPDX-546e7a?style=flat-square"></a></kbd><br><kbd><a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a></kbd>&nbsp;<kbd><a href="docs/INSTALL.md"><img alt="MikroTik" src="https://img.shields.io/badge/MikroTik-RouterOS%20v7-c88616?style=flat-square"></a></kbd>&nbsp;<kbd><a href="docker/backend.Dockerfile"><img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776ab?style=flat-square&logo=python&logoColor=white"></a></kbd>&nbsp;<kbd><a href="portal/package.json"><img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-3c873a?style=flat-square&logo=node.js&logoColor=white"></a></kbd><br><kbd><a href="https://github.com/osrg/gobgp"><img alt="GoBGP" src="https://img.shields.io/badge/GoBGP-v4.7.0-00a6a6?style=flat-square"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml/badge.svg?branch=main"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml"><img alt="Release" src="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml/badge.svg"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml/badge.svg?branch=main"></a></kbd></p>
+<p align="center"><kbd><a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.83b-8e44ad?style=flat-square"></a></kbd>&nbsp;<kbd><a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a></kbd>&nbsp;<kbd><a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a></kbd>&nbsp;<kbd><a href=".github/workflows/release.yml"><img alt="SBOM" src="https://img.shields.io/badge/SBOM-SPDX-546e7a?style=flat-square"></a></kbd><br><kbd><a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a></kbd>&nbsp;<kbd><a href="docs/INSTALL.md"><img alt="MikroTik" src="https://img.shields.io/badge/MikroTik-RouterOS%20v7-c88616?style=flat-square"></a></kbd>&nbsp;<kbd><a href="docker/backend.Dockerfile"><img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776ab?style=flat-square&logo=python&logoColor=white"></a></kbd>&nbsp;<kbd><a href="portal/package.json"><img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-3c873a?style=flat-square&logo=node.js&logoColor=white"></a></kbd><br><kbd><a href="https://github.com/osrg/gobgp"><img alt="GoBGP" src="https://img.shields.io/badge/GoBGP-v4.7.0-00a6a6?style=flat-square"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml/badge.svg?branch=main"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml"><img alt="Release" src="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml/badge.svg"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml/badge.svg?branch=main"></a></kbd></p>
 
 > [!NOTE]
-> **v0.82.4b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Текущий рабочий стенд на отдельной VM в локальной сети успешно публикует маршруты в MikroTik больше месяца; тесты, документация и сценарии установки продолжают дорабатываться.
+> **v0.83b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Текущий рабочий стенд на отдельной VM в локальной сети успешно публикует маршруты в MikroTik больше месяца; готовые GHCR-образы дополнительно проверяются автоматической чистой установкой для `amd64` и `arm64`.
 
 ## Требования
 
@@ -15,28 +15,31 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 - статический IPv4 для VM;
 - MikroTik с RouterOS v7;
 - минимум 1 ГБ RAM; рекомендуется 2+ ГБ;
-- для новой установки: 4 ГБ свободного места при готовом Docker или 5 ГБ, если установщик должен поставить Docker; рекомендуется 6–8 ГБ;
+- для быстрой установки готовых образов: 2 ГБ свободного места при готовом Docker или 3 ГБ, если установщик должен поставить Docker; рекомендуется 4+ ГБ;
+- для резервной сборки из исходников: 4 ГБ при готовом Docker или 5 ГБ вместе с установкой Docker; рекомендуется 6–8 ГБ;
 - доступ VM к Интернету для загрузки образов и списков маршрутов.
 
 ### Почему нужен запас на диске
 
-Сам проект лёгкий: для `v0.82.4b` release archive занимает около **350 КБ**, а исходный код и встроенные конфигурации после распаковки — около **3 МБ**. На тестовом стенде каталог проекта вместе с текущими данными и резервными копиями занимает около **100 МБ**.
+Сам проект лёгкий: release archive занимает несколько сотен килобайт, а исходный код и встроенные конфигурации после распаковки — около **3 МБ**. На тестовом стенде каталог проекта вместе с текущими данными и резервными копиями занимает около **100 МБ**.
 
 Основное место требуется Docker и процессу обновления:
 
-| Что занимает место | Ориентир для `v0.82.4b` |
+| Что занимает место | Ориентир для `v0.83b` |
 |---|---:|
 | Рабочие Docker images | около 1 ГБ |
-| Docker build cache | около 0,5 ГБ |
+| Docker build cache | не требуется в prebuilt-режиме; около 0,5 ГБ при source-сборке |
 | Проект, данные и резервные копии | около 0,1 ГБ |
 | Обычный объём после установки | примерно 1,5–2 ГБ |
 
-Во время установки и обновления локально собираются GoBGP, backend и portal. Docker временно хранит builder layers, старые и новые images, а The333-BGP сохраняет backup для rollback. Поэтому пиковое потребление заметно выше постоянного.
+В быстром `prebuilt`-режиме GoBGP, backend и portal загружаются из GHCR по неизменяемым SHA-256 digest, поэтому builder layers на VM не создаются. Во время обновления Docker всё равно временно хранит старые и новые images, а The333-BGP сохраняет backup для rollback. Резервный `source`-режим дополнительно собирает все образы локально и требует больше места.
 
 Установщик учитывает этап и состояние VM:
 
-- **4 ГБ свободно** — жёсткий минимум для новой установки, если Docker и Docker Compose plugin уже готовы;
-- **5 ГБ свободно** — жёсткий минимум, если Docker ещё предстоит установить;
+- **2 ГБ свободно** — жёсткий минимум prebuilt-установки с готовым Docker;
+- **3 ГБ свободно** — жёсткий минимум prebuilt-установки вместе с Docker;
+- **4 ГБ свободно** — жёсткий минимум source-установки с готовым Docker;
+- **5 ГБ свободно** — жёсткий минимум source-установки вместе с Docker;
 - **1 ГБ свободно** — минимум для обычного update, который переиспользует установленный routing-core;
 - **2 ГБ свободно** — минимум для update, если образ routing-core отсутствует и требуется его полная сборка;
 - **3 ГБ свободно** — минимум для repair с повторной сборкой;
@@ -46,7 +49,14 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 
 ## Быстрый старт
 
-Команда рассчитана на чистую Linux VM. Установщик проверит Docker, автоматически определит IP VM, проверит сетевые параметры, запросит пароль портала и создаст защищённый `.env`.
+Быстрый beta-режим загружает готовые `amd64/arm64` images из GHCR. Установщик проверит release metadata и SHA-256, определит архитектуру и IP VM, установит Docker при необходимости, запросит сетевые параметры и пароль портала и создаст защищённый `.env`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/The333tech/The333-bgp/main/install.sh \
+  | THE333_IMAGE_MODE=prebuilt bash
+```
+
+Для аудита и полностью локальной сборки образов из исходников сохранён резервный режим:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/The333tech/The333-bgp/main/install.sh | bash
@@ -57,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/The333tech/The333-bgp/main/install.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/The333tech/The333-bgp/main/install.sh -o /tmp/the333-install.sh
 less /tmp/the333-install.sh
-bash /tmp/the333-install.sh
+THE333_IMAGE_MODE=prebuilt bash /tmp/the333-install.sh
 ```
 
 После установки:

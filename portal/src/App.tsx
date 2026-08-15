@@ -542,26 +542,25 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.82.4b";
+const PRODUCT_VERSION = "0.83b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.82.4b",
-    version: "0.82.4b",
-    title: "v0.82.4b",
+    id: "0.83b",
+    version: "0.83b",
+    title: "v0.83b",
     channel: "beta",
     status: "текущая версия",
-    date: "июль 2026",
+    date: "август 2026",
     changelog: [
-      "Обновление стало транзакционным на всех этапах и автоматически восстанавливает согласованный backup при раннем сбое.",
-      "Встроенные каталоги заменяются атомарно, включая установки с root-владельцем старых файлов.",
-      "Дополнительная защита host-updater от выхода файловых операций за доверенный каталог.",
-      "Обновлённые совместимые backend/frontend зависимости и SHA-pinned GitHub Actions.",
-      "CodeQL, CI, dependency audit и release-проверки без открытых предупреждений.",
-      "Сохранена непрерывность GoBGP: обновление portal/backend не перезапускает routing-core.",
-      "Уточнённая политика Dependabot без автоматического перехода с LTS на Current runtime.",
-      "Проверка диска учитывает этап установки, наличие routing-core и реальный Docker Root Dir.",
-      "Badge-ряды README адаптированы для мобильного GitHub без вертикального распада."
+      "Добавлена однострочная установка готовых multi-platform GHCR-образов без локальной сборки и docker login.",
+      "Release manifest содержит immutable SHA-256 digest для GoBGP, Backend и Portal.",
+      "Предсобранные образы публикуются для amd64/arm64 с SBOM, provenance, attestations и CVE gate.",
+      "Дисковый минимум prebuilt-установки снижен до 2 ГБ с готовым Docker или 3 ГБ вместе с Docker.",
+      "Установщик ожидает Docker health всех контейнеров и прикладную готовность Backend и Portal.",
+      "Чистая установка без last-good маршрутов корректно остаётся готовой к первичной настройке.",
+      "Source-сборка сохранена как независимый резервный и аудируемый режим.",
+      "Переключение image mode защищено backup, readiness-проверкой и автоматическим rollback."
     ]
   }
 ];

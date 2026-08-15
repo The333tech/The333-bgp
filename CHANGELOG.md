@@ -1,6 +1,18 @@
 # The333-BGP Changelog
 
-## 0.82.4b - 2026-07-30
+## 0.83b - 2026-08-15
+
+### Предсобранные runtime-образы
+
+- Добавлен явный `prebuilt`-режим: GoBGP core, backend и portal загружаются из GHCR по неизменяемым `sha256` digest без локальной сборки и без `docker login`.
+- Официальная prebuilt-установка запускается одной командой через тот же интерактивный installer; архитектура VM и точные image refs выбираются автоматически из проверенного release manifest.
+- Release workflow собирает `linux/amd64` и `linux/arm64`, публикует SBOM, provenance и artifact attestations и блокирует известные исправимые High/Critical CVE до публикации.
+- Для prebuilt-режима дисковый минимум снижен до 2 ГБ с готовым Docker и до 3 ГБ при установке Docker; source-сборка сохранена как независимый резервный путь.
+- GoBGP компилируется нативно для целевой архитектуры без запуска Go toolchain под QEMU.
+- Установщик ожидает Docker health всех трёх контейнеров и прикладные readiness-проверки backend/portal, исключая гонку быстрого старта готовых images.
+- Чистая установка без ранее опубликованных маршрутов переходит в корректное состояние первичной настройки, а не в ложную ошибку восстановления last-good.
+- Переключение между `source` и `prebuilt` защищено backup, readiness-проверкой и автоматическим rollback.
+- Candidate pipeline и чистая Ubuntu 24.04 smoke-установка проверяют anonymous pull, точные `.Config.Image` digest refs, systemd updater, portal и CLI до включения режима в релиз.
 
 ### Установочный preflight
 
