@@ -176,6 +176,22 @@ class ImageDeliveryTests(unittest.TestCase):
         self.assertIn('matches[0]["images"] = images', release)
         self.assertIn("@sha256:[0-9a-f]", release)
 
+    def test_multiarch_builder_cross_compiles_and_candidate_is_clean_installed(self) -> None:
+        backend = (ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
+        core = (ROOT / "docker" / "gobgp.Dockerfile").read_text(encoding="utf-8")
+        builder = (ROOT / "docker" / "build-gobgp.sh").read_text(encoding="utf-8")
+        candidate = (ROOT / ".github" / "workflows" / "ghcr-candidate.yml").read_text(encoding="utf-8")
+
+        for dockerfile in (backend, core):
+            self.assertIn("FROM --platform=$BUILDPLATFORM golang:", dockerfile)
+            self.assertIn("ARG TARGETOS", dockerfile)
+            self.assertIn("ARG TARGETARCH", dockerfile)
+        self.assertIn('GOOS="${target_os}" GOARCH="${target_arch}"', builder)
+        self.assertIn("Smoke-test clean prebuilt install", candidate)
+        self.assertIn("bash ./install.sh --non-interactive", candidate)
+        self.assertIn("{{.Config.Image}}", candidate)
+        self.assertIn("THE333_IMAGE_MODE", candidate)
+
 
 if __name__ == "__main__":
     unittest.main()

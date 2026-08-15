@@ -119,3 +119,106 @@ jobs:
           path: dist/image-digests/${{ matrix.service }}.ref
           if-no-files-found: error
           retention-days: 14
+
+  clean-install:
+    name: Smoke-test clean prebuilt install
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Download immutable candidate references
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ghcr-*-${{ github.sha }}
+          path: dist/image-digests
+          merge-multiple: true
+
+      - name: Validate candidate references
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          repositories = {
+              "THE333_GOBGP_IMAGE": ("core.ref", "ghcr.io/the333tech/the333-bgp-core"),
+              "THE333_BACKEND_IMAGE": ("backend.ref", "ghcr.io/the333tech/the333-bgp-backend"),
+              "THE333_PORTAL_IMAGE": ("portal.ref", "ghcr.io/the333tech/the333-bgp-portal"),
+          }
+          output = Path(os.environ["GITHUB_ENV"])
+          lines = []
+          for variable, (filename, repository) in repositories.items():
+              reference = (Path("dist/image-digests") / filename).read_text(encoding="utf-8").strip()
+              if not re.fullmatch(rf"{re.escape(repository)}@sha256:[0-9a-f]{{64}}", reference):
+                  raise SystemExit(f"invalid immutable candidate reference: {filename}")
+              lines.append(f"{variable}={reference}")
+          lines.append("THE333_SMOKE_DIR=/opt/the333-prebuilt-smoke")
+          with output.open("a", encoding="utf-8") as stream:
+              stream.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install clean prebuilt runtime
+        shell: bash
+        run: |
+          export THE333_PROJECT_DIR="${THE333_SMOKE_DIR}"
+          export THE333_IMAGE_MODE=prebuilt
+          export THE333_BIND_IP=127.0.0.1
+          export LOCAL_AS=64512
+          export ROUTER_ID=127.0.0.2
+          export BGP_NEXTHOP=127.0.0.2
+          export PEER_ADDRESS=127.0.0.1
+          export PEER_AS=64513
+          export BGP_COMMUNITY=64512:500
+          export BGP_TTL_SECURITY_ENABLED=false
+          export WEB_PASSWORD=ci-prebuilt-password
+          bash ./install.sh --non-interactive
+
+      - name: Verify clean prebuilt runtime
+        shell: bash
+        run: |
+          test "$(awk -F= '$1 == "THE333_IMAGE_MODE" {print $2; exit}' "${THE333_SMOKE_DIR}/.env")" = prebuilt
+          test "$(docker inspect -f '{{.Config.Image}}' the333-gobgp-core)" = "${THE333_GOBGP_IMAGE}"
+          test "$(docker inspect -f '{{.Config.Image}}' the333-bgp-backend)" = "${THE333_BACKEND_IMAGE}"
+          test "$(docker inspect -f '{{.Config.Image}}' the333-portal)" = "${THE333_PORTAL_IMAGE}"
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-gobgp-core)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-bgp-backend)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-portal)" = healthy
+          curl -fsS http://127.0.0.1:8090/ >/dev/null
+          THE333_PROJECT_DIR="${THE333_SMOKE_DIR}" bash "${THE333_SMOKE_DIR}/scripts/the333bgp.sh" status
+
+      - name: Show diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          if [ -d "${THE333_SMOKE_DIR}" ]; then
+            cd "${THE333_SMOKE_DIR}"
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml ps || true
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml logs --no-color --tail=200 || true
+          fi
+          sudo systemctl status --no-pager the333-bgp-updater.service || true
+
+      - name: Clean up smoke runtime
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "${THE333_SMOKE_DIR}/.env" ]; then
+            cd "${THE333_SMOKE_DIR}"
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml down --remove-orphans --volumes || true
+          fi
+          sudo systemctl disable --now the333-bgp-updater.service || true
+          sudo rm -f /etc/systemd/system/the333-bgp-updater.service
+          sudo systemctl daemon-reload
+          sudo rm -rf "${THE333_SMOKE_DIR}" /run/the333-bgp
