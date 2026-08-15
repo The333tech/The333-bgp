@@ -192,6 +192,8 @@ class ImageDeliveryTests(unittest.TestCase):
         self.assertIn("bash ./install.sh --non-interactive", candidate)
         self.assertIn("{{.Config.Image}}", candidate)
         self.assertIn("THE333_IMAGE_MODE", candidate)
+        self.assertIn('matches[0]["images"] = images', candidate)
+        self.assertNotIn("Log in to GHCR\n        uses:", candidate.split("clean-install:", 1)[1])
         self.assertIn("runtime_containers_healthy", installer)
 
 
