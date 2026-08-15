@@ -264,7 +264,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             with self.subTest(cve=cve):
                 self.assertIn(f"vulnerability: {cve}", config)
         self.assertEqual(config.count("name: python"), len(ignored_cves))
-        self.assertEqual(config.count("version: 3.14.6"), len(ignored_cves))
+        self.assertEqual(config.count("version: 3.14.7"), len(ignored_cves))
         self.assertEqual(config.count("type: binary"), len(ignored_cves))
         self.assertIn("neither imports nor", config)
         self.assertFalse(any(name == "html" or name.startswith("html.") for name in imported_modules))

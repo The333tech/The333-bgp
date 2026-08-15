@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS gobgp-builder
+FROM golang:1.26.6-alpine3.24@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS gobgp-builder
 
 ARG GOBGP_VERSION=v4.7.0
 ARG GOBGP_TAG_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3

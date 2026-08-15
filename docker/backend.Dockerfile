@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS gobgp-builder
+FROM golang:1.26.6-alpine3.24@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS gobgp-builder
 
 ARG GOBGP_VERSION=v4.7.0
 ARG GOBGP_TAG_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3
@@ -13,7 +13,7 @@ RUN apk add --no-cache ca-certificates git
 COPY docker/build-gobgp.sh /usr/local/bin/build-gobgp
 RUN /bin/sh /usr/local/bin/build-gobgp
 
-FROM python:3.14.6-alpine3.24@sha256:26730869004e2b9c4b9ad09cab8625e81d256d1ce97e72df5520e806b1709f92
+FROM python:3.14.7-alpine3.24@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 
 ARG PRODUCT_VERSION=dev
 ARG VCS_REF=unknown
