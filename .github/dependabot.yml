@@ -66,6 +66,7 @@ updates:
           - version-update:semver-major
       - dependency-name: python
         update-types:
+          - version-update:semver-minor
           - version-update:semver-major
 
   - package-ecosystem: docker
