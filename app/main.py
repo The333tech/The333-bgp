@@ -4177,6 +4177,20 @@ async def automatic_backup_loop() -> None:
 
 
 async def startup_update_once() -> None:
+    prefixes, _route_communities = await asyncio.to_thread(read_last_good_snapshot)
+    if not prefixes:
+        save_status(
+            {
+                "ok": True,
+                "mode": "startup_unconfigured",
+                "startup_restore": False,
+                "startup_restore_ok": True,
+                "time": now_iso(),
+            }
+        )
+        LOGGER.info("startup restore skipped: no last-good routes are configured yet")
+        return
+
     try:
         result = await asyncio.to_thread(apply_last_good, False)
         save_status(
@@ -4545,9 +4559,12 @@ def build_readiness_payload() -> tuple[dict[str, Any], int]:
     status_ok = bool(status_data.get("ok", False))
     gobgp_api_ready = gobgp_ready()
     unconfigured = (
-        not STATUS_FILE.exists()
-        and advertised_count == 0
+        advertised_count == 0
         and last_good_count == 0
+        and (
+            not STATUS_FILE.exists()
+            or status_data.get("mode") == "startup_unconfigured"
+        )
     )
 
     rib_count = None

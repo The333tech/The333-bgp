@@ -1237,7 +1237,9 @@ wait_for_services() {
 
   log "Ожидание готовности backend, GoBGP и портала (до 6 минут)..."
   while (( attempts > 0 )); do
-    if backend_health_ready "${bind_ip}" && portal_http_ready "${bind_ip}"; then
+    if runtime_containers_healthy \
+      && backend_health_ready "${bind_ip}" \
+      && portal_http_ready "${bind_ip}"; then
       log "Все сервисы готовы."
       return 0
     fi
@@ -1247,6 +1249,14 @@ wait_for_services() {
 
   docker_compose ps || true
   fail "services did not become ready within 6 minutes; inspect container logs"
+}
+
+runtime_containers_healthy() {
+  local container status
+  for container in the333-gobgp-core the333-bgp-backend the333-portal; do
+    status="$(docker_cli inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container}" 2>/dev/null || true)"
+    [[ "${status}" == "healthy" ]] || return 1
+  done
 }
 
 portal_http_ready() {

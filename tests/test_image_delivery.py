@@ -181,6 +181,7 @@ class ImageDeliveryTests(unittest.TestCase):
         core = (ROOT / "docker" / "gobgp.Dockerfile").read_text(encoding="utf-8")
         builder = (ROOT / "docker" / "build-gobgp.sh").read_text(encoding="utf-8")
         candidate = (ROOT / ".github" / "workflows" / "ghcr-candidate.yml").read_text(encoding="utf-8")
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
 
         for dockerfile in (backend, core):
             self.assertIn("FROM --platform=$BUILDPLATFORM golang:", dockerfile)
@@ -191,6 +192,7 @@ class ImageDeliveryTests(unittest.TestCase):
         self.assertIn("bash ./install.sh --non-interactive", candidate)
         self.assertIn("{{.Config.Image}}", candidate)
         self.assertIn("THE333_IMAGE_MODE", candidate)
+        self.assertIn("runtime_containers_healthy", installer)
 
 
 if __name__ == "__main__":
