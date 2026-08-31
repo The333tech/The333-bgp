@@ -178,7 +178,7 @@ jobs:
           PY
 
       - name: Scan backend image for fixable High/Critical vulnerabilities
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: "the333-bgp-backend:${{ env.PRODUCT_VERSION }}"
           fail-build: true
@@ -189,7 +189,7 @@ jobs:
           grype-version: ${{ env.GRYPE_VERSION }}
 
       - name: Scan GoBGP core image for fixable High/Critical vulnerabilities
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: "the333-bgp-core:${{ env.GOBGP_CORE_IMAGE_VERSION }}"
           fail-build: true
@@ -200,7 +200,7 @@ jobs:
           grype-version: ${{ env.GRYPE_VERSION }}
 
       - name: Scan portal image for fixable High/Critical vulnerabilities
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: "the333-bgp-portal:${{ env.PRODUCT_VERSION }}"
           fail-build: true
