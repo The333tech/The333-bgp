@@ -1,5 +1,5 @@
-ARG GO_IMAGE=golang:1.26.6-alpine3.24@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df
-ARG ALPINE_IMAGE=alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+ARG GO_IMAGE=golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc
+ARG ALPINE_IMAGE=alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 FROM ${GO_IMAGE} AS builder
 
@@ -9,9 +9,9 @@ ARG AWG_GO_TAG=v0.2.19
 ARG AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d
 ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
-ARG AWG_X_CRYPTO_VERSION=v0.53.0
-ARG AWG_X_NET_VERSION=v0.56.0
-ARG AWG_X_SYS_VERSION=v0.46.0
+ARG AWG_X_CRYPTO_VERSION=v0.57.0
+ARG AWG_X_NET_VERSION=v0.59.0
+ARG AWG_X_SYS_VERSION=v0.48.0
 
 RUN apk add --no-cache \
       bash=5.3.9-r1 \
@@ -47,9 +47,9 @@ ARG AWG_GO_TAG=v0.2.19
 ARG AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d
 ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
-ARG AWG_X_CRYPTO_VERSION=v0.53.0
-ARG AWG_X_NET_VERSION=v0.56.0
-ARG AWG_X_SYS_VERSION=v0.46.0
+ARG AWG_X_CRYPTO_VERSION=v0.57.0
+ARG AWG_X_NET_VERSION=v0.59.0
+ARG AWG_X_SYS_VERSION=v0.48.0
 
 LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
       org.opencontainers.image.description="Reproducible AmneziaWG userspace gateway candidate for RouterOS containers" \
@@ -61,7 +61,7 @@ LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
 
 RUN apk add --no-cache \
       bash=5.3.9-r1 \
-      ca-certificates=20260611-r0 \
+      ca-certificates=20260909-r0 \
       iproute2=7.0.0-r0 \
       iptables=1.8.13-r0 \
       iptables-legacy=1.8.13-r0 \

@@ -1,6 +1,6 @@
 {
   "name": "the333-portal",
-  "version": "0.83.0-beta",
+  "version": "0.84.0-beta",
   "private": true,
   "description": "The333 Portal UI for The333-BGP",
   "type": "module",
@@ -11,16 +11,16 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
-    "@tabler/icons-react": "3.45.0",
-    "motion": "12.42.2",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "@tabler/icons-react": "3.47.0",
+    "motion": "12.43.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   },
   "devDependencies": {
-    "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
     "typescript": "7.0.2",
-    "vite": "8.1.5"
+    "vite": "8.3.0"
   }
 }

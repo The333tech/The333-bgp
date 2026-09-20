@@ -2,20 +2,23 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.83b"
+    "beta": "0.84b"
   },
   "versions": [
     {
-      "version": "0.83b",
-      "title": "v0.83b",
+      "version": "0.84b",
+      "title": "v0.84b",
       "channel": "beta",
       "status": "текущая beta",
-      "date": "2026-08-15",
+      "date": "2026-09-20",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.83b/the333-bgp-v0.83b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.84b/the333-bgp-v0.84b.tar.gz",
       "sha256": "",
       "images": {},
       "changelog": [
+        "Безопасный permission preflight и сохранение владельца release-файлов после host-update.",
+        "Fallback на immutable manifest выбранного релиза при временной недоступности GitHub API.",
+        "Обновлённый и проверенный набор Python, Node.js, React, Vite, Go и GitHub Actions.",
         "Опциональная установка готовых amd64/arm64 GHCR-образов по immutable SHA-256 digest.",
         "Одна интерактивная команда без локальной сборки и без docker login.",
         "SBOM, provenance, attestations и High/Critical CVE gate для release images.",
