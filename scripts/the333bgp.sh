@@ -23,6 +23,13 @@ DEFAULT_MIN_CORE_UPDATE_FREE_BYTES=2147483648
 DEFAULT_RECOMMENDED_CORE_UPDATE_FREE_BYTES=4294967296
 DEFAULT_MIN_PROJECT_UPDATE_FREE_BYTES=536870912
 DEFAULT_RECOMMENDED_PROJECT_UPDATE_FREE_BYTES=1073741824
+RELEASE_MANAGED_ITEMS=(
+  app portal docs docker deploy extras requirements.in requirements.txt
+  docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml
+  VERSION CHANGELOG.md README.md LICENSE SECURITY.md install.sh scripts
+  update-manifest.json update-manifest.example.json
+  .env.example .dockerignore .gitattributes .gitignore
+)
 
 log() {
   printf '[the333bgp] %s\n' "$*" >&2
@@ -100,6 +107,10 @@ root_cmd() {
   else
     sudo "$@"
   fi
+}
+
+running_as_root() {
+  [[ "${EUID}" -eq 0 ]]
 }
 
 load_env() {
@@ -867,8 +878,32 @@ doctor() {
   fi
 }
 
+download_manifest_file() {
+  local url="$1"
+  local output="$2"
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --max-filesize 2097152 \
+    "${url}" \
+    --output "${output}"
+}
+
+official_release_manifest_fallback_url() {
+  local source_url="$1"
+  [[ -n "${TARGET_VERSION}" ]] || return 1
+  [[ "${source_url}" =~ ^https://api\.github\.com/repos/The333tech/The333-bgp/releases(\?.*)?$ ]] \
+    || return 1
+  printf 'https://github.com/The333tech/The333-bgp/releases/download/v%s/update-manifest.json\n' \
+    "${TARGET_VERSION}"
+}
+
 fetch_manifest() {
-  local manifest_file manifest_json manifest_size
+  local manifest_file manifest_json manifest_size fallback_url
   need_cmd curl
   need_cmd python3
   [[ -n "${MANIFEST_URL}" ]] || fail "manifest URL is empty. Set PRODUCT_UPDATE_MANIFEST_URL or pass --manifest URL"
@@ -883,18 +918,18 @@ fetch_manifest() {
     fail "target version has an invalid format"
   fi
   manifest_file="$(mktemp)"
-  if ! curl \
-    --fail \
-    --silent \
-    --show-error \
-    --location \
-    --proto '=https' \
-    --proto-redir '=https' \
-    --max-filesize 2097152 \
-    "${MANIFEST_URL}" \
-    --output "${manifest_file}"; then
-    rm -f "${manifest_file}"
-    fail "update manifest download failed"
+  if ! download_manifest_file "${MANIFEST_URL}" "${manifest_file}"; then
+    fallback_url="$(official_release_manifest_fallback_url "${MANIFEST_URL}" || true)"
+    if [[ -z "${fallback_url}" ]]; then
+      rm -f "${manifest_file}"
+      fail "update manifest download failed"
+    fi
+    log "GitHub release index is unavailable; retrying the immutable v${TARGET_VERSION} release manifest."
+    : > "${manifest_file}"
+    if ! download_manifest_file "${fallback_url}" "${manifest_file}"; then
+      rm -f "${manifest_file}"
+      fail "update manifest download failed from both the release index and the versioned release asset"
+    fi
   fi
   manifest_size="$(wc -c < "${manifest_file}")"
   if (( manifest_size > 2097152 )); then
@@ -1087,8 +1122,59 @@ replace_release_config_file() {
   fi
 }
 
+check_writable_release_directory_tree() {
+  local root="$1"
+  local directory
+
+  [[ -d "${root}" && ! -L "${root}" ]] || return 0
+  while IFS= read -r -d '' directory; do
+    if [[ ! -w "${directory}" || ! -x "${directory}" ]]; then
+      log "ERROR: release-managed directory is not writable by the current user: ${directory}"
+      return 1
+    fi
+  done < <(find "${root}" -type d -print0 2>/dev/null)
+}
+
+check_release_tree_writable() {
+  local item target parent
+  need_cmd find
+
+  if [[ ! -d "${PROJECT_DIR}" || ! -w "${PROJECT_DIR}" || ! -x "${PROJECT_DIR}" ]]; then
+    log "ERROR: project directory is not writable by the current user: ${PROJECT_DIR}"
+    return 1
+  fi
+
+  for item in "${RELEASE_MANAGED_ITEMS[@]}" config; do
+    target="${PROJECT_DIR}/${item}"
+    parent="$(dirname "${target}")"
+    if [[ ! -w "${parent}" || ! -x "${parent}" ]]; then
+      log "ERROR: release target parent is not writable by the current user: ${parent}"
+      return 1
+    fi
+    check_writable_release_directory_tree "${target}" || return 1
+  done
+}
+
+normalize_release_file_ownership() {
+  local owner
+  running_as_root || return 0
+  [[ $# -gt 0 ]] || return 0
+
+  owner="$(stat -c '%u:%g' -- "${PROJECT_DIR}")" || return 1
+  [[ "${owner}" =~ ^[0-9]+:[0-9]+$ ]] || {
+    log "Cannot determine the numeric project owner for ${PROJECT_DIR}."
+    return 1
+  }
+  [[ "${owner}" != "0:0" ]] || return 0
+
+  chown -hR -- "${owner}" "$@" || return 1
+  log "Release-managed files retain project ownership (${owner})."
+}
+
 copy_release_files() {
   local src="$1"
+  local item target config_dir_created="false"
+  local -a copied_paths=()
   if [[ ! -d "${src}/app" ]]; then
     log "Release archive has no app/."
     return 1
@@ -1101,10 +1187,11 @@ copy_release_files() {
   log "Copying release files while preserving .env, data and user state..."
   mkdir -p "${PROJECT_DIR}" || return 1
 
-  for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md README.md LICENSE SECURITY.md install.sh scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitattributes .gitignore; do
+  for item in "${RELEASE_MANAGED_ITEMS[@]}"; do
     if [[ -e "${src}/${item}" ]]; then
       rm -rf "${PROJECT_DIR:?}/${item}" || return 1
       cp -a "${src}/${item}" "${PROJECT_DIR}/${item}" || return 1
+      copied_paths+=("${PROJECT_DIR}/${item}")
     fi
   done
 
@@ -1120,15 +1207,20 @@ copy_release_files() {
     "${PROJECT_DIR}/scripts/the333bgp.sh" \
     "${PROJECT_DIR}/install.sh" || return 1
 
+  [[ -d "${PROJECT_DIR}/config" ]] || config_dir_created="true"
   mkdir -p "${PROJECT_DIR}/config" "${PROJECT_DIR}/data" || return 1
   if [[ -d "${src}/config" ]]; then
     for cfg in "${src}"/config/*; do
       [[ -e "${cfg}" ]] || continue
-      local target
       target="${PROJECT_DIR}/config/$(basename "${cfg}")"
       replace_release_config_file "${cfg}" "${target}" || return 1
+      copied_paths+=("${target}")
     done
   fi
+  if [[ "${config_dir_created}" == "true" ]]; then
+    copied_paths+=("${PROJECT_DIR}/config")
+  fi
+  normalize_release_file_ownership "${copied_paths[@]}" || return 1
 }
 
 migrate_release_env() {
@@ -1160,7 +1252,7 @@ restore_release_files_from_backup() {
   fi
 
   log "Восстановление файлов предыдущей версии из ${archive}..."
-  for item in app portal docs docker deploy extras requirements.in requirements.txt docker-compose.yml docker-compose.portal.yml docker-compose.tls.yml VERSION CHANGELOG.md README.md LICENSE SECURITY.md install.sh scripts update-manifest.json update-manifest.example.json .env.example .dockerignore .gitattributes .gitignore; do
+  for item in "${RELEASE_MANAGED_ITEMS[@]}"; do
     if [[ -e "${tmp}/${item}" ]]; then
       rm -rf "${PROJECT_DIR:?}/${item}" || { rm -rf "${tmp}"; return 1; }
       cp -a "${tmp}/${item}" "${PROJECT_DIR}/${item}" || { rm -rf "${tmp}"; return 1; }
@@ -1272,6 +1364,8 @@ update_project() {
 
   check_update_disk_space \
     || fail "disk preflight failed; free disk space and retry. Existing containers were not changed"
+  check_release_tree_writable \
+    || fail "release-file preflight failed; use the portal host-updater or restore project ownership. Existing containers were not changed"
   make_backup
   backup_archive="${LAST_BACKUP_ARCHIVE}"
   release_dir="$(download_release "${version_json}")"

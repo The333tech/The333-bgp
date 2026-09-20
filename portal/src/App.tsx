@@ -542,17 +542,21 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.83b";
+const PRODUCT_VERSION = "0.84b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.83b",
-    version: "0.83b",
-    title: "v0.83b",
+    id: "0.84b",
+    version: "0.84b",
+    title: "v0.84b",
     channel: "beta",
     status: "текущая версия",
-    date: "август 2026",
+    date: "сентябрь 2026",
     changelog: [
+      "Updater проверяет права до backup и не изменяет работающий runtime при небезопасном владельце файлов.",
+      "Host-updater сохраняет владельца каталога проекта после привилегированного обновления.",
+      "При недоступности GitHub API выбранная версия использует immutable manifest из release assets.",
+      "Обновлены и проверены Python, Node.js, React, Vite, Go и GitHub Actions dependencies.",
       "Добавлена однострочная установка готовых multi-platform GHCR-образов без локальной сборки и docker login.",
       "Release manifest содержит immutable SHA-256 digest для GoBGP, Backend и Portal.",
       "Предсобранные образы публикуются для amd64/arm64 с SBOM, provenance, attestations и CVE gate.",

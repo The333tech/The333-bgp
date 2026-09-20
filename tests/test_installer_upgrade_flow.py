@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -256,6 +257,8 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 "https://release.example/manifest.json",
                 "--channel",
                 "beta",
+                "--version",
+                "9.9b",
             ],
             cwd=self.root,
             env=environment,
@@ -268,6 +271,90 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertIn("update manifest download failed", result.stderr)
         self.assertNotIn("JSONDecodeError", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_explicit_version_falls_back_to_immutable_release_manifest(self) -> None:
+        bin_dir = self.root / "fallback-bin"
+        request_log = self.root / "fallback-curl-urls.log"
+        self._write(
+            bin_dir / "curl",
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                output=""
+                url=""
+                while [[ $# -gt 0 ]]; do
+                  case "$1" in
+                    --output)
+                      output="$2"
+                      shift 2
+                      ;;
+                    https://*)
+                      url="$1"
+                      shift
+                      ;;
+                    *)
+                      shift
+                      ;;
+                  esac
+                done
+                printf '%s\\n' "${url}" >> "${THE333_CURL_URL_LOG:?}"
+                if [[ "${url}" == "https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20" ]]; then
+                  echo "simulated GitHub API rate limit" >&2
+                  exit 22
+                fi
+                cat > "${output:?}" <<'JSON'
+                {
+                  "latest": {"stable": null, "beta": "9.9b"},
+                  "versions": [
+                    {
+                      "version": "9.9b",
+                      "channel": "beta",
+                      "archive_url": "https://release.example/the333-bgp-v9.9b.tar.gz",
+                      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                    }
+                  ]
+                }
+                JSON
+                """
+            ).lstrip(),
+            0o755,
+        )
+        environment = os.environ.copy()
+        environment["PATH"] = f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}"
+        environment["THE333_CURL_URL_LOG"] = str(request_log)
+        environment["THE333_PROJECT_DIR"] = str(self.root / "empty-project")
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "scripts" / "the333bgp.sh"),
+                "check-update",
+                "--manifest",
+                "https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20",
+                "--channel",
+                "beta",
+                "--version",
+                "9.9b",
+            ],
+            cwd=self.root,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        self.assertEqual(json.loads(result.stdout)["version"], "9.9b")
+        self.assertEqual(
+            request_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20",
+                "https://github.com/The333tech/The333-bgp/releases/download/v9.9b/update-manifest.json",
+            ],
+        )
+        self.assertIn("retrying the immutable v9.9b release manifest", result.stderr)
 
     def test_download_release_returns_only_the_extracted_directory(self) -> None:
         archive_root = self.root / "archive-root" / "The333-bgp-v9.9b"
@@ -522,6 +609,107 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertIn("environment migration", result.stderr)
         self.assertIn("previous version was restored automatically", result.stderr)
 
+    def test_update_rejects_unwritable_release_tree_before_backup(self) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("permission preflight requires an unprivileged test user")
+
+        patched = self._patched_update_controller()
+        event_log = self.root / "permission-preflight.log"
+        harness = self.root / "run-permission-preflight.sh"
+        self._write(
+            harness,
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export THE333_UPDATE_TEST_HARNESS=true
+                export THE333_PROJECT_DIR="$2"
+                source "$1"
+                event_log="$3"
+                NON_INTERACTIVE=true
+                CHANNEL=beta
+
+                fetch_manifest() { printf '%s\n' '{"versions":[]}'; }
+                select_version_json() { printf '%s\n' '{"version":"9.9b"}'; }
+                version_is_newer() { return 0; }
+                check_update_disk_space() { printf 'disk-preflight\n' >> "${event_log}"; }
+                make_backup() { printf 'backup\n' >> "${event_log}"; }
+                download_release() { printf 'download\n' >> "${event_log}"; }
+
+                update_project
+                """
+            ).lstrip(),
+            0o755,
+        )
+
+        app_dir = self.project / "app"
+        app_dir.chmod(0o555)
+        try:
+            result = subprocess.run(
+                ["bash", str(harness), str(patched), str(self.project), str(event_log)],
+                cwd=self.root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        finally:
+            app_dir.chmod(0o755)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(event_log.read_text(encoding="utf-8").splitlines(), ["disk-preflight"])
+        self.assertIn("release-file preflight failed", result.stderr)
+        self.assertIn(str(app_dir), result.stderr)
+
+    def test_privileged_release_copy_restores_project_ownership(self) -> None:
+        patched = self._patched_update_controller()
+        event_log = self.root / "ownership-normalization.log"
+        first_path = self.project / "app"
+        second_path = self.project / "scripts"
+        harness = self.root / "run-ownership-normalization.sh"
+        self._write(
+            harness,
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export THE333_UPDATE_TEST_HARNESS=true
+                export THE333_PROJECT_DIR="$2"
+                source "$1"
+                event_log="$3"
+                running_as_root() { return 0; }
+                stat() { printf '1000:1000\\n'; }
+                chown() { printf '%s\\n' "$*" > "${event_log}"; }
+
+                normalize_release_file_ownership "$4" "$5"
+                """
+            ).lstrip(),
+            0o755,
+        )
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(harness),
+                str(patched),
+                str(self.project),
+                str(event_log),
+                str(first_path),
+                str(second_path),
+            ],
+            cwd=self.root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        self.assertEqual(
+            event_log.read_text(encoding="utf-8").strip(),
+            f"-hR -- 1000:1000 {first_path} {second_path}",
+        )
+
     def test_installer_disk_policy_uses_stage_specific_thresholds(self) -> None:
         patched = self._patched_installer()
         harness = self.root / "run-disk-policy.sh"
@@ -532,6 +720,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 #!/usr/bin/env bash
                 set -Eeuo pipefail
                 export THE333_INSTALL_TEST_HARNESS=true
+                export THE333_PROJECT_DIR="$2"
                 source "$1"
                 disk_stats_for_path() {
                   printf '/dev/test %s\n' "${TEST_FREE_KB:?}"
@@ -559,7 +748,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 environment["TEST_DISK_MODE"] = mode
                 environment["TEST_FREE_KB"] = str(free_mb * 1024)
                 result = subprocess.run(
-                    ["bash", str(harness), str(patched)],
+                    ["bash", str(harness), str(patched), str(self.project)],
                     cwd=self.root,
                     env=environment,
                     text=True,

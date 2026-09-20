@@ -2,20 +2,23 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.83b"
+    "beta": "0.84b"
   },
   "versions": [
     {
-      "version": "0.83b",
-      "title": "v0.83b",
+      "version": "0.84b",
+      "title": "v0.84b",
       "channel": "beta",
       "status": "текущая beta",
-      "date": "2026-08-15",
+      "date": "2026-09-20",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.83b/the333-bgp-v0.83b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.84b/the333-bgp-v0.84b.tar.gz",
       "sha256": "",
       "images": {},
       "changelog": [
+        "Updater проверяет владельца release-каталогов до backup и не затрагивает runtime, если безопасная замена файлов невозможна.",
+        "Host-updater сохраняет владельца каталога проекта после привилегированного обновления.",
+        "Для явно выбранной версии доступен fallback на immutable release manifest при недоступности GitHub Releases API.",
         "Добавлен опциональный prebuilt-режим: готовые multi-platform GHCR-образы загружаются по неизменяемым SHA-256 digest без локальной сборки и docker login.",
         "Официальная prebuilt-установка запускается одной командой через тот же интерактивный installer; архитектура и digest-ссылки выбираются автоматически из проверенного release manifest.",
         "Release workflow публикует amd64/arm64 images, SBOM, provenance и attestations и блокирует исправимые High/Critical CVE до публикации.",
@@ -29,7 +32,7 @@
         "Безопасная установка и обновление через GitHub Releases API, HTTPS, SHA-256 и защищённую распаковку архива.",
         "Persistent-настройки автообновления маршрутов, автоматические бэкапы, uptime контейнеров и расширенная GoBGP-диагностика.",
         "Session auth, CSRF, rate limiting, TLS-вариант, SSRF-защита источников и отсутствие Docker socket в portal/backend.",
-        "FastAPI 0.139.2, HTTPX2 2.7.0, React 19.2.8, Vite 8.1.5, Node.js 24 LTS, nginx 1.30.4 и Alpine 3.24.",
+        "FastAPI 0.141.1, Uvicorn 0.53.0, HTTPX2 2.13.0, AnyIO 4.15.1, React 19.3.0, Vite 8.3.0, Node.js 24.19.0, Go 1.27.0, nginx 1.30.4 и Alpine 3.24.",
         "Digest-pinned образы и SHA-pinned Actions; CI и Release блокируют известные исправимые High/Critical CVE через Grype 0.112.0.",
         "Release публикует SHA256SUMS, SPDX SBOM и build provenance; SBOM строится из точного содержимого релизного архива.",
         "CodeQL, dependency audits, Docker runtime smoke-тесты, проверка сетевой изоляции и release metadata tests проходят до публикации.",

@@ -1,6 +1,13 @@
 # The333-BGP Changelog
 
-## 0.83b - 2026-08-15
+## 0.84b - 2026-09-20
+
+### Надёжность обновления
+
+- CLI updater до создания backup проверяет права на все release-managed каталоги и отказывается менять работающую установку, если безопасная замена файлов невозможна.
+- Привилегированный host-updater после активации релиза возвращает файлам владельца каталога проекта; последующие CLI-команды больше не получают смешанное `root`/пользовательское владение.
+- При временной недоступности GitHub Releases API обновление с явно выбранной версией использует immutable `update-manifest.json` из assets этого релиза.
+- POSIX-тесты изолированы от установленного на host проекта и проверяют отказ до backup, fallback manifest и нормализацию владельца.
 
 ### Предсобранные runtime-образы
 
@@ -64,8 +71,9 @@
 
 ### Runtime и supply chain
 
-- Backend работает на Python `3.14` с полным hash-lock; FastAPI обновлён до `0.139.2`, HTTPX2 до `2.7.0`.
-- Portal работает на Node.js 24 LTS и nginx `1.30.4`; React обновлён до `19.2.8`, Tabler Icons до `3.45.0`, Vite до `8.1.5`, Vite React plugin до `6.0.4`.
+- Backend работает на Python `3.14` с полным hash-lock; FastAPI обновлён до `0.141.1`, Uvicorn до `0.53.0`, HTTPX2 до `2.13.0`, AnyIO до `4.15.1`.
+- Portal собирается на Node.js `24.19.0` и работает на nginx `1.30.4`; React обновлён до `19.3.0`, Tabler Icons до `3.47.0`, Motion до `12.43.0`, Vite до `8.3.0`, Vite React plugin до `6.1.1`.
+- Go build stage обновлён до `1.27.0`; Python/npm dependency audit не обнаруживают известных уязвимостей в закреплённом наборе runtime-зависимостей.
 - Все Alpine-based build/runtime stages используют Alpine `3.24`; базовые образы закреплены immutable multi-arch digest.
 - GoBGP tag и исходный commit проверяются отдельно; исправленные версии `x/net`, `x/sys`, `x/text` и `grpc` закреплены, выполняются `go mod verify` и компиляционные тесты CLI/daemon.
 - GitHub Actions закреплены полными commit SHA; CI, Release и multi-arch `docker-awg` используют Grype `v0.112.0` и блокируют известные исправимые High/Critical CVE.
