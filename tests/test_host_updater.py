@@ -5,7 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx2 as httpx
 
@@ -108,8 +108,162 @@ class HostUpdaterApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         run_update.assert_called_once_with("beta", "0.5-beta.1", "a" * 32)
 
+    def test_invalid_argument_types_and_options_never_start_an_update(self) -> None:
+        headers = {"x-the333-updater-token": "unit-test-token"}
+        invalid_payloads = [
+            {"channel": value} for value in ([], {}, True, 0, "--help", "stable;id")
+        ] + [
+            {"version": value} for value in ([], {}, True, 82, "--help", "v1\n--help", "v" * 65)
+        ]
+        with patch.object(updater, "run_update") as run_update:
+            for payload in invalid_payloads:
+                with self.subTest(payload=payload):
+                    response = self.client.post(
+                        "/api/update", headers=headers,
+                        json={"request_id": "a" * 32, **payload},
+                    )
+                    self.assertEqual(response.status_code, 400)
+            run_update.assert_not_called()
+
+    def test_omitted_or_null_version_keeps_latest_version_selection(self) -> None:
+        headers = {"x-the333-updater-token": "unit-test-token"}
+        for payload in ({}, {"channel": None, "version": None}):
+            with self.subTest(payload=payload), patch.object(
+                updater, "run_update", return_value={"ok": False, "busy": True},
+            ) as run_update:
+                response = self.client.post(
+                    "/api/update", headers=headers,
+                    json={"request_id": "a" * 32, **payload},
+                )
+                self.assertEqual(response.status_code, 409)
+                run_update.assert_called_once_with("stable", "", "a" * 32)
+
+    def test_successful_update_restarts_server_even_if_response_headers_disconnect(self) -> None:
+        with (
+            patch.object(updater, "run_update", return_value={"ok": True}) as run_update,
+            patch.object(updater.UpdaterHandler, "end_headers", side_effect=BrokenPipeError),
+        ):
+            with self.assertRaises(httpx.RemoteProtocolError):
+                self.client.post(
+                    "/api/update",
+                    headers={"x-the333-updater-token": "unit-test-token"},
+                    json={"channel": "beta", "version": "0.84b", "request_id": "a" * 32},
+                )
+            self.thread.join(timeout=2)
+            self.assertTrue(self.server.restart_requested)
+            self.assertFalse(self.thread.is_alive())
+            run_update.assert_called_once()
+
+    def test_failed_update_keeps_server_available(self) -> None:
+        with patch.object(updater, "run_update", return_value={"ok": False}):
+            response = self.client.post(
+                "/api/update",
+                headers={"x-the333-updater-token": "unit-test-token"},
+                json={"request_id": "a" * 32},
+            )
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(self.server.restart_requested)
+        self.assertEqual(self.client.get("/health").status_code, 200)
+
 
 class HostUpdaterHelpersTests(unittest.TestCase):
+    def test_response_disconnect_is_tolerated_in_headers_body_and_flush(self) -> None:
+        for stage in ("headers", "body", "flush"):
+            for error in (BrokenPipeError, ConnectionResetError):
+                with self.subTest(stage=stage, error=error):
+                    handler = object.__new__(updater.UpdaterHandler)
+                    handler.send_response = Mock()
+                    handler.send_header = Mock()
+                    handler.end_headers = Mock()
+                    handler.wfile = Mock()
+                    operation = {
+                        "headers": handler.end_headers,
+                        "body": handler.wfile.write,
+                        "flush": handler.wfile.flush,
+                    }[stage]
+                    operation.side_effect = error
+                    handler.send_json(200, {"ok": True})
+                    operation.assert_called_once()
+
+    def test_update_arguments_allow_only_supported_channels_and_version_tokens(self) -> None:
+        for channel in ("stable", "beta"):
+            for version in ("", "0.84b", "0.84.1-beta+build_1", "v" * 64):
+                with self.subTest(channel=channel, version=version):
+                    expected = ["update", "--non-interactive", "--channel", channel]
+                    if version:
+                        expected += ["--version", version]
+                    self.assertEqual(updater.update_arguments(channel, version), expected)
+
+    def test_invalid_update_input_has_no_side_effects(self) -> None:
+        invalid_inputs = [
+            (value, "0.84b", "a" * 32)
+            for value in (None, [], {}, True, "", "preview", "--help", "beta;id")
+        ] + [
+            ("beta", value, "a" * 32)
+            for value in (None, [], {}, 84, "--help", "../v1", "v1;id", "$(id)", "v1\x00", "v1\n", "v1 --help", "v" * 65)
+        ] + [("beta", "0.84b", "../invalid")]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with (
+                patch.object(updater, "PROJECT_DIR", root),
+                patch.object(updater, "LOCK_PATH", root / "run" / "update.lock"),
+                patch.object(updater, "write_result") as write_result,
+                patch.object(updater.subprocess, "run") as run,
+            ):
+                for channel, version, request_id in invalid_inputs:
+                    with self.subTest(channel=channel, version=version, request_id=request_id):
+                        with self.assertRaises(ValueError):
+                            updater.run_update(channel, version, request_id)
+                run.assert_not_called()
+                write_result.assert_not_called()
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_missing_or_escaped_script_does_not_start_or_record_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            scripts = root / "scripts"
+            scripts.mkdir()
+            outside = root / "outside.sh"
+            outside.touch()
+            script = scripts / "the333bgp.sh"
+            with (
+                patch.object(updater, "PROJECT_DIR", root),
+                patch.object(updater, "write_result") as write_result,
+                patch.object(updater.subprocess, "run") as run,
+            ):
+                for escaped in (False, True):
+                    with self.subTest(escaped=escaped):
+                        if escaped:
+                            script.symlink_to(outside)
+                        with self.assertRaisesRegex(RuntimeError, "update script is unavailable"):
+                            updater.run_update("beta", "0.84b", "a" * 32)
+                run.assert_not_called()
+                write_result.assert_not_called()
+
+    def test_update_executes_fixed_script_without_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            script = root / "scripts" / "the333bgp.sh"
+            script.parent.mkdir()
+            script.touch()
+            with (
+                patch.object(updater, "PROJECT_DIR", root),
+                patch.object(updater, "LOCK_PATH", root / "run" / "update.lock"),
+                patch.object(updater, "write_result") as write_result,
+                patch.object(updater.subprocess, "run", return_value=updater.subprocess.CompletedProcess(
+                    [], 0, stdout="done", stderr="",
+                )) as run,
+            ):
+                result = updater.run_update("beta", "0.84b", "a" * 32)
+                self.assertTrue(result["ok"])
+                self.assertEqual(run.call_args.args[0], [
+                    str(script), "update", "--non-interactive", "--channel", "beta", "--version", "0.84b",
+                ])
+                self.assertIs(run.call_args.kwargs["shell"], False)
+                self.assertEqual(run.call_args.kwargs["cwd"], str(root))
+                self.assertEqual(write_result.call_args_list[0].args[1]["status"], "running")
+                self.assertEqual(write_result.call_args_list[1].args[1]["status"], "succeeded")
+
     def test_result_path_accepts_only_a_direct_child_of_result_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             result_dir = Path(temporary_directory).resolve()
