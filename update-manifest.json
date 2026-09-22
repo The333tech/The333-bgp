@@ -2,20 +2,22 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.84b"
+    "beta": "0.84.1b"
   },
   "versions": [
     {
-      "version": "0.84b",
-      "title": "v0.84b",
+      "version": "0.84.1b",
+      "title": "v0.84.1b",
       "channel": "beta",
       "status": "текущая beta",
-      "date": "2026-09-20",
+      "date": "2026-09-22",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.84b/the333-bgp-v0.84b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.84.1b/the333-bgp-v0.84.1b.tar.gz",
       "sha256": "",
       "images": {},
       "changelog": [
+        "Host-updater корректно перезапускается после успешного обновления, даже если backend отключился до получения HTTP-ответа.",
+        "Параметры обновления проверяются непосредственно перед запуском фиксированного локального скрипта; некорректные запросы не создают состояние операции.",
         "Updater проверяет владельца release-каталогов до backup и не затрагивает runtime, если безопасная замена файлов невозможна.",
         "Host-updater сохраняет владельца каталога проекта после привилегированного обновления.",
         "Для явно выбранной версии доступен fallback на immutable release manifest при недоступности GitHub Releases API.",

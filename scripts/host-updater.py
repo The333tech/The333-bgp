@@ -148,15 +148,16 @@ def write_result(request_id: str, payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def update_command(channel: str, version: str) -> list[str]:
-    script = (PROJECT_DIR / "scripts" / "the333bgp.sh").resolve()
-    if script.parent != (PROJECT_DIR / "scripts").resolve() or not script.is_file():
-        raise RuntimeError("update script is unavailable")
+def update_arguments(channel: str, version: str) -> list[str]:
+    if not isinstance(channel, str) or channel not in {"stable", "beta"}:
+        raise ValueError("channel must be stable or beta")
+    if not isinstance(version, str) or (version and not VERSION_RE.fullmatch(version)):
+        raise ValueError("invalid version")
 
-    command = [str(script), "update", "--non-interactive", "--channel", channel]
+    arguments = ["update", "--non-interactive", "--channel", channel]
     if version:
-        command.extend(["--version", version])
-    return command
+        arguments.extend(["--version", version])
+    return arguments
 
 
 def container_runtime_status() -> dict[str, Any]:
@@ -217,6 +218,12 @@ def container_runtime_status() -> dict[str, Any]:
 
 
 def run_update(channel: str, version: str, request_id: str) -> dict[str, Any]:
+    arguments = update_arguments(channel, version)
+    result_path(request_id)
+    script = (PROJECT_DIR / "scripts" / "the333bgp.sh").resolve()
+    if script.parent != (PROJECT_DIR / "scripts").resolve() or not script.is_file():
+        raise RuntimeError("update script is unavailable")
+
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     started = time.time()
     write_result(
@@ -250,7 +257,9 @@ def run_update(channel: str, version: str, request_id: str) -> dict[str, Any]:
 
         try:
             completed = subprocess.run(
-                update_command(channel, version),
+                # Request values are arguments; only the fixed local script is executable.
+                [str(script), *arguments],
+                shell=False,
                 cwd=str(PROJECT_DIR),
                 env=public_environment(),
                 text=True,
@@ -323,13 +332,13 @@ class UpdaterHandler(BaseHTTPRequestHandler):
 
     def send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "close")
-        self.end_headers()
         try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
             self.wfile.write(body)
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -387,13 +396,18 @@ class UpdaterHandler(BaseHTTPRequestHandler):
             payload = self.read_json()
             if set(payload) - {"channel", "version", "request_id"}:
                 raise ValueError("unsupported request fields")
-            channel = str(payload.get("channel", "stable") or "stable").strip()
-            version = str(payload.get("version", "") or "").strip()
+            channel = payload.get("channel", "stable")
+            version = payload.get("version", "")
+            if channel is None:
+                channel = "stable"
+            if version is None:
+                version = ""
+            if not isinstance(channel, str) or not isinstance(version, str):
+                raise ValueError("channel and version must be strings")
+            channel = channel.strip() or "stable"
+            version = version.strip()
             request_id = str(payload.get("request_id", "") or "").strip().lower()
-            if channel not in {"stable", "beta"}:
-                raise ValueError("channel must be stable or beta")
-            if version and not VERSION_RE.fullmatch(version):
-                raise ValueError("invalid version")
+            update_arguments(channel, version)
             if not REQUEST_ID_RE.fullmatch(request_id):
                 raise ValueError("invalid request_id")
 

@@ -542,17 +542,19 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.84b";
+const PRODUCT_VERSION = "0.84.1b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.84b",
-    version: "0.84b",
-    title: "v0.84b",
+    id: "0.84.1b",
+    version: "0.84.1b",
+    title: "v0.84.1b",
     channel: "beta",
     status: "текущая версия",
     date: "сентябрь 2026",
     changelog: [
+      "Host-updater перезапускается после успешного обновления, даже если backend отключился до получения ответа.",
+      "Параметры обновления проверяются до запуска процесса и создания состояния операции.",
       "Updater проверяет права до backup и не изменяет работающий runtime при небезопасном владельце файлов.",
       "Host-updater сохраняет владельца каталога проекта после привилегированного обновления.",
       "При недоступности GitHub API выбранная версия использует immutable manifest из release assets.",
