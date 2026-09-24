@@ -40,3 +40,7 @@ __pycache__/
 Thumbs.db
 .idea/
 .vscode/
+# Host-local coordination and sessions are never part of a release or backup.
+runtime/
+portal/test-results/
+portal/playwright-report/

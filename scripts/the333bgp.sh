@@ -35,6 +35,39 @@ log() {
   printf '[the333bgp] %s\n' "$*" >&2
 }
 
+operation_stage() {
+  [[ -n "${THE333_UPDATE_OPERATION_FILE:-}" ]] || return 0
+  python3 - "$1" "${2:-}" <<'PY'
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+path = Path(os.environ["THE333_UPDATE_OPERATION_FILE"])
+state = json.loads(path.read_text())
+stage = sys.argv[1]
+state["stage"] = stage
+state["updated_at"] = datetime.now(timezone.utc).isoformat()
+if sys.argv[2]:
+    state["version"] = sys.argv[2]
+if stage == "activating":
+    state["mutated"] = True
+state["history"] = (state.get("history", []) + [{"stage": stage, "time": state["updated_at"]}])[-30:]
+fd, name = tempfile.mkstemp(dir=path.parent, prefix=".stage-")
+try:
+    with os.fdopen(fd, "w") as handle:
+        json.dump(state, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+        os.fchmod(handle.fileno(), 0o644)
+    os.replace(name, path)
+finally:
+    Path(name).unlink(missing_ok=True)
+PY
+}
+
 fail() {
   printf '[the333bgp] ERROR: %s\n' "$*" >&2
   exit 1
@@ -1318,19 +1351,26 @@ host_updater_service_ready() {
 build_and_restart() {
   local readiness_mode="${1:-strict}"
   cd "${PROJECT_DIR}" || return 1
+  if [[ -f "${PROJECT_DIR}/scripts/update-operation.py" ]]; then
+    env THE333_PROJECT_DIR="${PROJECT_DIR}" PUID="${PUID:-$(id -u)}" PGID="${PGID:-$(id -g)}" \
+      python3 "${PROJECT_DIR}/scripts/update-operation.py" prepare || return 1
+  fi
   if [[ "${THE333_HOST_UPDATER_ACTIVE:-false}" == "true" ]] || host_updater_service_ready; then
     log "Host updater выполняет обновление: стабильный systemd unit будет переиспользован."
   else
     install_host_updater_service || return 1
   fi
   log "Preparing runtime images ($(runtime_image_mode) mode)..."
+  operation_stage images || return 1
   build_update_images "${readiness_mode}" || return 1
   log "Restarting services..."
+  operation_stage restarting || return 1
   if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
     compose up -d --no-build --remove-orphans || return 1
   else
     compose up -d --remove-orphans || return 1
   fi
+  operation_stage readiness || return 1
   wait_for_services "${readiness_mode}" || return 1
   if [[ "${readiness_mode}" == "legacy" ]]; then
     compose ps || return 1
@@ -1348,6 +1388,7 @@ update_project() {
   installed_version="$(current_version)"
 
   log "Selected version: ${selected_version}"
+  operation_stage preflight "${selected_version}"
   version_is_newer "${selected_version}" "${installed_version}" \
     || fail "selected version ${selected_version} is not newer than installed ${installed_version}; use repair or a verified backup for recovery"
 
@@ -1366,8 +1407,10 @@ update_project() {
     || fail "disk preflight failed; free disk space and retry. Existing containers were not changed"
   check_release_tree_writable \
     || fail "release-file preflight failed; use the portal host-updater or restore project ownership. Existing containers were not changed"
+  operation_stage backup
   make_backup
   backup_archive="${LAST_BACKUP_ARCHIVE}"
+  operation_stage download
   release_dir="$(download_release "${version_json}")"
   release_tmp="$(dirname "${release_dir}")"
   if ! check_update_disk_space; then
@@ -1379,6 +1422,7 @@ update_project() {
   update_rc=0
   failed_stage=""
 
+  operation_stage activating
   if copy_release_files "${release_dir}"; then
     if migrate_release_env; then
       if build_and_restart strict; then
@@ -1406,12 +1450,14 @@ update_project() {
   fi
 
   log "Update failed during ${failed_stage} (exit ${update_rc}). Starting automatic rollback."
+  operation_stage rollback
   stop_runtime_for_rollback || fail "update failed and runtime could not be stopped safely; inspect ${backup_archive}"
   restore_release_files_from_backup "${backup_archive}" \
     || fail "update failed and backup restoration failed; inspect ${backup_archive}"
   load_env
   configure_compose_files
   if build_and_restart legacy; then
+    operation_stage rolled_back
     fail "update failed; the previous version was restored automatically"
   fi
 
@@ -1497,6 +1543,10 @@ main() {
       ;;
     update)
       parse_common_args "$@"
+      if [[ "${THE333_UPDATE_RUNNER_ACTIVE:-false}" != "true" && "${DRY_RUN}" != "true" ]]; then
+        export THE333_PROJECT_DIR="${PROJECT_DIR}" PUID PGID
+        exec python3 "${PROJECT_DIR}/scripts/update-operation.py" "$@"
+      fi
       update_project
       ;;
     *)

@@ -240,7 +240,7 @@ class HostUpdaterHelpersTests(unittest.TestCase):
                 run.assert_not_called()
                 write_result.assert_not_called()
 
-    def test_update_executes_fixed_script_without_shell(self) -> None:
+    def test_update_delegates_validated_arguments_to_transaction_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
             script = root / "scripts" / "the333bgp.sh"
@@ -250,17 +250,17 @@ class HostUpdaterHelpersTests(unittest.TestCase):
                 patch.object(updater, "PROJECT_DIR", root),
                 patch.object(updater, "LOCK_PATH", root / "run" / "update.lock"),
                 patch.object(updater, "write_result") as write_result,
-                patch.object(updater.subprocess, "run", return_value=updater.subprocess.CompletedProcess(
-                    [], 0, stdout="done", stderr="",
-                )) as run,
+                patch.object(updater, "run_command", return_value={
+                    "ok": True, "status": "succeeded", "stdout_tail": "done", "stderr_tail": "",
+                }) as run,
             ):
                 result = updater.run_update("beta", "0.84b", "a" * 32)
                 self.assertTrue(result["ok"])
-                self.assertEqual(run.call_args.args[0], [
-                    str(script), "update", "--non-interactive", "--channel", "beta", "--version", "0.84b",
+                self.assertEqual(run.call_args.args[0], root)
+                self.assertEqual(run.call_args.args[1], [
+                    "update", "--non-interactive", "--channel", "beta", "--version", "0.84b",
                 ])
-                self.assertIs(run.call_args.kwargs["shell"], False)
-                self.assertEqual(run.call_args.kwargs["cwd"], str(root))
+                self.assertEqual(run.call_args.args[2:5], ("a" * 32, "beta", "0.84b"))
                 self.assertEqual(write_result.call_args_list[0].args[1]["status"], "running")
                 self.assertEqual(write_result.call_args_list[1].args[1]["status"], "succeeded")
 

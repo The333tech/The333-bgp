@@ -29,6 +29,9 @@ import httpx2 as httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
+from app.maintenance import ACTIVE_STATUSES, MaintenanceBusy, mutation_lease, read_state
+from app.session_store import SessionStore
+
 
 APP_NAME = os.getenv("APP_NAME", "The333-BGP")
 logging.basicConfig(
@@ -227,7 +230,37 @@ RUNTIME_SETTINGS_LOCK = threading.RLock()
 RUNNING_JOB_IDS: set[str] = set()
 AUTH_FAILURES: dict[str, dict[str, float | int]] = {}
 AUTH_SESSIONS: dict[str, dict[str, Any]] = {}
+MAINTENANCE_DIR = Path(os.environ["MAINTENANCE_DIR"]) if os.getenv("MAINTENANCE_DIR") else None
+AUTH_SESSION_FILE = Path(os.environ["AUTH_SESSION_FILE"]) if os.getenv("AUTH_SESSION_FILE") else None
 REMOTE_FETCH_CACHE_DIR = DATA_DIR / "remote_fetch_cache"
+
+
+@app.middleware("http")
+async def maintenance_write_guard(request: Request, call_next):
+    if request.method in {"GET", "HEAD", "OPTIONS"} or request.url.path.startswith("/auth/"):
+        return await call_next(request)
+    try:
+        with mutation_lease(MAINTENANCE_DIR):
+            if request.url.path != "/api/product/update/job" and product_update_job_pending():
+                raise MaintenanceBusy("update is queued")
+            return await call_next(request)
+    except MaintenanceBusy:
+        return JSONResponse({"detail": "Обновление проекта выполняется или требует восстановления. Изменения временно недоступны.",
+                             "code": "maintenance"}, status_code=409, headers={"Retry-After": "5"})
+
+
+def session_store() -> SessionStore | None:
+    if AUTH_SESSION_FILE is None:
+        return None
+    credential_id = hashlib.sha256((WEB_USER + "\0" + WEB_PASSWORD_HASH + "\0" + WEB_PASSWORD).encode()).hexdigest()
+    return SessionStore(AUTH_SESSION_FILE, credential_id)
+
+
+def guarded_mutation(target, *args):
+    with mutation_lease(MAINTENANCE_DIR):
+        if product_update_job_pending():
+            raise MaintenanceBusy("update is queued")
+        return target(*args)
 
 
 def verify_password_hash(password: str, stored_hash: str) -> bool:
@@ -351,7 +384,8 @@ def find_auth_session(request: Request) -> tuple[str, dict[str, Any]] | None:
     token_hash = session_token_hash(token)
     with AUTH_LOCK:
         prune_auth_sessions()
-        session = AUTH_SESSIONS.get(token_hash)
+        store = session_store()
+        session = store.get(token_hash) if store else AUTH_SESSIONS.get(token_hash)
         if session is None:
             return None
         return token_hash, session
@@ -437,6 +471,9 @@ async def auth_login(request: Request) -> JSONResponse:
             "client_key": client_key,
         }
         prune_auth_sessions(now_ts)
+        store = session_store()
+        if store:
+            store.put(session_token_hash(raw_token), AUTH_SESSIONS[session_token_hash(raw_token)], SESSION_MAX_ACTIVE)
 
     response = JSONResponse(
         {
@@ -479,6 +516,9 @@ async def auth_logout(request: Request, _: str = Depends(require_auth)) -> JSONR
         token_hash, _ = session_match
         with AUTH_LOCK:
             AUTH_SESSIONS.pop(token_hash, None)
+            store = session_store()
+            if store:
+                store.delete(token_hash)
     response = JSONResponse({"ok": True})
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return set_auth_no_store_headers(response)
@@ -499,7 +539,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.84.1b"
+    return "0.85b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
@@ -846,7 +886,7 @@ def read_runtime_settings() -> dict[str, Any]:
     with RUNTIME_SETTINGS_LOCK:
         raw = read_json(RUNTIME_SETTINGS_FILE, {})
         normalized = normalize_runtime_settings(raw)
-        if raw != normalized:
+        if raw != normalized and read_state(MAINTENANCE_DIR).get("status") not in ACTIVE_STATUSES:
             write_json_atomic(RUNTIME_SETTINGS_FILE, normalized)
         return copy.deepcopy(normalized)
 
@@ -2697,11 +2737,21 @@ def public_job_record(job: dict[str, Any]) -> dict[str, Any]:
 def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
     with JOBS_LOCK:
         state = read_jobs_state()
-        if reconcile_jobs_state(state):
+        if read_state(MAINTENANCE_DIR).get("status") not in ACTIVE_STATUSES and reconcile_jobs_state(state):
             write_jobs_state(state)
         jobs = state.get("jobs", [])
         selected = list(reversed(jobs))[: max(1, min(limit, 200))]
         return [public_job_record(job) for job in selected]
+
+
+def product_update_job_pending() -> bool:
+    with JOBS_LOCK:
+        state = read_jobs_state()
+        if reconcile_jobs_state(state):
+            write_jobs_state(state)
+        return any(job.get("kind") == "product_update" and
+                   job.get("status") in active_job_statuses()
+                   for job in state.get("jobs", []) if isinstance(job, dict))
 
 
 def find_job(job_id: str) -> dict[str, Any] | None:
@@ -2734,11 +2784,16 @@ def update_job_record(job_id: str, updates: dict[str, Any]) -> dict[str, Any]:
     raise RuntimeError(f"job not found: {job_id}")
 
 
-def create_job(kind: str, key: str, title: str, payload: dict[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
+def create_job(kind: str, key: str, title: str, payload: dict[str, Any] | None = None,
+               job_id: str | None = None) -> tuple[dict[str, Any], bool]:
     with JOBS_LOCK:
         state = read_jobs_state()
         if reconcile_jobs_state(state):
             write_jobs_state(state)
+        if job_id:
+            previous = next((job for job in state.get("jobs", []) if job.get("id") == job_id), None)
+            if previous:
+                return public_job_record(previous), True
         active_jobs = [
             job
             for job in state.get("jobs", [])
@@ -2768,7 +2823,7 @@ def create_job(kind: str, key: str, title: str, payload: dict[str, Any] | None =
             )
 
         job = {
-            "id": uuid.uuid4().hex,
+            "id": job_id or uuid.uuid4().hex,
             "kind": kind,
             "key": key,
             "title": title,
@@ -2931,7 +2986,7 @@ def reconcile_jobs_state(state: dict[str, Any]) -> bool:
         durable_result = read_host_updater_result(job_id)
         if durable_result is not None:
             durable_status = str(durable_result.get("status", ""))
-            if durable_status in {"succeeded", "failed"}:
+            if durable_status in {"succeeded", "failed", "rolled_back", "recovery_required"}:
                 succeeded = durable_status == "succeeded" and bool(durable_result.get("ok"))
                 job.update(
                     {
@@ -2951,7 +3006,7 @@ def reconcile_jobs_state(state: dict[str, Any]) -> bool:
                 if job.get("status") != "running" or job.get("stage") != durable_result.get("stage"):
                     job["status"] = "running"
                     job["stage"] = durable_result.get("stage") or "Обновление выполняется на хосте"
-                    job["progress_percent"] = 50
+                    job["progress_percent"] = None
                     changed = True
                 if (job_age_seconds(job) or 0) <= HOST_UPDATER_RESULT_STALE_SECONDS:
                     continue
@@ -3005,7 +3060,10 @@ async def run_background_job(job_id: str, kind: str, target: Any) -> None:
         return
 
     try:
-        result = await asyncio.to_thread(target)
+        if kind == "product_update":
+            result = await asyncio.to_thread(target)
+        else:
+            result = await asyncio.to_thread(guarded_mutation, target)
         update_job_record(
             job_id,
             {
@@ -3807,6 +3865,11 @@ async def api_product_update_job(request: Request, _: str = Depends(require_auth
         )
 
     body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid update request")
+    request_id = body.get("request_id")
+    if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id)):
+        raise HTTPException(status_code=400, detail="Invalid operation ID")
     channel = str(body.get("channel", PRODUCT_CHANNEL) or PRODUCT_CHANNEL).strip()
     version = str(body.get("version", "") or "").strip() or None
 
@@ -3859,6 +3922,7 @@ async def api_product_update_job(request: Request, _: str = Depends(require_auth
         key="product_update",
         title="Обновление The333-BGP",
         payload={"channel": channel, "version": version},
+        job_id=request_id,
     )
     if not deduplicated:
         job_id = str(job["id"])
@@ -3877,6 +3941,34 @@ async def api_product_update_job(request: Request, _: str = Depends(require_auth
             "time": now_iso(),
         }
     )
+
+
+@app.get("/api/product/update/status")
+async def api_product_update_status(_: str = Depends(require_auth)) -> JSONResponse:
+    operation = read_state(MAINTENANCE_DIR)
+    # Polling progress must not reconcile/write jobs while a snapshot is being taken.
+    with JOBS_LOCK:
+        latest_job = next((job for job in reversed(read_jobs_state().get("jobs", []))
+                           if isinstance(job, dict) and job.get("kind") == "product_update"), None)
+    # The host marker is authoritative while an update is active or needs recovery.
+    if latest_job and operation.get("status") not in ACTIVE_STATUSES and (
+        not operation or str(latest_job.get("created_at") or "") > str(operation.get("started_at") or "")
+    ):
+        operation = {"request_id": latest_job["id"], "status": latest_job["status"],
+                     "stage": "queued" if latest_job["status"] == "queued" else "preflight",
+                     "version": (latest_job.get("payload") or {}).get("version"),
+                     "started_at": latest_job.get("created_at")}
+    allowed = {"request_id", "status", "stage", "version", "previous_version", "channel",
+               "started_at", "updated_at", "finished_at", "duration_seconds", "timeout", "history"}
+    public = {key: value for key, value in operation.items() if key in allowed}
+    current_version = read_product_version()
+    ready = False
+    if public.get("status") == "succeeded" and public.get("version") == current_version:
+        ready = bool((await asyncio.to_thread(build_readiness_payload)).get("ready"))
+    return JSONResponse({"operation": public or None, "current_version": current_version,
+                         "ready": ready,
+                         "blocked": public.get("status") in {*ACTIVE_STATUSES, "queued"}},
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/jobs")
@@ -4083,6 +4175,25 @@ def update_now(force_reannounce: bool = False, trigger: str = "manual", allow_la
         return _update_now_locked(force_reannounce, trigger, allow_large)
 
 
+def scheduled_route_update(interval_seconds: int | None = None) -> dict[str, Any]:
+    with mutation_lease(MAINTENANCE_DIR):
+        if product_update_job_pending():
+            raise MaintenanceBusy("update is queued")
+        try:
+            refresh_service_candidates_if_due()
+        except Exception:
+            pass
+        try:
+            refresh_auto_service_sources()
+        except Exception:
+            pass
+        result = update_now(False, "auto")
+        if interval_seconds is not None:
+            save_status({**result, "auto_update": True, "auto_update_ok": True,
+                         "auto_update_interval_seconds": interval_seconds})
+        return result
+
+
 async def auto_update_loop() -> None:
     schedule_signature: tuple[bool, int] | None = None
     next_run = time.monotonic()
@@ -4105,42 +4216,33 @@ async def auto_update_loop() -> None:
             await asyncio.sleep(min(15, remaining))
             continue
 
+        deferred = False
         try:
-            try:
-                await asyncio.to_thread(refresh_service_candidates_if_due)
-            except Exception:
-                pass
-
-            try:
-                await asyncio.to_thread(refresh_auto_service_sources)
-            except Exception:
-                pass
-
-            result = await asyncio.to_thread(update_now, False, "auto")
-            save_status(
-                {
-                    **result,
-                    "auto_update": True,
-                    "auto_update_ok": True,
-                    "auto_update_interval_seconds": interval_seconds,
-                }
-            )
+            await asyncio.to_thread(scheduled_route_update, interval_seconds)
+        except MaintenanceBusy:
+            deferred = True
         except Exception as e:
             log_exception("auto update loop failed", e)
-            current_status = read_json(STATUS_FILE, {})
-            current_status.update(
-                {
-                    "ok": False,
-                    "mode": "auto_update_failed",
-                    "auto_update": True,
-                    "auto_update_ok": False,
-                    "auto_update_interval_seconds": interval_seconds,
-                    "error": public_error("Автообновление маршрутов не выполнено."),
-                    "time": now_iso(),
-                }
-            )
-            save_status(current_status)
-            append_update_history(current_status, "auto_failed")
+            try:
+                with mutation_lease(MAINTENANCE_DIR):
+                    if product_update_job_pending():
+                        raise MaintenanceBusy("update is queued")
+                    current_status = read_json(STATUS_FILE, {})
+                    current_status.update(
+                        {
+                            "ok": False,
+                            "mode": "auto_update_failed",
+                            "auto_update": True,
+                            "auto_update_ok": False,
+                            "auto_update_interval_seconds": interval_seconds,
+                            "error": public_error("Автообновление маршрутов не выполнено."),
+                            "time": now_iso(),
+                        }
+                    )
+                    save_status(current_status)
+                    append_update_history(current_status, "auto_failed")
+            except MaintenanceBusy:
+                deferred = True
         finally:
             latest_settings = await asyncio.to_thread(read_runtime_settings)
             latest_route = latest_settings["route_auto_update"]
@@ -4148,7 +4250,7 @@ async def auto_update_loop() -> None:
                 bool(latest_route["enabled"]),
                 int(latest_route["interval_minutes"]) * 60,
             )
-            next_run = time.monotonic() + schedule_signature[1]
+            next_run = time.monotonic() + (15 if deferred else schedule_signature[1])
 
 
 async def automatic_backup_loop() -> None:
@@ -4157,19 +4259,20 @@ async def automatic_backup_loop() -> None:
         try:
             settings = await asyncio.to_thread(read_runtime_settings)
             if automatic_backup_is_due(settings):
-                job, deduplicated = create_job(
-                    kind="system_backup",
-                    key="system_backup",
-                    title="Автоматический бэкап системы",
-                    payload={"scope": ["data", "config"], "mode": "on_change"},
-                )
-                if not deduplicated:
-                    await run_background_job(
-                        str(job["id"]),
-                        "system_backup",
-                        run_automatic_backup_check,
+                with mutation_lease(MAINTENANCE_DIR):
+                    job, deduplicated = create_job(
+                        kind="system_backup",
+                        key="system_backup",
+                        title="Автоматический бэкап системы",
+                        payload={"scope": ["data", "config"], "mode": "on_change"},
                     )
-        except HTTPException:
+                    if not deduplicated:
+                        await run_background_job(
+                            str(job["id"]),
+                            "system_backup",
+                            run_automatic_backup_check,
+                        )
+        except (HTTPException, MaintenanceBusy):
             pass
         except Exception as exc:
             log_exception("automatic backup loop failed", exc)
@@ -7133,7 +7236,10 @@ def service_candidates_response(refresh: bool = False) -> dict[str, Any]:
     cache = read_service_candidates_cache()
 
     if refresh or not cache.get("candidates"):
-        cache = refresh_service_candidates("manual" if refresh else "cold_start")
+        with mutation_lease(MAINTENANCE_DIR):
+            if product_update_job_pending():
+                raise MaintenanceBusy("update is queued")
+            cache = refresh_service_candidates("manual" if refresh else "cold_start")
 
     return {
         "ok": bool(cache.get("ok", True)),
@@ -8785,6 +8891,8 @@ async def api_services(_: str = Depends(require_auth)) -> JSONResponse:
 async def api_services_candidates(refresh: bool = False, _: str = Depends(require_auth)) -> JSONResponse:
     try:
         return JSONResponse(await asyncio.to_thread(service_candidates_response, refresh))
+    except MaintenanceBusy:
+        raise HTTPException(status_code=409, detail="Обновление проекта выполняется. Повтори запрос после его завершения.")
     except Exception as e:
         log_exception("service candidates API failed", e)
         return JSONResponse(

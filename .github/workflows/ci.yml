@@ -75,6 +75,12 @@ jobs:
           npm run build
           npm audit --omit=dev --audit-level=moderate
 
+      - name: Test update interface in Chromium
+        working-directory: portal
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+
       - name: Exercise installer preflight
         env:
           THE333_BIND_IP: 192.168.1.10
@@ -122,6 +128,7 @@ jobs:
           sed -i "s/^PGID=.*/PGID=$(id -g)/" .env
           sed -i "s#^HOST_UPDATER_RUN_DIR=.*#HOST_UPDATER_RUN_DIR=/tmp/the333-bgp-run#" .env
           mkdir -p data/gobgp-state data/secrets /tmp/the333-bgp-run
+          THE333_PROJECT_DIR="$PWD" PUID="$(id -u)" PGID="$(id -g)" python3 scripts/update-operation.py prepare
           : > data/secrets/bgp_tcp_md5
           chmod 600 data/secrets/bgp_tcp_md5
           printf 'PRODUCT_VERSION=%s\n' "$(tr -d '[:space:]' < VERSION)" >> "${GITHUB_ENV}"
@@ -175,6 +182,53 @@ jobs:
           assert "the333-control" not in networks("the333-portal")
           assert {"the333-frontend", "the333-control"} <= networks("the333-bgp-backend")
           assert {"the333-bgp-edge", "the333-control"} <= networks("the333-gobgp-core")
+          PY
+          python3 - <<'PY'
+          import http.cookiejar
+          import json
+          import subprocess
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          from app.maintenance import write_state
+
+          url = "http://127.0.0.1:8088"
+          client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+          login = urllib.request.Request(
+              f"{url}/auth/login", data=json.dumps({"password": "ci-test-password"}).encode(),
+              headers={"Content-Type": "application/json"}, method="POST")
+          with client.open(login, timeout=10) as response:
+              session = json.load(response)
+          assert session.get("csrf_token")
+          subprocess.check_call(["docker", "compose", "-f", "docker-compose.yml", "-f",
+                                 "docker-compose.portal.yml", "restart", "the333-bgp-backend"])
+          for attempt in range(45):
+              try:
+                  with client.open(f"{url}/auth/session", timeout=3) as response:
+                      restored = json.load(response)
+                  assert restored["csrf_token"] == session["csrf_token"]
+                  break
+              except (urllib.error.URLError, TimeoutError):
+                  time.sleep(2)
+          else:
+              raise AssertionError("session was lost after backend restart")
+
+          directory = Path("runtime/operations")
+          write_state(directory, {"status": "running", "stage": "backup", "request_id": "a" * 32})
+          try:
+              update = urllib.request.Request(
+                  f"{url}/api/runtime-settings", data=b"{}", method="PUT",
+                  headers={"Content-Type": "application/json", "X-CSRF-Token": restored["csrf_token"]})
+              try:
+                  client.open(update, timeout=10)
+              except urllib.error.HTTPError as exc:
+                  assert exc.code == 409, f"expected maintenance lock, got {exc.code}"
+              else:
+                  raise AssertionError("API mutation was allowed during maintenance")
+          finally:
+              write_state(directory, {"status": "failed", "stage": "test_complete"})
           PY
 
       - name: Scan backend image for fixable High/Critical vulnerabilities

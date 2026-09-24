@@ -30,7 +30,15 @@ function isUnsafeMethod(method: string | undefined): boolean {
 async function readResponse<T>(response: Response): Promise<T> {
   const body = await response.text();
   if (!response.ok) {
-    throw new ApiError(`HTTP ${response.status}`, response.status, body);
+    let message = `HTTP ${response.status}`;
+    // Expected client errors contain deliberate public messages, not exception traces.
+    if ([400, 401, 403, 409, 422, 429].includes(response.status)) {
+      try {
+        const detail: unknown = JSON.parse(body).detail;
+        if (typeof detail === "string" && detail.length <= 500) message = detail;
+      } catch { /* A proxy may return an HTML error page. */ }
+    }
+    throw new ApiError(message, response.status, body);
   }
   return body ? JSON.parse(body) as T : null as T;
 }
