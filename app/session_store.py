@@ -3,9 +3,33 @@
 import json
 import os
 import sqlite3
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+
+def load_or_create_salt(path: Path) -> bytes:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        value = path.read_bytes()
+    except FileNotFoundError:
+        fd, name = tempfile.mkstemp(prefix=".credential-salt-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(os.urandom(32))
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(name, path)
+            except FileExistsError:
+                pass
+        finally:
+            Path(name).unlink(missing_ok=True)
+        value = path.read_bytes()
+    if path.is_symlink() or len(value) != 32:
+        raise RuntimeError("invalid session credential salt")
+    return value
 
 
 class SessionStore:

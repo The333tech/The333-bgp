@@ -8,10 +8,21 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.maintenance import MaintenanceBusy, mutation_lease, read_state, write_state
-from app.session_store import SessionStore
+from app.session_store import SessionStore, load_or_create_salt
 
 
 class PersistentSessionTests(unittest.TestCase):
+    def test_credential_salt_is_unique_per_installation_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "first" / "credential.salt"
+            second = Path(directory) / "second" / "credential.salt"
+            salt = load_or_create_salt(first)
+            self.assertEqual(len(salt), 32)
+            self.assertEqual(load_or_create_salt(first), salt)
+            self.assertNotEqual(load_or_create_salt(second), salt)
+            if os.name == "posix":
+                self.assertEqual(first.stat().st_mode & 0o777, 0o600)
+
     def test_restart_expiry_logout_and_changed_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sessions.sqlite3"

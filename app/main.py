@@ -21,6 +21,7 @@ import zipfile
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -30,7 +31,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from app.maintenance import ACTIVE_STATUSES, MaintenanceBusy, mutation_lease, read_state
-from app.session_store import SessionStore
+from app.session_store import SessionStore, load_or_create_salt
 
 
 APP_NAME = os.getenv("APP_NAME", "The333-BGP")
@@ -249,10 +250,15 @@ async def maintenance_write_guard(request: Request, call_next):
                              "code": "maintenance"}, status_code=409, headers={"Retry-After": "5"})
 
 
+@lru_cache(maxsize=1)
 def session_store() -> SessionStore | None:
     if AUTH_SESSION_FILE is None:
         return None
-    credential_id = hashlib.sha256((WEB_USER + "\0" + WEB_PASSWORD_HASH + "\0" + WEB_PASSWORD).encode()).hexdigest()
+    salt = load_or_create_salt(AUTH_SESSION_FILE.with_name("credential.salt"))
+    credential_id = hashlib.pbkdf2_hmac(
+        "sha256", (WEB_USER + "\0" + WEB_PASSWORD_HASH + "\0" + WEB_PASSWORD).encode(),
+        salt, 200_000,
+    ).hex()
     return SessionStore(AUTH_SESSION_FILE, credential_id)
 
 
