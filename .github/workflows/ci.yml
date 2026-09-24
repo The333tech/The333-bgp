@@ -210,7 +210,7 @@ jobs:
                       restored = json.load(response)
                   assert restored["csrf_token"] == session["csrf_token"]
                   break
-              except (urllib.error.URLError, TimeoutError):
+              except (urllib.error.URLError, OSError):
                   time.sleep(2)
           else:
               raise AssertionError("session was lost after backend restart")
