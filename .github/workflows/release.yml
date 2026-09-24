@@ -67,6 +67,12 @@ jobs:
           npm run build
           npm audit --omit=dev --audit-level=moderate
 
+      - name: Test update interface in Chromium
+        working-directory: portal
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+
   images:
     name: Publish ${{ matrix.service }} image
     needs: validate

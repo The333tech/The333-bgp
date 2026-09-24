@@ -7,6 +7,7 @@ import re
 import secrets
 import socketserver
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -14,6 +15,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from app.update_runner import prepare_runtime, run_command
 
 
 PROJECT_DIR = Path(os.getenv("THE333_PROJECT_DIR", "/opt/the333-bgp")).resolve()
@@ -256,31 +260,11 @@ def run_update(channel: str, version: str, request_id: str) -> dict[str, Any]:
             return result
 
         try:
-            completed = subprocess.run(
-                # Request values are arguments; only the fixed local script is executable.
-                [str(script), *arguments],
-                shell=False,
-                cwd=str(PROJECT_DIR),
-                env=public_environment(),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=UPDATE_TIMEOUT_SECONDS,
-                check=False,
-            )
-            result = {
-                "ok": completed.returncode == 0,
-                "request_id": request_id,
-                "status": "succeeded" if completed.returncode == 0 else "failed",
-                "returncode": completed.returncode,
-                "stdout_tail": redact_output(completed.stdout),
-                "stderr_tail": redact_output(completed.stderr),
-                "duration_seconds": round(time.time() - started, 3),
-                "channel": channel,
-                "version": version or None,
-                "finished_at": now_iso(),
-                "time": now_iso(),
-            }
+            result = run_command(PROJECT_DIR, arguments, request_id, channel, version,
+                                 public_environment(), UPDATE_TIMEOUT_SECONDS)
+            result["request_id"] = request_id
+            result["stdout_tail"] = redact_output(str(result.get("stdout_tail", "")))
+            result["stderr_tail"] = redact_output(str(result.get("stderr_tail", "")))
         except subprocess.TimeoutExpired as exc:
             result = {
                 "ok": False,
@@ -451,6 +435,7 @@ def main() -> int:
         raise SystemExit("HOST_UPDATER_TOKEN is not configured")
 
     prepare_result_dir()
+    prepare_runtime(PROJECT_DIR, int(os.getenv("PUID", "0")), int(os.getenv("PGID", "0")))
     prepare_socket()
     try:
         with UnixHTTPServer(str(SOCKET_PATH), UpdaterHandler) as server:

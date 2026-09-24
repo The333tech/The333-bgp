@@ -72,7 +72,11 @@ required_files=(
   "requirements.txt"
   "requirements.in"
   "app/main.py"
+  "app/maintenance.py"
+  "app/session_store.py"
+  "app/update_runner.py"
   "scripts/host-updater.py"
+  "scripts/update-operation.py"
   "scripts/extract-release.py"
   "scripts/migrate-env.py"
   "portal/Dockerfile"
@@ -113,6 +117,7 @@ source_required_files=(
   "tests/test_route_transaction.py"
   "tests/test_release_archive_and_env_migration.py"
   "tests/test_security_helpers.py"
+  "tests/test_update_lifecycle.py"
   "tests/test_state_integrity.py"
 )
 

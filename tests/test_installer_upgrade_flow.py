@@ -657,6 +657,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
             app_dir.chmod(0o755)
 
         self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(event_log.exists(), msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         self.assertEqual(event_log.read_text(encoding="utf-8").splitlines(), ["disk-preflight"])
         self.assertIn("release-file preflight failed", result.stderr)
         self.assertIn(str(app_dir), result.stderr)

@@ -6,6 +6,7 @@ import re
 import secrets
 import subprocess
 import tempfile
+import sys
 from pathlib import Path
 
 
@@ -256,6 +257,11 @@ def main() -> int:
         updated.extend(f"{key}={defaults[key]}" for key in missing)
 
     write_atomic(env_path, "\n".join(updated) + "\n")
+    # Prepare new mounts even when this migration is launched by an older controller.
+    if os.name == "posix":
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from app.update_runner import prepare_runtime, runtime_identity
+        prepare_runtime(project_dir, *runtime_identity(project_dir))
     print(json.dumps({
         "ok": True,
         "version": args.version,

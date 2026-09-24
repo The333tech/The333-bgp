@@ -47,6 +47,7 @@ import {
   RuntimeSettingsResponse
 } from "./types/api";
 import { MikroTikAssistant } from "./components/MikroTikAssistant";
+import { useProductUpdate } from "./components/ProductUpdate";
 import {
   buildMikroTikCommunityFilterCommands,
   isRouterOsObjectName,
@@ -542,31 +543,22 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.84.1b";
+const PRODUCT_VERSION = "0.85b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.84.1b",
-    version: "0.84.1b",
-    title: "v0.84.1b",
+    id: "0.85b",
+    version: "0.85b",
+    title: "v0.85b",
     channel: "beta",
     status: "текущая версия",
     date: "сентябрь 2026",
     changelog: [
-      "Host-updater перезапускается после успешного обновления, даже если backend отключился до получения ответа.",
-      "Параметры обновления проверяются до запуска процесса и создания состояния операции.",
-      "Updater проверяет права до backup и не изменяет работающий runtime при небезопасном владельце файлов.",
-      "Host-updater сохраняет владельца каталога проекта после привилегированного обновления.",
-      "При недоступности GitHub API выбранная версия использует immutable manifest из release assets.",
-      "Обновлены и проверены Python, Node.js, React, Vite, Go и GitHub Actions dependencies.",
-      "Добавлена однострочная установка готовых multi-platform GHCR-образов без локальной сборки и docker login.",
-      "Release manifest содержит immutable SHA-256 digest для GoBGP, Backend и Portal.",
-      "Предсобранные образы публикуются для amd64/arm64 с SBOM, provenance, attestations и CVE gate.",
-      "Дисковый минимум prebuilt-установки снижен до 2 ГБ с готовым Docker или 3 ГБ вместе с Docker.",
-      "Установщик ожидает Docker health всех контейнеров и прикладную готовность Backend и Portal.",
-      "Чистая установка без last-good маршрутов корректно остаётся готовой к первичной настройке.",
-      "Source-сборка сохранена как независимый резервный и аудируемый режим.",
-      "Переключение image mode защищено backup, readiness-проверкой и автоматическим rollback."
+      "Этапы обновления отображаются на странице «Обновления» и восстанавливаются после перезапуска backend.",
+      "На время обновления изменения в портале и фоновые задания блокируются; маршруты сохраняются.",
+      "После проверки новой версии портал перезагружается автоматически; при сбое показывается состояние отката.",
+      "Сессия входа сохраняется при перезапуске backend и остаётся защищённой CSRF и сроком действия.",
+      "При неполном обновлении доступно ручное восстановление только после проверки работающего сервиса."
     ]
   }
 ];
@@ -6780,7 +6772,7 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
 }
 
 
-function UpdatesPage({ auth }: { auth: AuthState }) {
+function UpdatesPage({ auth, onStart }: { auth: AuthState; onStart: (channel: string, version: string) => Promise<void> }) {
   const [updates, setUpdates] = useState<ProductUpdatesResponse | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState(PRODUCT_VERSION);
   const [statusText, setStatusText] = useState<string | null>(null);
@@ -6848,14 +6840,8 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
     setStatusText("Запускаю обновление проекта...");
 
     try {
-      await apiFetch("/api/product/update/job", auth, {
-        method: "POST",
-        body: JSON.stringify({
-          channel: selectedVersion.channel ?? "stable",
-          version: selectedVersion.version,
-        }),
-      });
-      setStatusText("Обновление запущено в фоне. Статус смотри в центре задач после перезагрузки портала.");
+      await onStart(selectedVersion.channel ?? "stable", selectedVersion.version);
+      setStatusText(null);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : String(error));
     } finally {
@@ -6870,7 +6856,7 @@ function UpdatesPage({ auth }: { auth: AuthState }) {
           <div className="hero-kicker">Системные обновления</div>
           <h2>Версии портала</h2>
           <p>
-            Перед обновлением портал делает резервную копию, загружает новую версию, пересобирает контейнеры и проверяет готовность сервиса.
+            Перед обновлением портал делает резервную копию, подготавливает контейнеры новой версии и проверяет готовность сервиса.
           </p>
         </div>
         <div className="updates-current-card">
@@ -7269,6 +7255,9 @@ function AppShell({
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null);
+  const productUpdate = useProductUpdate(auth, setAuth);
+  const updateLocked = useRef(false);
+  updateLocked.current = productUpdate.locked;
   const [authReady, setAuthReady] = useState(false);
   const [activePage, setActivePage] = useState<ActivePage>("dashboard");
   const [data, setData] = useState<PortalData>({
@@ -7312,7 +7301,7 @@ export default function App() {
   }, []);
 
   const loadData = useCallback(async () => {
-    if (!auth) return;
+    if (!auth || updateLocked.current) return;
 
     try {
       const [ready, diagnostics, sources, history, services, serverResources, runtimeSettings, jobs] = await Promise.all([
@@ -7344,6 +7333,7 @@ export default function App() {
       setLoginError(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
+        if (updateLocked.current) return;
         setLoginError("Неверный пароль или доступ временно ограничен.");
         clearAuth();
         setAuth(null);
@@ -7534,11 +7524,11 @@ export default function App() {
     if (activePage === "history") return <HistoryPage data={data} />;
     if (activePage === "updates") {
       if (!auth) return null;
-      return <UpdatesPage auth={auth} />;
+      return <UpdatesPage auth={auth} onStart={productUpdate.start} />;
     }
 
     return null;
-  }, [activePage, actionText, auth, data, loadData]);
+  }, [activePage, actionText, auth, data, loadData, productUpdate.start]);
 
   if (!authReady) {
     return <div className="app" aria-busy="true" />;
@@ -7565,6 +7555,8 @@ export default function App() {
       >
         {page}
       </AppShell>
+
+      {productUpdate.view}
 
       {timeSettingsOpen && (
         <TimeSettingsModal

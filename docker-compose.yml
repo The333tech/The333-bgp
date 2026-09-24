@@ -86,6 +86,8 @@ services:
       GOBGP_GENERATION_FILE: /data/gobgp-state/gobgp_generation
       BGP_TCP_MD5_CONFIGURED: "${BGP_TCP_MD5_CONFIGURED:-false}"
       PYTHONDONTWRITEBYTECODE: "1"
+      MAINTENANCE_DIR: /operations
+      AUTH_SESSION_FILE: /sessions/sessions.sqlite3
     depends_on:
       - the333-gobgp-core
     ports:
@@ -93,6 +95,8 @@ services:
     volumes:
       - ./data:/data
       - ./config:/config
+      - ./runtime/operations:/operations:ro
+      - ./runtime/sessions:/sessions
       - ${HOST_UPDATER_RUN_DIR:-/run/the333-bgp}:/run/the333-bgp:ro
     networks:
       - frontend
