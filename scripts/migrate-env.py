@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 OFFICIAL_RELEASES_URL = "https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20"
+GOBGP_CORE_IMAGE_VERSION = "4.7.0-r5"
 LEGACY_OFFICIAL_MANIFEST_MARKERS = (
     "raw.githubusercontent.com/The333tech/The333-bgp/",
     "api.github.com/repos/The333tech/The333-bgp/releases/latest",
@@ -146,6 +147,13 @@ def main() -> int:
                 }
             except ValueError:
                 raise SystemExit(str(exc)) from exc
+        if values.get("GOBGP_CORE_IMAGE_VERSION", "").strip() == GOBGP_CORE_IMAGE_VERSION:
+            try:
+                image_refs["THE333_GOBGP_IMAGE"] = validate_prebuilt_image_ref(
+                    "THE333_GOBGP_IMAGE", values.get("THE333_GOBGP_IMAGE", "").strip()
+                )
+            except ValueError:
+                pass
     else:
         image_refs = {key: "" for key in IMAGE_REPOSITORIES}
 
@@ -198,7 +206,7 @@ def main() -> int:
         "REMOTE_FETCH_MAX_BYTES": "16777216",
         "REMOTE_FETCH_MAX_REDIRECTS": "5",
         "REMOTE_FETCH_CACHE_GRACE_SECONDS": "86400",
-        "GOBGP_CORE_IMAGE_VERSION": "4.7.0-r5",
+        "GOBGP_CORE_IMAGE_VERSION": GOBGP_CORE_IMAGE_VERSION,
         "THE333_IMAGE_MODE": image_mode,
         **image_refs,
         "BGP_PEER_MODE": peer_mode,
