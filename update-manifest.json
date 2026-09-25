@@ -2,20 +2,21 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.85b"
+    "beta": "0.85.1b"
   },
   "versions": [
     {
-      "version": "0.85b",
-      "title": "v0.85b",
+      "version": "0.85.1b",
+      "title": "v0.85.1b",
       "channel": "beta",
       "status": "текущая beta",
       "date": "2026-09-25",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.85b/the333-bgp-v0.85b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.85.1b/the333-bgp-v0.85.1b.tar.gz",
       "sha256": "",
       "images": {},
       "changelog": [
+        "При неизменной версии GoBGP Core обновление prebuilt-образов сохраняет установленный digest Core и не пересоздаёт BGP-контейнер.",
         "Этапы обновления и его итог показываются на странице Обновления, в том числе после перезапуска backend или обрыва соединения.",
         "При обновлении изменения через API и фоновые задания приостанавливаются; после успешной проверки портал перезагружается автоматически.",
         "Сессии входа сохраняются после перезапуска backend без хранения открытых паролей в браузере.",
