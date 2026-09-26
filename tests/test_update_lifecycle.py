@@ -205,6 +205,32 @@ class UpdateCoordinationTests(unittest.TestCase):
         finally:
             main.app.dependency_overrides.clear()
 
+    def test_completed_update_reports_readiness_without_server_error(self):
+        import app.main as main
+        from fastapi.testclient import TestClient
+        main.app.dependency_overrides[main.require_auth] = lambda: "test"
+        try:
+            with patch.object(main, "MAINTENANCE_DIR", self.directory), \
+                 patch.object(main, "read_jobs_state", return_value={"jobs": []}), \
+                 patch.object(main, "read_product_version", return_value="0.90b"):
+                write_state(self.directory, {"request_id": "a" * 32, "status": "succeeded",
+                                             "stage": "readiness", "version": "0.90b"})
+                client = TestClient(main.app)
+                try:
+                    for ready, status_code in ((False, 503), (True, 200)):
+                        with self.subTest(ready=ready), patch.object(
+                            main, "build_readiness_payload", return_value=({"ready": ready}, status_code)
+                        ) as readiness:
+                            response = client.get("/api/product/update/status")
+                            self.assertEqual(response.status_code, 200)
+                            self.assertEqual(response.json()["ready"], ready)
+                            self.assertFalse(response.json()["blocked"])
+                            readiness.assert_called_once_with()
+                finally:
+                    client.close()
+        finally:
+            main.app.dependency_overrides.clear()
+
     def test_queued_update_blocks_other_writes_before_host_runner_starts(self):
         import app.main as main
         from fastapi.testclient import TestClient

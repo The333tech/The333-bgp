@@ -543,20 +543,19 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.90b";
+const PRODUCT_VERSION = "0.90.1b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.90b",
-    version: "0.90b",
-    title: "v0.90b",
+    id: "0.90.1b",
+    version: "0.90.1b",
+    title: "v0.90.1b",
     channel: "beta",
     status: "текущая версия",
     date: "сентябрь 2026",
     changelog: [
-      "GoBGP Core обновлён до 4.9.0: BGP-сессия кратко прервётся и восстановится после проверки готовности.",
-      "Место на диске проверяется с учётом смены ядра до замены работающих контейнеров.",
-      "Помощник MikroTik уточняет проверенные RouterOS/AWG-конфигурации; добавлена инструкция по контейнеру AWG 3.1."
+      "Исправлено завершение окна обновления после успешной проверки готовности сервиса.",
+      "GoBGP Core 4.9.0 и инструкция для проверенной конфигурации MikroTik/AWG 3.1."
     ]
   }
 ];
