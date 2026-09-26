@@ -982,7 +982,7 @@ write_env() {
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
   host_updater_token="${HOST_UPDATER_TOKEN:-$(make_token)}"
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.85.1b}"
+  product_version="${product_version:-0.90b}"
   image_mode="$(runtime_image_mode)"
   RESOLVED_GOBGP_IMAGE=""
   RESOLVED_BACKEND_IMAGE=""
@@ -1007,7 +1007,7 @@ LOCAL_AS=${local_as}
 ROUTER_ID=${router_id}
 BGP_NEXTHOP=${nexthop}
 BGP_LISTEN_PORT=1179
-GOBGP_CORE_IMAGE_VERSION=4.7.0-r5
+GOBGP_CORE_IMAGE_VERSION=4.9.0-r1
 THE333_IMAGE_MODE=${image_mode}
 THE333_GOBGP_IMAGE=${RESOLVED_GOBGP_IMAGE}
 THE333_BACKEND_IMAGE=${RESOLVED_BACKEND_IMAGE}
@@ -1213,7 +1213,7 @@ ensure_env_defaults() {
 
   local product_version update_url backup_env
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.85.1b}"
+  product_version="${product_version:-0.90b}"
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-$(awk -F= '$1 == "PRODUCT_UPDATE_MANIFEST_URL" {print $2; exit}' "${PROJECT_DIR}/.env" | tr -d '[:space:]')}"
   update_url="${update_url:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
 

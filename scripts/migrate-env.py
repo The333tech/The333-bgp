@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 OFFICIAL_RELEASES_URL = "https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20"
-GOBGP_CORE_IMAGE_VERSION = "4.7.0-r5"
+GOBGP_CORE_IMAGE_VERSION = "4.9.0-r1"
 LEGACY_OFFICIAL_MANIFEST_MARKERS = (
     "raw.githubusercontent.com/The333tech/The333-bgp/",
     "api.github.com/repos/The333tech/The333-bgp/releases/latest",

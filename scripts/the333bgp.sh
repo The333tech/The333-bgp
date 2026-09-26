@@ -279,6 +279,7 @@ check_update_storage_target() {
 }
 
 check_update_disk_space() {
+  local target_core_version="${1:-}"
   local configured_min_bytes configured_recommended_bytes min_bytes recommended_bytes
   local project_min_bytes project_recommended_bytes value_name value core_image image_mode
   local docker_root project_stats docker_stats project_device docker_device
@@ -308,7 +309,16 @@ check_update_disk_space() {
   min_bytes="${configured_min_bytes}"
   recommended_bytes="${configured_recommended_bytes}"
   image_mode="$(runtime_image_mode)"
-  core_image="${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}}"
+  core_image="${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1}}"
+  if [[ -n "${target_core_version}" && "${target_core_version}" != "${GOBGP_CORE_IMAGE_VERSION:-}" ]]; then
+    if (( min_bytes < DEFAULT_MIN_CORE_UPDATE_FREE_BYTES )); then
+      min_bytes="${DEFAULT_MIN_CORE_UPDATE_FREE_BYTES}"
+    fi
+    if (( recommended_bytes < DEFAULT_RECOMMENDED_CORE_UPDATE_FREE_BYTES )); then
+      recommended_bytes="${DEFAULT_RECOMMENDED_CORE_UPDATE_FREE_BYTES}"
+    fi
+    log "Routing-core changes from ${GOBGP_CORE_IMAGE_VERSION:-unknown} to ${target_core_version}; full-update disk thresholds are active."
+  fi
   if [[ "${image_mode}" == "prebuilt" ]]; then
     validate_prebuilt_images
     log "Prebuilt image mode is active; local build-cache reserve is not required."
@@ -1327,7 +1337,7 @@ build_update_images() {
     return 0
   fi
 
-  core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
+  core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1}"
   if [[ "${readiness_mode}" == "legacy" ]]; then
     log "Rollback: выполняется полная сборка предыдущего runtime."
     compose build || return 1
@@ -1413,7 +1423,15 @@ update_project() {
   operation_stage download
   release_dir="$(download_release "${version_json}")"
   release_tmp="$(dirname "${release_dir}")"
-  if ! check_update_disk_space; then
+  local target_core_version
+  target_core_version="$(awk -F= '$1 == "GOBGP_CORE_IMAGE_VERSION" {print $2; exit}' "${release_dir}/.env.example" 2>/dev/null || true)"
+  if [[ ! "${target_core_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]]; then
+    if [[ "${release_tmp}" == /tmp/* ]]; then
+      rm -rf "${release_tmp}"
+    fi
+    fail "release has no valid routing-core version; existing containers and project files were not changed"
+  fi
+  if ! check_update_disk_space "${target_core_version}"; then
     if [[ "${release_tmp}" == /tmp/* ]]; then
       rm -rf "${release_tmp}"
     fi

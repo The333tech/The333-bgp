@@ -125,9 +125,10 @@ export function MikroTikAssistant({
   const [routerId, setRouterId] = useState(detectedRouterId);
   const [community, setCommunity] = useState(defaultCommunity);
   const [tcpMd5Key, setTcpMd5Key] = useState("");
-  const [gatewayMode, setGatewayMode] = useState<GatewayMode>("received");
-  const [gateway, setGateway] = useState("172.18.20.2");
+  const [gatewayMode, setGatewayMode] = useState<GatewayMode>("custom");
+  const [gateway, setGateway] = useState("");
   const [backupConfirmed, setBackupConfirmed] = useState(false);
+  const [tunnelConfirmed, setTunnelConfirmed] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [manualCopy, setManualCopy] = useState<{ label: string; text: string } | null>(null);
   const manualCopyRef = useRef<HTMLTextAreaElement>(null);
@@ -143,7 +144,7 @@ export function MikroTikAssistant({
     ? "legacy-v7"
     : "current-v7";
   const awgReady = facts.major !== null
-    && facts.major >= 7
+    && versionAtLeast(facts, 7, 23, 1)
     && supportedArchitecture
     && facts.containerPackage === true
     && facts.containerMode === true;
@@ -171,8 +172,12 @@ export function MikroTikAssistant({
     if (isRouterOs6) return { tone: "bad", title: "RouterOS 6", text: "Containers недоступны. Разрешён только отдельный BGP-only профиль." };
     if (facts.major !== 7) return { tone: "bad", title: "Версия не поддержана", text: "Автоматический генератор предназначен только для RouterOS 7." };
     if (!supportedArchitecture) return { tone: "warn", title: "Только BGP", text: "BGP доступен, но Containers поддерживаются только на совместимых arm, arm64 и x86 устройствах." };
-    if (facts.major === 7 && facts.minor === 19) return { tone: "ok", title: "RouterOS 7.0–7.19", text: "Эта ветка проверена на рабочем стенде. Перед изменениями всё равно сохраните backup и обеспечьте резервный доступ к роутеру." };
-    if (versionAtLeast(facts, 7, 23, 1)) return { tone: "warn", title: "RouterOS 7.23.1+", text: "Версия поддерживает нужные функции, но этот профиль ещё не прошёл полную проверку на реальном стенде. Используйте его только после backup и с резервным доступом." };
+    if (facts.version === "7.24.4" && facts.architecture === "arm"
+        && facts.model === "RB3011UiAS" && facts.containerPackage === true && facts.containerMode === true) {
+      return { tone: "ok", title: "RouterOS 7.24.4 ARM", text: "На RB3011 с пакетом и режимом Containers проверены BGP и AWG-контейнер 3.1 с клиентским профилем AWG 2.0. Чистая установка у стороннего пользователя ещё не проверена." };
+    }
+    if (facts.major === 7 && facts.minor === 19) return { tone: "warn", title: "RouterOS 7.0–7.19", text: "BGP-синтаксис предусмотрен; контейнерный сценарий 3.1 на этой версии не проверен. Перед изменениями сохраните backup и обеспечьте резервный доступ." };
+    if (versionAtLeast(facts, 7, 23, 1)) return { tone: "warn", title: "RouterOS 7.23.1+", text: "Совместимый диапазон по документации контейнера; на реальном стенде проверен только RouterOS 7.24.4 ARM. Сохраните backup и проверьте резервный доступ." };
     return { tone: "warn", title: "Промежуточная RouterOS 7", text: "BGP доступен; AWG-контейнер требует отдельной проверки совместимости." };
   }, [facts, isRouterOs6, supportedArchitecture]);
 
@@ -251,7 +256,7 @@ export function MikroTikAssistant({
           <textarea
             className="mikrotik-preflight-input"
             value={preflight}
-            onChange={(event) => setPreflight(event.target.value)}
+            onChange={(event) => { setPreflight(event.target.value); setTunnelConfirmed(false); }}
             placeholder="Вставьте вывод /system/resource/print и остальных read-only команд..."
             spellCheck={false}
           />
@@ -281,7 +286,7 @@ export function MikroTikAssistant({
         <div className="panel-title">
           <div>
             <h2>2. Сценарий подключения</h2>
-            <div className="panel-subtitle">Containers в RouterOS 6 отсутствуют. Full-container варианты доступны только после успешного preflight RouterOS 7.</div>
+            <div className="panel-subtitle">Containers в RouterOS 6 отсутствуют. AWG 3.1 показывается после preflight RouterOS 7.23.1+ и совместимой архитектуры.</div>
           </div>
         </div>
         <div className="mikrotik-scenario-grid">
@@ -293,7 +298,11 @@ export function MikroTikAssistant({
                 type="button"
                 key={item.id}
                 disabled={disabled}
-                onClick={() => setScenario(item.id)}
+                onClick={() => {
+                  if (item.id !== scenario) setTunnelConfirmed(false);
+                  setScenario(item.id);
+                  if (item.id !== "bgp" && !gateway) setGateway("172.18.20.2");
+                }}
               >
                 <span className="mikrotik-scenario-radio">{scenario === item.id ? <IconCheck size={14} /> : null}</span>
                 <strong>{item.title}</strong>
@@ -305,7 +314,7 @@ export function MikroTikAssistant({
         {awgScenario ? (
           <div className="action-status-box mikrotik-profile-blocked">
             <IconAlertTriangle size={17} />
-            <span>Автоматические команды для AWG пока скрыты: обе ветки RouterOS ещё проходят полную проверку установки и восстановления на реальном оборудовании.</span>
+            <span>Сначала настройте и проверьте AWG-контейнер по <a href="https://github.com/The333tech/The333-bgp/blob/main/docs/MIKROTIK_AWG.md" target="_blank" rel="noopener noreferrer">пошаговой инструкции</a>. Команды ниже создают только BGP-подключение и фильтры; они не устанавливают VPN и не запрашивают его ключи.</span>
           </div>
         ) : null}
       </section>
@@ -338,13 +347,18 @@ export function MikroTikAssistant({
             </select>
           </label>
           {(awgScenario || gatewayMode === "custom") ? (
-            <label><span>IP VPN gateway</span><input value={gateway} onChange={(event) => setGateway(event.target.value)} /></label>
+            <label><span>IP VPN gateway</span><input value={gateway} onChange={(event) => { setGateway(event.target.value); setTunnelConfirmed(false); }} /></label>
           ) : null}
         </div>
+        {!awgScenario && gatewayMode === "received" ? <div className="mikrotik-safe-note">Next-hop от VM выбирайте только если VM действительно пересылает трафик к нужным назначениям. Иначе полученные BGP-маршруты нарушат доступ.</div> : null}
         <label className="mikrotik-confirm-row">
           <input type="checkbox" checked={backupConfirmed} onChange={(event) => setBackupConfirmed(event.target.checked)} />
           <span>Зашифрованный backup скачан с MikroTik и резервный доступ проверен.</span>
         </label>
+        {awgScenario ? <label className="mikrotik-confirm-row">
+          <input type="checkbox" checked={tunnelConfirmed} onChange={(event) => setTunnelConfirmed(event.target.checked)} />
+          <span>В контейнере проверены свежий AWG handshake, передача трафика и выход через VPN.</span>
+        </label> : null}
         {validationErrors.length > 0 ? (
           <div className="mikrotik-validation-list">
             {validationErrors.map((error) => <div key={error}><IconX size={14} />{error}</div>)}
@@ -358,13 +372,13 @@ export function MikroTikAssistant({
         <div className="mikrotik-command-stack">
           <CodePanel title="4. Подготовить в карантине" description="Создаёт фильтры и выключенное BGP-подключение. Маршруты ещё не принимаются." code={generated.prepare} onCopy={handleCopy} />
           <CodePanel title="5. Проверить конфигурацию" description="Только чтение. Сверьте значения и доступность VPN gateway." code={generated.checks} onCopy={handleCopy} />
-          <article className={`mikrotik-code-panel ${backupConfirmed ? "" : "is-locked"}`}>
+          <article className={`mikrotik-code-panel ${backupConfirmed && (!awgScenario || tunnelConfirmed) ? "" : "is-locked"}`}>
             <div className="panel-title mikrotik-code-title">
               <div>
                 <h2>6. Активировать BGP</h2>
-                <div className="panel-subtitle">Кнопка доступна только после подтверждения backup.</div>
+                <div className="panel-subtitle">Нужны backup{awgScenario ? " и проверенный AWG-туннель" : ""}.</div>
               </div>
-              <button className="primary-button mikrotik-copy-button" type="button" disabled={!backupConfirmed} onClick={() => handleCopy("Активация BGP", generated.activate)}>
+              <button className="primary-button mikrotik-copy-button" type="button" disabled={!backupConfirmed || (awgScenario && !tunnelConfirmed)} onClick={() => handleCopy("Активация BGP", generated.activate)}>
                 <IconShieldCheck size={15} />
                 Скопировать
               </button>
