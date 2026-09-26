@@ -226,6 +226,7 @@ class ReleaseMetadataTests(unittest.TestCase):
 
     def test_gobgp_build_is_commit_pinned_and_uses_patched_modules(self) -> None:
         build_script = (ROOT / "docker" / "build-gobgp.sh").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfiles = [
             (ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8"),
             (ROOT / "docker" / "gobgp.Dockerfile").read_text(encoding="utf-8"),
@@ -245,6 +246,10 @@ class ReleaseMetadataTests(unittest.TestCase):
                     self.assertIn(value, dockerfile)
             self.assertIn("COPY docker/build-gobgp.sh", dockerfile)
             self.assertNotIn("go install github.com/osrg/gobgp", dockerfile)
+
+        self.assertEqual(compose.count("GOBGP_VERSION: v4.9.0"), 2)
+        self.assertNotIn("GOBGP_VERSION: v4.7.0", compose)
+        self.assertIn("GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1", compose)
 
         self.assertIn('rev-parse "refs/tags/${GOBGP_VERSION}"', build_script)
         self.assertIn('test "$(git -C /src/gobgp rev-parse HEAD)" = "${GOBGP_REF}"', build_script)
