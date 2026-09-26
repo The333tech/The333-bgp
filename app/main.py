@@ -545,7 +545,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.90b"
+    return "0.90.1b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
@@ -3970,7 +3970,8 @@ async def api_product_update_status(_: str = Depends(require_auth)) -> JSONRespo
     current_version = read_product_version()
     ready = False
     if public.get("status") == "succeeded" and public.get("version") == current_version:
-        ready = bool((await asyncio.to_thread(build_readiness_payload)).get("ready"))
+        readiness, _ = await asyncio.to_thread(build_readiness_payload)
+        ready = bool(readiness.get("ready"))
     return JSONResponse({"operation": public or None, "current_version": current_version,
                          "ready": ready,
                          "blocked": public.get("status") in {*ACTIVE_STATUSES, "queued"}},
