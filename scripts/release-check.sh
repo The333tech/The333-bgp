@@ -56,6 +56,7 @@ required_files=(
   "SECURITY.md"
   "VERSION"
   "CHANGELOG.md"
+  "docs/MIKROTIK_AWG.md"
   "docker-compose.yml"
   "docker-compose.portal.yml"
   "docker-compose.tls.yml"

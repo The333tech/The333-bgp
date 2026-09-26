@@ -82,7 +82,7 @@ class EnvMigrationTests(unittest.TestCase):
                 migrated,
             )
             self.assertIn("BGP_TCP_MD5_CONFIGURED=true", migrated)
-            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", migrated)
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=2", migrated)
             self.assertIn("BGP_TTL_SECURITY_ENABLED=true", migrated)
             self.assertIn("UPDATE_MIN_FREE_BYTES=1073741824", migrated)
@@ -127,7 +127,7 @@ class EnvMigrationTests(unittest.TestCase):
             self.assertIn("THE333_BIND_IP=192.168.1.10", migrated)
             self.assertIn("BGP_TTL_SECURITY_ENABLED=false", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=1", migrated)
-            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", migrated)
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", migrated)
             self.assertIn("UPDATE_MIN_FREE_BYTES=1073741824", migrated)
 
     def test_migration_preserves_custom_update_disk_floor(self) -> None:

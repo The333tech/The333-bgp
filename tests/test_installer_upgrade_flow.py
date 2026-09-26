@@ -517,6 +517,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         backup = self.root / "verified-backup.tar.gz"
         release_dir = self.root / "release-download" / "src"
         release_dir.mkdir(parents=True)
+        self._write(release_dir / ".env.example", "GOBGP_CORE_IMAGE_VERSION=4.9.0-r1\n")
         harness = self.root / "run-early-update-failure.sh"
         self._write(
             harness,
@@ -829,22 +830,24 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 fi
                 unset UPDATE_RECOMMENDED_FREE_BYTES
                 GOBGP_CORE_IMAGE_VERSION=test
-                check_update_disk_space
+                check_update_disk_space "${TEST_TARGET_CORE:-}"
                 """
             ).lstrip(),
             0o755,
         )
 
         cases = (
-            (True, 1024, "", True),
-            (True, 1023, "", False),
-            (False, 2048, "", True),
-            (False, 2047, "", False),
-            (True, 1024, "2147483648", True),
-            (True, 1536, "1610612736", True),
-            (True, 1535, "1610612736", False),
+            (True, 1024, "", "", True),
+            (True, 1023, "", "", False),
+            (False, 2048, "", "", True),
+            (False, 2047, "", "", False),
+            (True, 1024, "2147483648", "", True),
+            (True, 1536, "1610612736", "", True),
+            (True, 1535, "1610612736", "", False),
+            (True, 2047, "", "4.9.0-r1", False),
+            (True, 2048, "", "4.9.0-r1", True),
         )
-        for core_present, free_mb, configured_min, should_pass in cases:
+        for core_present, free_mb, configured_min, target_core, should_pass in cases:
             with self.subTest(
                 core_present=core_present,
                 free_mb=free_mb,
@@ -854,6 +857,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 environment["TEST_CORE_PRESENT"] = str(core_present).lower()
                 environment["TEST_FREE_KB"] = str(free_mb * 1024)
                 environment["TEST_CONFIGURED_MIN"] = configured_min
+                environment["TEST_TARGET_CORE"] = target_core
                 result = subprocess.run(
                     ["bash", str(harness), str(patched)],
                     cwd=self.root,

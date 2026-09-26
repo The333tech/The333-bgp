@@ -16,14 +16,8 @@ export type BgpPeerMode = "direct" | "multihop";
 export const PREFLIGHT_COMMANDS = [
   "# Только чтение. Команды не меняют RouterOS.",
   "/system/resource/print",
-  "/system/routerboard/print",
-  "/system/package/print detail",
+  "/system/package/print",
   "/system/device-mode/print",
-  "/disk/print detail",
-  "/container/print detail",
-  "/interface/veth/print detail",
-  "/routing/bgp/connection/print detail",
-  "/routing/filter/rule/print detail",
 ].join("\n");
 
 export const RESERVED_PREFIXES = [
@@ -76,7 +70,8 @@ export function parseRouterFacts(raw: string): RouterFacts {
   const containerLine = text
     .split(/\r?\n/)
     .find((line) => /(?:name\s*=\s*"?container"?|\bcontainer\b.*\b[0-9]+\.[0-9]+)/i.test(line));
-  const packageOutputPresent = /name\s*=\s*"?routeros"?/i.test(text);
+  const packageOutputPresent = /name\s*=\s*"?routeros"?/i.test(text)
+    || /^\s*\d+\s+routeros\s+[0-9]+\.[0-9]+/im.test(text);
   const modeMatch = text.match(/(?:^|\s)container\s*[:=]\s*(yes|no)/i);
 
   return {
@@ -227,6 +222,12 @@ export function buildMikroTikCommands({
   const prepare = [
     "# Этап 1. Безопасная подготовка RouterOS 7.",
     "# Соединение создаётся выключенным и с карантинным reject-фильтром.",
+    `:if ([:len [/routing/bgp/connection/find where name="${connectionName}"]] > 0) do={ :error "The333-BGP: connection name already exists; inspect it, do not overwrite" }`,
+    `:if ([:len [/routing/filter/rule/find where chain="${quarantineChain}"]] > 0) do={ :error "The333-BGP: quarantine chain already exists; inspect it" }`,
+    `:if ([:len [/routing/filter/rule/find where chain="${activeChain}"]] > 0) do={ :error "The333-BGP: active filter chain already exists; inspect it" }`,
+    ...(legacySyntax ? [] : [
+      `:if ([:len [/routing/bgp/instance/find where name="${instanceName}"]] > 0) do={ :error "The333-BGP: BGP instance name already exists; inspect it" }`,
+    ]),
     `:if ([:len [/routing/filter/rule/find where comment="the333: quarantine"]] = 0) do={ /routing/filter/rule/add chain=${quarantineChain} rule="reject" comment="the333: quarantine" }`,
     ...reservedRules,
     `:if ([:len [/routing/filter/rule/find where comment="the333: accept service routes"]] = 0) do={ /routing/filter/rule/add chain=${activeChain} rule="if (afi ipv4 && bgp-communities includes ${community.trim()} && dst-len>=8 && dst-len<=32) { ${gatewayAction}accept }" comment="the333: accept service routes" }`,

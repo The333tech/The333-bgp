@@ -1,12 +1,12 @@
 services:
   the333-gobgp-core:
-    image: "${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}}"
+    image: "${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1}}"
     build:
       context: .
       dockerfile: docker/gobgp.Dockerfile
       args:
-        GOBGP_VERSION: v4.7.0
-        GOBGP_CORE_IMAGE_VERSION: "${GOBGP_CORE_IMAGE_VERSION:-4.7.0-r5}"
+        GOBGP_VERSION: v4.9.0
+        GOBGP_CORE_IMAGE_VERSION: "${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1}"
     container_name: the333-gobgp-core
     user: "${PUID}:${PGID}"
     init: true
@@ -60,7 +60,7 @@ services:
       context: .
       dockerfile: docker/backend.Dockerfile
       args:
-        GOBGP_VERSION: v4.7.0
+        GOBGP_VERSION: v4.9.0
         PRODUCT_VERSION: "${PRODUCT_VERSION:-dev}"
         VCS_REF: "${VCS_REF:-unknown}"
     container_name: the333-bgp-backend

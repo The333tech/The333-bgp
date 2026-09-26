@@ -21,6 +21,16 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn(matching[0].get("channel"), {"stable", "beta"})
         self.assertEqual(manifest.get("latest", {}).get(matching[0]["channel"]), version)
 
+    def test_awg_guide_is_packaged_without_private_config(self) -> None:
+        guide = (ROOT / "docs" / "MIKROTIK_AWG.md").read_text(encoding="utf-8")
+        release_check = (ROOT / "scripts" / "release-check.sh").read_text(encoding="utf-8")
+
+        self.assertIn('"docs/MIKROTIK_AWG.md"', release_check)
+        self.assertIn("Containers_3.1", guide)
+        self.assertIn("Чистая установка на другом роутере ещё не проверена", guide)
+        self.assertNotIn("PrivateKey =", guide)
+        self.assertNotIn("PresharedKey =", guide)
+
     def test_product_version_is_synchronized_across_release_files(self) -> None:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         manifest = json.loads((ROOT / "update-manifest.json").read_text(encoding="utf-8"))
@@ -150,7 +160,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertNotIn("python", gobgp.lower())
         self.assertNotIn("VCS_REF", core_service)
         self.assertIn('org.opencontainers.image.revision="${GOBGP_REF}"', gobgp)
-        self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.7.0-r5", gobgp)
+        self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", gobgp)
         portal_dockerfile = (ROOT / "portal" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("apk upgrade --no-cache", portal_dockerfile)
         self.assertIn("user[[:space:]]", portal_dockerfile)
@@ -216,13 +226,14 @@ class ReleaseMetadataTests(unittest.TestCase):
 
     def test_gobgp_build_is_commit_pinned_and_uses_patched_modules(self) -> None:
         build_script = (ROOT / "docker" / "build-gobgp.sh").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfiles = [
             (ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8"),
             (ROOT / "docker" / "gobgp.Dockerfile").read_text(encoding="utf-8"),
         ]
         expected_values = [
-            "GOBGP_TAG_REF=982fa664245fcd0dac3c8c408205bb2198b2cad3",
-            "GOBGP_REF=8b5edc2c55cbec9e7df33123a07811a119d44542",
+            "GOBGP_TAG_REF=96ef11aedd066031f1bacb2c587baaa769ba07eb",
+            "GOBGP_REF=01c5c4c27f9a1ac3b5927f433b5115f9b0eee791",
             "GOBGP_X_NET_VERSION=v0.59.0",
             "GOBGP_X_SYS_VERSION=v0.48.0",
             "GOBGP_X_TEXT_VERSION=v0.42.0",
@@ -235,6 +246,10 @@ class ReleaseMetadataTests(unittest.TestCase):
                     self.assertIn(value, dockerfile)
             self.assertIn("COPY docker/build-gobgp.sh", dockerfile)
             self.assertNotIn("go install github.com/osrg/gobgp", dockerfile)
+
+        self.assertEqual(compose.count("GOBGP_VERSION: v4.9.0"), 2)
+        self.assertNotIn("GOBGP_VERSION: v4.7.0", compose)
+        self.assertIn("GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1", compose)
 
         self.assertIn('rev-parse "refs/tags/${GOBGP_VERSION}"', build_script)
         self.assertIn('test "$(git -C /src/gobgp rev-parse HEAD)" = "${GOBGP_REF}"', build_script)
@@ -388,6 +403,8 @@ class ReleaseMetadataTests(unittest.TestCase):
             controller.index("check_update_disk_space", controller.index("update_project()")),
             controller.index("make_backup", controller.index("update_project()")),
         )
+        self.assertLess(update_project.index('target_core_version="$(awk'), update_project.index('check_update_disk_space "${target_core_version}"'))
+        self.assertLess(update_project.index('check_update_disk_space "${target_core_version}"'), update_project.index('copy_release_files "${release_dir}"'))
 
     def test_optional_tls_overlay_keeps_private_key_outside_project(self) -> None:
         overlay = (ROOT / "docker-compose.tls.yml").read_text(encoding="utf-8")

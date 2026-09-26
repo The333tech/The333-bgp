@@ -119,7 +119,7 @@ class ImageDeliveryTests(unittest.TestCase):
             old_refs = image_refs("a")
             env_path = project / ".env"
             text = env_path.read_text(encoding="utf-8")
-            text += "GOBGP_CORE_IMAGE_VERSION=4.7.0-r5\n"
+            text += "GOBGP_CORE_IMAGE_VERSION=4.9.0-r1\n"
             for key, image_key in (("THE333_GOBGP_IMAGE", "core"),
                                    ("THE333_BACKEND_IMAGE", "backend"),
                                    ("THE333_PORTAL_IMAGE", "portal")):
@@ -139,12 +139,39 @@ class ImageDeliveryTests(unittest.TestCase):
             self.assertIn(f"THE333_PORTAL_IMAGE={new_refs['portal']}", migrated)
             self.assertNotIn(new_refs["core"], migrated)
 
+    def test_prebuilt_upgrade_replaces_core_when_its_version_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = self._project(Path(directory), "prebuilt", version="0.85.1b")
+            old_refs = image_refs("a")
+            env_path = project / ".env"
+            text = env_path.read_text(encoding="utf-8")
+            text += "GOBGP_CORE_IMAGE_VERSION=4.7.0-r5\n"
+            for key, image_key in (("THE333_GOBGP_IMAGE", "core"),
+                                   ("THE333_BACKEND_IMAGE", "backend"),
+                                   ("THE333_PORTAL_IMAGE", "portal")):
+                text = text.replace(f"{key}=", f"{key}={old_refs[image_key]}")
+            env_path.write_text(text, encoding="utf-8")
+            new_refs = image_refs("b")
+            (project / "update-manifest.json").write_text(
+                json.dumps({"versions": [{"version": "0.90b", "images": new_refs}]}),
+                encoding="utf-8",
+            )
+
+            result = self._run_migration(project, "0.90b")
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            migrated = env_path.read_text(encoding="utf-8")
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", migrated)
+            for reference in new_refs.values():
+                self.assertIn(reference, migrated)
+            for reference in old_refs.values():
+                self.assertNotIn(reference, migrated)
+
     def test_prebuilt_upgrade_does_not_preserve_invalid_core_reference(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = self._project(Path(directory), "prebuilt")
             env_path = project / ".env"
             text = env_path.read_text(encoding="utf-8")
-            text += "GOBGP_CORE_IMAGE_VERSION=4.7.0-r5\n"
+            text += "GOBGP_CORE_IMAGE_VERSION=4.9.0-r1\n"
             text = text.replace("THE333_GOBGP_IMAGE=", "THE333_GOBGP_IMAGE=untrusted/core:latest")
             env_path.write_text(text, encoding="utf-8")
             new_refs = image_refs("b")

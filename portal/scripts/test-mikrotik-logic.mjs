@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   RESERVED_PREFIXES,
+  PREFLIGHT_COMMANDS,
   buildMikroTikCommunityFilterCommands,
   buildMikroTikCommands,
   isAsn,
@@ -49,6 +50,27 @@ assert.equal(withoutContainer.containerPackage, false);
 assert.equal(withoutContainer.containerMode, false);
 assert.equal(versionAtLeast(withoutContainer, 7, 23, 1), true);
 
+const currentTable = parseRouterFacts(`
+version: 7.24.4 (stable)
+architecture-name: arm
+board-name: RB3011UiAS
+Columns: NAME, VERSION
+0 container 7.24.4
+1 routeros 7.24.4
+container: yes
+`);
+assert.equal(currentTable.containerPackage, true);
+assert.equal(currentTable.containerMode, true);
+const missingPackage = parseRouterFacts(`
+version: 7.24.4 (stable)
+architecture-name: arm
+Columns: NAME, VERSION
+0 routeros 7.24.4
+container: no
+`);
+assert.equal(missingPackage.containerPackage, false);
+assert.doesNotMatch(PREFLIGHT_COMMANDS, /show-sensitive|routerboard|print detail|bgp\/connection|filter\/rule/i);
+
 assert.equal(isIpv4("192.168.1.1"), true);
 assert.equal(isIpv4("192.168.1.256"), false);
 assert.equal(isIpv4("1.2.3"), false);
@@ -90,6 +112,8 @@ assert.match(currentCommands.prepare, /routing\/bgp\/instance\/add name=the333-b
 assert.match(currentCommands.prepare, /instance=the333-bgp/);
 assert.match(currentCommands.prepare, /local\.address=192\.0\.2\.1/);
 assert.match(currentCommands.prepare, /set gw 172\.18\.20\.2; accept/);
+assert.match(currentCommands.prepare, /connection name already exists; inspect it, do not overwrite/);
+assert.match(currentCommands.prepare, /active filter chain already exists; inspect it/);
 assert.match(currentCommands.activate, /input\.filter=the333-bgp-in disabled=no/);
 assert.match(currentCommands.activate, /prefix-count/);
 assert.doesNotMatch(currentCommands.activate, /routing-protocol=bgp/);

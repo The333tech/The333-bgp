@@ -4,10 +4,10 @@
 
 The333-BGP поднимает GoBGP speaker на Linux VM, собирает маршруты из источников и модулей сервисов, дедуплицирует/агрегирует их и публикует в MikroTik через BGP. Управление идёт через веб-портал: источники маршрутов, модули сервисов, Community-профили, диагностика, история, резервные копии, обновления и пошаговый помощник MikroTik.
 
-<p align="center"><kbd><a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.85.1b-8e44ad?style=flat-square"></a></kbd>&nbsp;<kbd><a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a></kbd>&nbsp;<kbd><a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a></kbd>&nbsp;<kbd><a href=".github/workflows/release.yml"><img alt="SBOM" src="https://img.shields.io/badge/SBOM-SPDX-546e7a?style=flat-square"></a></kbd><br><kbd><a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a></kbd>&nbsp;<kbd><a href="docs/INSTALL.md"><img alt="MikroTik" src="https://img.shields.io/badge/MikroTik-RouterOS%20v7-c88616?style=flat-square"></a></kbd>&nbsp;<kbd><a href="docker/backend.Dockerfile"><img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776ab?style=flat-square&logo=python&logoColor=white"></a></kbd>&nbsp;<kbd><a href="portal/package.json"><img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-3c873a?style=flat-square&logo=node.js&logoColor=white"></a></kbd><br><kbd><a href="https://github.com/osrg/gobgp"><img alt="GoBGP" src="https://img.shields.io/badge/GoBGP-v4.7.0-00a6a6?style=flat-square"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml/badge.svg?branch=main"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml"><img alt="Release" src="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml/badge.svg"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml/badge.svg?branch=main"></a></kbd></p>
+<p align="center"><kbd><a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.90b-8e44ad?style=flat-square"></a></kbd>&nbsp;<kbd><a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a></kbd>&nbsp;<kbd><a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a></kbd>&nbsp;<kbd><a href=".github/workflows/release.yml"><img alt="SBOM" src="https://img.shields.io/badge/SBOM-SPDX-546e7a?style=flat-square"></a></kbd><br><kbd><a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a></kbd>&nbsp;<kbd><a href="docs/MIKROTIK_AWG.md"><img alt="MikroTik" src="https://img.shields.io/badge/MikroTik-RouterOS%20v7-c88616?style=flat-square"></a></kbd>&nbsp;<kbd><a href="docker/backend.Dockerfile"><img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776ab?style=flat-square&logo=python&logoColor=white"></a></kbd>&nbsp;<kbd><a href="portal/package.json"><img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-3c873a?style=flat-square&logo=node.js&logoColor=white"></a></kbd><br><kbd><a href="https://github.com/osrg/gobgp/releases/tag/v4.9.0"><img alt="GoBGP" src="https://img.shields.io/badge/GoBGP-v4.9.0-00a6a6?style=flat-square"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml/badge.svg?branch=main"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml"><img alt="Release" src="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml/badge.svg"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml/badge.svg?branch=main"></a></kbd></p>
 
 > [!NOTE]
-> **v0.85.1b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Рабочий стенд на отдельной VM в локальной сети публикует маршруты в MikroTik больше месяца; установка сторонним пользователем пока не подтверждена.
+> **v0.90b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Рабочий стенд на отдельной VM в локальной сети публикует маршруты в MikroTik больше месяца; установка сторонним пользователем пока не подтверждена. Обновление с предыдущей версии меняет GoBGP Core и кратко прерывает BGP-сессию.
 
 ## Требования
 
@@ -25,7 +25,7 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 
 Основное место требуется Docker и процессу обновления:
 
-| Что занимает место | Ориентир для `v0.85.1b` |
+| Что занимает место | Ориентир по рабочему стенду до `v0.90b` |
 |---|---:|
 | Рабочие Docker images | около 1 ГБ |
 | Docker build cache | не требуется в prebuilt-режиме; около 0,5 ГБ при source-сборке |
@@ -41,7 +41,7 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 - **4 ГБ свободно** — жёсткий минимум source-установки с готовым Docker;
 - **5 ГБ свободно** — жёсткий минимум source-установки вместе с Docker;
 - **1 ГБ свободно** — минимум для обычного update, который переиспользует установленный routing-core;
-- **2 ГБ свободно** — минимум для update, если образ routing-core отсутствует и требуется его полная сборка;
+- **2 ГБ свободно** — минимум для update при смене GoBGP Core, в том числе при переходе на `v0.90b`; рекомендуется 4 ГБ;
 - **3 ГБ свободно** — минимум для repair с повторной сборкой;
 - **6–8 ГБ свободно** рекомендуется для спокойной эксплуатации, обновлений ОС, роста Docker cache, истории данных и нескольких циклов обновления без срочной очистки.
 
@@ -102,7 +102,7 @@ BGP:     IP_VM:179
 - **Бэкапы**: создание, скачивание, удаление и восстановление через портал; автобэкап по расписанию создаёт новый архив только после реального изменения состояния.
 - **Runtime**: портал показывает uptime Portal, Backend и GoBGP через ограниченный host-side API без Docker socket в контейнерах.
 - **Обновления**: проверка версий и отображение этапов обновления прямо на странице; после проверки готовности новой версии портал перезагружается.
-- **Защита обновления**: проверенный релиз, согласованный backup с краткой паузой только Backend, сохраняемое состояние этапов, блокировка изменений, проверка готовности и автоматический rollback кода, `.env`, `config` и `data`; GoBGP продолжает публиковать маршруты.
+- **Защита обновления**: проверенный релиз, согласованный backup, сохраняемое состояние этапов, блокировка изменений, проверка готовности и автоматический rollback кода, `.env`, `config` и `data`. GoBGP остаётся онлайн только если версия routing-core не меняется; при переходе на `v0.90b` BGP-сессия временно прервётся.
 - **Изоляция updater**: Docker socket не монтируется в контейнеры; backend обращается к узкому host-side API только через Unix socket и отдельный token.
 - **BGP continuity**: версия routing-core отделена от версии портала, поэтому обычные UI/backend-обновления не перезапускают GoBGP без необходимости.
 - **Direct eBGP через Docker**: MikroTik остаётся в штатном режиме `multihop=no`; единственный Docker bridge hop учитывается минимальным транспортным TTL внутри GoBGP и не превращает peer в routed multihop.
@@ -156,6 +156,7 @@ cd /opt/the333-bgp
 ## Документация
 
 - [Полная инструкция установки](docs/INSTALL.md)
+- [MikroTik + AmneziaWG-контейнер](docs/MIKROTIK_AWG.md)
 - [Как внести вклад](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)

@@ -143,7 +143,7 @@ jobs:
           build-args: |
             PRODUCT_VERSION=${{ steps.version.outputs.version }}
             VCS_REF=${{ github.sha }}
-            GOBGP_CORE_IMAGE_VERSION=4.7.0-r5
+            GOBGP_CORE_IMAGE_VERSION=4.9.0-r1
           cache-from: type=gha,scope=runtime-${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=runtime-${{ matrix.service }}
           provenance: mode=max
