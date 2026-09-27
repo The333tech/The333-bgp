@@ -594,6 +594,16 @@ function compareProductVersions(a?: string | null, b?: string | null): number {
   return 0;
 }
 
+function currentUpdateVersions(versions: ProductUpdateVersion[], latest?: ProductUpdatesResponse["latest"]): ProductUpdateVersion[] {
+  return (["stable", "beta"] as const).flatMap((channel) => {
+    const inChannel = versions.filter((version) => version.channel === channel);
+    const selected = inChannel.find((version) => version.version === latest?.[channel])
+      ?? inChannel.reduce<ProductUpdateVersion | null>((newest, version) =>
+        !newest || compareProductVersions(version.version, newest.version) > 0 ? version : newest, null);
+    return selected ? [selected] : [];
+  });
+}
+
 function productUpdateNotice(updates: ProductUpdatesResponse | null): ProductUpdateVersion | null {
   if (!updates?.ok || !updates.manifest_url || updates.manifest_unavailable) return null;
 
@@ -6776,8 +6786,10 @@ function UpdatesPage({ auth, onStart }: { auth: AuthState; onStart: (channel: st
   const [statusText, setStatusText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const fallbackVersions = UPDATE_VERSIONS as ProductUpdateVersion[];
-  const versions = updates?.versions?.length ? updates.versions : fallbackVersions;
-  const selectedVersion = versions.find((version) => version.version === selectedVersionId) ?? versions[0];
+  const versions = currentUpdateVersions(updates?.versions?.length ? updates.versions : fallbackVersions, updates?.latest);
+  const selectedVersion = versions.find((version) => version.version === selectedVersionId)
+    ?? versions.find((version) => version.channel === updates?.current_channel)
+    ?? versions[0];
   const currentVersion = updates?.current_version ?? PRODUCT_VERSION;
   const currentChannel = updates?.current_channel ?? "beta";
   const updateStateKnown = updates !== null;
@@ -6804,11 +6816,13 @@ function UpdatesPage({ auth, onStart }: { auth: AuthState; onStart: (channel: st
     try {
       const payload = await apiFetch<ProductUpdatesResponse>("/api/product/updates", auth);
       setUpdates(payload);
+      const available = currentUpdateVersions(payload.versions ?? [], payload.latest);
       setSelectedVersionId((current) => {
-        if (payload.versions?.some((version) => version.version === current)) return current;
-        return payload.latest?.stable || payload.versions?.[0]?.version || PRODUCT_VERSION;
+        if (available.some((version) => version.version === current)) return current;
+        return available.find((version) => version.channel === payload.current_channel)?.version
+          ?? available[0]?.version ?? PRODUCT_VERSION;
       });
-      const hasNewer = (payload.versions ?? []).some(
+      const hasNewer = available.some(
         (version) => compareProductVersions(version.version, payload.current_version ?? PRODUCT_VERSION) > 0
       );
       setStatusText(
@@ -6878,7 +6892,7 @@ function UpdatesPage({ auth, onStart }: { auth: AuthState; onStart: (channel: st
             <div>
               <h2>Доступные версии</h2>
               <div className="panel-subtitle">
-                Stable — обычные обновления. Beta — ранний доступ. Предыдущие версии доступны для changelog; восстановление выполняется из бэкапа.
+                Stable — обычные обновления. Beta — ранний доступ. Здесь показана последняя версия каждого канала; предыдущие выпуски доступны на GitHub. Восстановление выполняется из бэкапа.
               </div>
             </div>
             <span className={`pill ${!updateStateKnown ? "" : manifestAvailable && updateEnabled && !availableUpdate ? "ok" : "warn"}`}>
