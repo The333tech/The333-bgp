@@ -2,20 +2,21 @@
   "product": "The333-BGP",
   "latest": {
     "stable": null,
-    "beta": "0.90.1b"
+    "beta": "0.90.2b"
   },
   "versions": [
     {
-      "version": "0.90.1b",
-      "title": "v0.90.1b",
+      "version": "0.90.2b",
+      "title": "v0.90.2b",
       "channel": "beta",
       "status": "текущая beta",
       "date": "2026-09-27",
       "recommended": true,
-      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.90.1b/the333-bgp-v0.90.1b.tar.gz",
+      "archive_url": "https://github.com/The333tech/The333-bgp/releases/download/v0.90.2b/the333-bgp-v0.90.2b.tar.gz",
       "sha256": "",
       "images": {},
       "changelog": [
+        "После успешного обновления портал перезагружается без предупреждения о ручном уходе со страницы; защита во время обновления сохраняется.",
         "Исправлен опрос статуса после успешного обновления: портал получает readiness и завершает окно ожидания.",
         "GoBGP Core 4.9.0: при переходе с 4.7.0 BGP-сессия кратко прерывается и маршруты восстанавливаются после проверки готовности.",
         "Перед активацией релиза updater повторно проверяет свободное место с учётом версии routing-core из скачанного архива.",

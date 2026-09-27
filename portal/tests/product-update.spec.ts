@@ -44,6 +44,11 @@ test("update owns progress, survives reconnect and reloads exactly once", async 
   const server = await fixture(context);
   await start(page);
   await expect(page.getByRole("dialog")).toContainText("Создание резервной копии");
+  expect(await page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  })).toBe(true);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.keyboard.press("Tab");
@@ -59,12 +64,18 @@ test("update owns progress, survives reconnect and reloads exactly once", async 
   await expect(page.getByLabel("Пароль портала")).not.toBeVisible();
   let reloads = 0;
   page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) reloads += 1; });
+  await page.evaluate(() => {
+    window.addEventListener("beforeunload", (event) => {
+      sessionStorage.setItem("the333.test.update-reload-warned", String(event.defaultPrevented));
+    }, { once: true });
+  });
   server.operation = { ...server.operation, status: "succeeded", stage: "readiness" };
   await expect(page.getByRole("dialog")).toContainText("Ожидаем готовности новой версии");
   expect(reloads).toBe(0);
   server.ready = true;
   await expect.poll(() => reloads).toBe(1);
   await expect(page.getByRole("dialog")).not.toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem("the333.test.update-reload-warned"))).toBe("false");
   expect(server.posts).toBe(1);
 });
 
