@@ -2,7 +2,7 @@ import { test, expect, BrowserContext, Page } from "playwright/test";
 
 async function fixture(context: BrowserContext) {
   const session = { csrf_token: "test", expires_at: "2099-01-01T00:00:00Z" };
-  const server = { operation: null as any, posts: 0, offline: false, expired: false, ready: false, reject: false };
+  const server = { operation: null as any, posts: 0, offline: false, expired: false, ready: false, reject: false, omitLatest: false };
   await context.route("**/backend/**", async (route) => {
     const path = new URL(route.request().url()).pathname.replace("/backend", "");
     if (path === "/auth/session") return route.fulfill({ json: session });
@@ -16,8 +16,14 @@ async function fixture(context: BrowserContext) {
     }
     if (path === "/api/product/updates") return route.fulfill({ json: {
       ok: true, current_version: "0.84.1b", current_channel: "beta", update_enabled: true,
-      manifest_url: "https://example.com/manifest.json", latest: { beta: "0.85b" },
-      versions: [{ version: "0.85b", channel: "beta", title: "v0.85b", changelog: ["Обновление"], status: "доступна" }],
+      manifest_url: "https://example.com/manifest.json",
+      latest: server.omitLatest ? undefined : { stable: "0.84", beta: "0.85b" },
+      versions: [
+        { version: "0.85b", channel: "beta", title: "v0.85b", changelog: ["Обновление"], status: "доступна" },
+        { version: "0.84.1b", channel: "beta", title: "v0.84.1b", status: "доступна" },
+        { version: "0.84", channel: "stable", title: "v0.84", status: "доступна" },
+        { version: "0.83", channel: "stable", title: "v0.83", status: "доступна" },
+      ],
     } });
     if (path === "/api/product/update/job") {
       server.posts += 1;
@@ -39,6 +45,28 @@ async function start(page: Page) {
   await page.getByRole("button", { name: "Обновить выбранную версию" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
 }
+
+test("update picker shows only the latest release of each channel", async ({ page, context }) => {
+  await fixture(context);
+  await page.goto("/");
+  await page.getByTitle("Открыть страницу обновлений портала").click();
+  const choices = page.locator(".updates-version-list .updates-version-row");
+  await expect(choices).toHaveCount(2);
+  await expect(choices).toContainText(["v0.84", "v0.85b"]);
+  await expect(page.getByRole("radio", { name: /v0\.85b/ })).toBeChecked();
+  await expect(page.getByRole("button", { name: "Обновить выбранную версию" })).toBeEnabled();
+});
+
+test("update picker falls back to newest versions when latest metadata is missing", async ({ page, context }) => {
+  const server = await fixture(context);
+  server.omitLatest = true;
+  await page.goto("/");
+  await page.getByTitle("Открыть страницу обновлений портала").click();
+  const choices = page.locator(".updates-version-list .updates-version-row");
+  await expect(choices).toHaveCount(2);
+  await expect(choices).toContainText(["v0.84", "v0.85b"]);
+  await expect(page.getByRole("radio", { name: /v0\.85b/ })).toBeChecked();
+});
 
 test("update owns progress, survives reconnect and reloads exactly once", async ({ page, context }, testInfo) => {
   const server = await fixture(context);
