@@ -48,6 +48,7 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
   const pendingId = useRef(pending);
   const pendingAt = useRef(Number(stored(pendingAtKey)) || Date.now());
   const submitting = useRef(false);
+  const plannedReload = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const operation = status?.operation;
   const running = Boolean(pending || status?.blocked || (visible && operation?.status === "succeeded" && !status?.ready));
@@ -104,6 +105,7 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
             payload.current_version === payload.operation.version && stored("the333.product-update.reloaded") !== id) {
           store("the333.product-update.reloaded", id);
           store(storageKey, null);
+          plannedReload.current = true;
           window.location.reload();
           return;
         }
@@ -134,13 +136,16 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
 
   useEffect(() => {
     if (!locked) return;
-    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!plannedReload.current) event.preventDefault();
+    };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [locked]);
 
   const start = useCallback(async (channel: string, version: string) => {
     if (!auth || submitting.current || pending || status?.blocked) return;
+    plannedReload.current = false;
     submitting.current = true;
     const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
     watchedId.current = id;
