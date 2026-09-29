@@ -7,8 +7,17 @@ export type ReadyResponse = {
   advertised_count: number;
   last_good_count: number;
   status_ok: boolean;
+  publication?: PublicationStatus;
   errors: string[];
   time: string;
+};
+
+export type PublicationStatus = {
+  mode: "publishing" | "pausing" | "paused" | "resuming" | "unconfirmed";
+  confirmed: boolean;
+  peer_admin_state: "up" | "down" | "unknown";
+  peer_address: string;
+  updated_at: string | null;
 };
 
 export type DiagnosticsResponse = {
@@ -16,6 +25,7 @@ export type DiagnosticsResponse = {
   app: string;
   time: string;
   gobgp_ready: boolean;
+  publication?: PublicationStatus;
   gobgp_rib_count: number | null;
   sources_count: number | null;
   advertised_routes_summary?: {
