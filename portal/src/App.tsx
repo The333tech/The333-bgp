@@ -35,6 +35,7 @@ import {
 } from "./api/client";
 import {
   DiagnosticsResponse,
+  PublicationStatus,
   ReadyResponse,
   RouteDiffSection,
   RouteSetKind,
@@ -2279,6 +2280,7 @@ function Dashboard({
   const enabledSourceCount = countEnabledSources(data);
   const totalSourceCount = data.sources?.sources.length ?? diagnostics?.sources_count ?? null;
   const routeMismatch =
+    ready?.publication?.mode !== "paused" &&
     typeof publishedCount === "number" &&
     typeof ribCount === "number" &&
     publishedCount !== ribCount;
@@ -2305,7 +2307,7 @@ function Dashboard({
   const totalModuleCount = services
     ? serviceCatalog.length || servicesCache?.services_count
     : serviceRoutes?.services_count ?? (serviceStats.length || "—");
-  const backendOk = ready?.ready === true && (ready?.unconfigured === true || ready?.status_ok !== false);
+  const backendOk = ready?.ready === true && (ready?.publication?.mode === "paused" || ready?.unconfigured === true || ready?.status_ok !== false);
   const healthOk = backendOk && ready?.gobgp_ready === true && !routeMismatch;
   const lastUpdateOk = latestEvent ? latestEvent.ok : lastStatus?.ok;
   const disk = data.serverResources?.disk;
@@ -2333,8 +2335,8 @@ errors=${(ready?.errors ?? []).length > 0 ? (ready?.errors ?? []).join("; ") : "
     },
     {
       label: "BGP",
-      detail: ready?.gobgp_ready ? "GoBGP доступен" : "GoBGP недоступен",
-      tone: ready?.gobgp_ready ? "ok" : "bad",
+      detail: ready?.publication?.mode === "paused" ? "публикация остановлена" : ready?.gobgp_ready ? "GoBGP доступен" : "GoBGP недоступен",
+      tone: ready?.publication?.mode === "paused" ? "warn" : ready?.gobgp_ready ? "ok" : "bad",
       help: ready?.gobgp_ready ? undefined : `BGP:
 Источник данных: /backend/ready
 gobgp_ready=${String(ready?.gobgp_ready ?? "нет данных")}
@@ -2346,8 +2348,8 @@ gobgp_ready=${String(ready?.gobgp_ready ?? "нет данных")}
     },
     {
       label: "RIB и опубликованные",
-      detail: routeMismatch ? `${routeValue(publishedCount)} / ${routeValue(ribCount)}` : "количество маршрутов совпадает",
-      tone: routeMismatch ? "bad" : "ok",
+      detail: ready?.publication?.mode === "paused" ? "публикация приостановлена" : routeMismatch ? `${routeValue(publishedCount)} / ${routeValue(ribCount)}` : "количество маршрутов совпадает",
+      tone: ready?.publication?.mode === "paused" ? "warn" : routeMismatch ? "bad" : "ok",
       help: routeMismatch ? `RIB и опубликованные маршруты:
 Источник данных: /backend/ready
 advertised_count=${routeValue(publishedCount)}
@@ -6990,9 +6992,94 @@ function MikroTikPage({ data }: { data: PortalData }) {
   );
 }
 
+function PublicationControl({ auth, locked, onChanged }: {
+  auth: AuthState;
+  locked: boolean;
+  onChanged: () => void;
+}) {
+  const [status, setStatus] = useState<PublicationStatus | null>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setStatus(await apiFetch<PublicationStatus>("/api/routes/publication", auth));
+    } catch {
+      setStatus(null);
+    }
+  }, [auth]);
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 15000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (open && dialog.current && !dialog.current.open) dialog.current.showModal();
+  }, [open]);
+
+  const paused = status?.mode === "paused" && status.confirmed;
+  const uncertain = Boolean(status && status.mode !== "publishing" && !paused);
+  const action = paused ? "resume" : "pause";
+  const execute = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await apiFetch<PublicationStatus>(`/api/routes/publication/${action}`, auth, { method: "POST" }));
+      setOpen(false);
+      onChanged();
+    } catch (err) {
+      let message = "Не удалось подтвердить изменение BGP. Проверьте состояние пира.";
+      if (err instanceof ApiError) {
+        try {
+          const detail: unknown = JSON.parse(err.body).detail;
+          if (typeof detail === "string") message = detail;
+        } catch { /* A proxy can return a non-JSON error. */ }
+      }
+      setError(message);
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <>
+    <button className={`publication-button ${paused ? "paused" : ""}`} type="button"
+      disabled={locked || busy || !status} onClick={() => { setError(null); setOpen(true); }}
+      title="Управлять публикацией маршрутов через настроенный BGP-пир">
+      <IconPower size={18} stroke={2} />
+      <span>{!status ? "BGP: проверка состояния" : uncertain ? "Повторить остановку BGP" : paused ? "BGP: публикация остановлена" : "Экстренная пауза BGP"}</span>
+    </button>
+    {uncertain && <p className="publication-hint" role="alert">Остановка не подтверждена. Проверьте BGP-пир на MikroTik.</p>}
+    {open && createPortal(<dialog ref={dialog} className="product-update-dialog publication-dialog"
+      aria-labelledby="publication-title" onCancel={(event) => { if (busy) event.preventDefault(); else setOpen(false); }}>
+      <div className="panel-title">
+        <h2 id="publication-title">{paused ? "Возобновить публикацию?" : uncertain ? "Повторить остановку BGP?" : "Остановить публикацию BGP?"}</h2>
+        <button className="icon-button" type="button" title="Закрыть" aria-label="Закрыть" disabled={busy}
+          onClick={() => setOpen(false)}><IconX size={20} /></button>
+      </div>
+      <p>{uncertain ? "Предыдущая остановка не была подтверждена. Повторная команда отключит настроенный пир; после неё проверьте маршруты на MikroTik." : paused
+        ? "Последний удачный набор будет проверен в GoBGP до включения пира. Возобновление не подтверждает доступность VPN."
+        : `GoBGP отключит пир ${status?.peer_address ?? "—"}. Полученные MikroTik маршруты должны уйти после обработки отключения сессии. Другие правила роутера не меняются.`}</p>
+      {error && <p className="action-status-box bad" role="alert">{error}</p>}
+      <div className="publication-dialog-actions">
+        <button className="ghost-button" type="button" disabled={busy} onClick={() => setOpen(false)}>Отмена</button>
+        <button className={paused ? "primary-button" : "danger-button"} type="button" disabled={busy}
+          onClick={() => void execute()}>{busy ? "Проверяем GoBGP…" : paused ? "Возобновить" : "Остановить BGP"}</button>
+      </div>
+    </dialog>, document.body)}
+  </>;
+}
+
 function AppShell({
   activePage,
   setActivePage,
+  auth,
+  publicationLocked,
+  onPublicationChanged,
   data,
   children,
   portalTimeLabel,
@@ -7004,6 +7091,9 @@ function AppShell({
 }: {
   activePage: ActivePage;
   setActivePage: (page: ActivePage) => void;
+  auth: AuthState;
+  publicationLocked: boolean;
+  onPublicationChanged: () => void;
   data: PortalData;
   children: React.ReactNode;
   portalTimeLabel: string;
@@ -7077,13 +7167,13 @@ function AppShell({
             </div>
             <div>
               <span>BGP</span>
-              <strong className={statusClass(data.ready?.gobgp_ready)}>
-                {data.ready?.gobgp_ready ? "онлайн" : "офлайн"}
+              <strong className={data.ready?.publication?.mode === "paused" ? "warn" : statusClass(data.ready?.gobgp_ready)}>
+                {data.ready?.publication?.mode === "paused" ? "пауза" : data.ready?.gobgp_ready ? "онлайн" : "офлайн"}
               </strong>
             </div>
             <div>
               <span>Маршрутов</span>
-              <strong>{data.ready?.advertised_count ?? "—"}</strong>
+              <strong>{data.ready?.publication?.mode === "paused" ? "пауза" : data.ready?.advertised_count ?? "—"}</strong>
             </div>
             <div>
               <span>ASN сервиса</span>
@@ -7196,11 +7286,11 @@ function AppShell({
           </div>
           <div>
             <span>BGP</span>
-            <strong className={statusClass(data.ready?.gobgp_ready)}>{data.ready?.gobgp_ready ? "онлайн" : "офлайн"}</strong>
+            <strong className={data.ready?.publication?.mode === "paused" ? "warn" : statusClass(data.ready?.gobgp_ready)}>{data.ready?.publication?.mode === "paused" ? "пауза" : data.ready?.gobgp_ready ? "онлайн" : "офлайн"}</strong>
           </div>
           <div>
             <span>Маршруты</span>
-            <strong>{data.ready?.advertised_count ?? "—"}</strong>
+            <strong>{data.ready?.publication?.mode === "paused" ? "пауза" : data.ready?.advertised_count ?? "—"}</strong>
           </div>
           <div>
             <span>ASN</span>
@@ -7242,8 +7332,7 @@ function AppShell({
           <div className="page-title">
             <h1>{pageTitle}</h1>
           </div>
-
-
+          <PublicationControl auth={auth} locked={publicationLocked} onChanged={onPublicationChanged} />
         </div>
 
         <nav className="mobile-nav scroll-drag-x" aria-label="Мобильная навигация">
@@ -7557,6 +7646,9 @@ export default function App() {
       <AppShell
         activePage={activePage}
         setActivePage={setActivePage}
+        auth={auth}
+        publicationLocked={productUpdate.locked}
+        onPublicationChanged={() => void loadData()}
         data={data}
         portalTimeLabel={portalTimeLabel}
         timeZone={timeZone}
