@@ -91,7 +91,7 @@ def normalize_exclusions(values: list[str]) -> list[ipaddress.IPv4Network]:
         raise ValueError(f"не более {MAX_EXCLUSIONS} исключений")
     networks: list[ipaddress.IPv4Network] = []
     for value in values:
-        if not isinstance(value, str) or not value.strip():
+        if not isinstance(value, str) or not value.strip() or len(value) > 64:
             raise ValueError("исключение должно быть адресом IPv4 или CIDR")
         try:
             network = ipaddress.ip_network(value.strip(), strict=False)

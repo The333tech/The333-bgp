@@ -411,6 +411,31 @@ type JobStartResponse = {
   time?: string;
 };
 
+type RouteExclusionsStatus = {
+  ok: boolean;
+  active: string[];
+  pending: { exclusions: string[]; started_at: string } | null;
+};
+
+type RouteExclusionsPreview = {
+  ok: boolean;
+  exclusions: string[];
+  active_sha256: string;
+  current_count: number;
+  candidate_count: number;
+  pending: boolean;
+  change: {
+    current_sha256: string;
+    candidate_sha256: string;
+    added_prefixes: number;
+    removed_prefixes: number;
+    changed_communities: number;
+    coverage_added_addresses: number;
+    coverage_removed_addresses: number;
+    requires_approval: boolean;
+  };
+};
+
 type SystemBackupItem = {
   name: string;
   size_bytes?: number;
@@ -3428,6 +3453,149 @@ function RouteSetDropdown({
   );
 }
 
+function RouteExclusionsPanel({ auth, onApplied }: { auth: AuthState; onApplied: () => void }) {
+  const [status, setStatus] = useState<RouteExclusionsStatus | null>(null);
+  const [draft, setDraft] = useState("");
+  const [preview, setPreview] = useState<RouteExclusionsPreview | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const previewRequestId = useRef(0);
+
+  const loadStatus = useCallback(async (resetDraft = false) => {
+    const data = await apiFetch<RouteExclusionsStatus>("/api/routes/exclusions", auth);
+    setStatus(data);
+    if (resetDraft) setDraft(data.active.join("\n"));
+  }, [auth]);
+
+  useEffect(() => {
+    void loadStatus(true).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, [loadStatus]);
+
+  useEffect(() => {
+    void apiFetch<JobsResponse>("/api/jobs?limit=20", auth).then((result) => {
+      const active = result.jobs.find((job) => job.kind === "route_exclusions_apply" && jobIsActive(job));
+      if (active) {
+        setJobId(active.id);
+        setJobStatus(active.stage ?? "Выполняется");
+        setBusy(true);
+      }
+    }).catch(() => undefined);
+  }, [auth]);
+
+  useEffect(() => {
+    if (!jobId) return;
+    const timer = window.setInterval(() => {
+      void apiFetch<{ job: PortalJob }>(`/api/jobs/${encodeURIComponent(jobId)}`, auth)
+        .then(async ({ job }) => {
+          setJobStatus(job.stage ?? job.status ?? "Выполняется");
+          if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
+            window.clearInterval(timer);
+            setJobId(null);
+            setBusy(false);
+            await loadStatus(job.status === "succeeded");
+            if (job.status === "succeeded") {
+              setPreview(null);
+              onApplied();
+            } else {
+              setError(job.error ?? "Не удалось применить исключения. Проверь состояние и выполни новый предпросмотр.");
+            }
+          }
+        })
+        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [auth, jobId, loadStatus, onApplied]);
+
+  const previewChanges = async () => {
+    const requestId = ++previewRequestId.current;
+    setBusy(true);
+    setError(null);
+    setPreview(null);
+    try {
+      const exclusions = draft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const result = await apiFetch<RouteExclusionsPreview>("/api/routes/exclusions/preview", auth, {
+        method: "POST", body: JSON.stringify({ exclusions }),
+      });
+      if (requestId === previewRequestId.current) setPreview(result);
+    } catch (err) {
+      if (requestId === previewRequestId.current) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (requestId === previewRequestId.current) setBusy(false);
+    }
+  };
+
+  const applyChanges = async () => {
+    if (!preview) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await apiFetch<JobStartResponse>("/api/routes/exclusions/apply/job", auth, {
+        method: "POST",
+        body: JSON.stringify({
+          exclusions: preview.exclusions,
+          active_sha256: preview.active_sha256,
+          current_sha256: preview.change.current_sha256,
+          candidate_sha256: preview.change.candidate_sha256,
+        }),
+      });
+      setJobId(response.job.id);
+      setJobStatus(response.job.stage ?? "В очереди");
+    } catch (err) {
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <section className="panel-card route-exclusions-panel" aria-label="Исключения маршрутов">
+      <div className="panel-title">
+        <div>
+          <h2>Исключения маршрутов</h2>
+          <p>IPv4-адрес или CIDR в каждой строке. Исключения действуют на все источники и модули сервисов.</p>
+        </div>
+        <span className="pill">{status ? `${status.active.length} активных` : "загрузка"}</span>
+      </div>
+      {status?.pending && (
+        <div className="action-status-box bad" role="alert">
+          Предыдущее применение не завершено. Автообновление маршрутов заблокировано. Проверь состояние и выполни новый предпросмотр.
+        </div>
+      )}
+      <textarea
+        className="route-exclusions-input"
+        aria-label="IPv4-адреса и CIDR для исключения"
+        value={draft}
+        onChange={(event) => { previewRequestId.current += 1; setBusy(false); setDraft(event.target.value); setPreview(null); }}
+        maxLength={4096}
+        disabled={busy}
+        spellCheck={false}
+        placeholder="203.0.113.0/24"
+      />
+      <div className="route-exclusions-actions">
+        <button className="ghost-button" type="button" onClick={() => void previewChanges()} disabled={busy || !status}>
+          {busy && !jobId ? "Проверяю..." : "Предпросмотр"}
+        </button>
+        {preview && (
+          <button className="primary-button" type="button" onClick={() => void applyChanges()} disabled={busy}>
+            Подтвердить и применить
+          </button>
+        )}
+      </div>
+      {preview && (
+        <div className="route-exclusions-preview" aria-live="polite">
+          <strong>{formatCount(preview.current_count)} → {formatCount(preview.candidate_count)} маршрутов</strong>
+          <span>Добавлено: {formatCount(preview.change.added_prefixes)} · Удалено: {formatCount(preview.change.removed_prefixes)} · Community изменены: {formatCount(preview.change.changed_communities)}</span>
+          <span>Охват IPv4: +{formatCount(preview.change.coverage_added_addresses)} / −{formatCount(preview.change.coverage_removed_addresses)} адресов</span>
+          {preview.change.requires_approval && <strong>Значительное изменение. Применение возможно только после явного подтверждения.</strong>}
+        </div>
+      )}
+      {jobId && <div className="action-status-box" role="status">Применение: {jobStatus ?? "выполняется"}. Не запускай повторно обновление маршрутов.</div>}
+      {error && <div className="action-status-box bad" role="alert">{error}</div>}
+    </section>
+  );
+}
+
 function RoutesPage({
   auth,
   runtimeSettings,
@@ -3715,6 +3883,8 @@ function RoutesPage({
           </div>
         )}
       </section>
+
+      <RouteExclusionsPanel auth={auth} onApplied={() => { void loadRoutes(); void loadDiff(); }} />
 
       <div className="panel-card route-control-panel">
         <div className="panel-title">
