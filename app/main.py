@@ -7885,6 +7885,7 @@ def dns_resolve_ipv4(
         "resolve_retries": SERVICE_DNS_RESOLVE_RETRIES,
         "resolve_attempts": 0,
         "resolve_errors": [],
+        "resolve_status": "unavailable",
         "error": None,
         "warning": None,
     }
@@ -7916,10 +7917,16 @@ def dns_resolve_ipv4(
             }
             stat["ignored"] += len(resolved_ips - current_ips)
             resolve_ok = True
+            stat["resolve_status"] = "resolved"
             stat["current_ips"] = sorted(current_ips)
             break
 
         except Exception as e:
+            stat["resolve_status"] = (
+                "not_found" if isinstance(e, socket.gaierror) and e.errno == socket.EAI_NONAME
+                else "temporary_failure" if isinstance(e, socket.gaierror) and e.errno == socket.EAI_AGAIN
+                else "unavailable"
+            )
             LOGGER.info(
                 "dns resolve attempt failed for %s (%s, attempt %s/%s)",
                 domain,
@@ -7948,6 +7955,7 @@ def dns_resolve_ipv4(
 
             item["last_seen"] = now_value
             item["last_status"] = "current"
+            item.pop("stale_since", None)
             cached_ips[ip] = item
 
         # Mark disappeared IPs as stale but keep them during grace period.
@@ -7975,11 +7983,18 @@ def dns_resolve_ipv4(
         last_seen_ts = parse_iso_ts(item.get("last_seen"))
         stale_since_ts = parse_iso_ts(item.get("stale_since"))
 
+        # A failed lookup must not erase a fresh answer or renew its lease.
+        # Changed successful answers use stale_since; outages use last success.
+        if not resolve_ok and stale_since_ts is None and last_seen_ts is not None:
+            item["stale_since"] = item["last_seen"]
+            item["last_status"] = "stale"
+            stale_since_ts = last_seen_ts
+
         is_current = ip in current_ips
         within_grace = False
 
         if not is_current and stale_since_ts is not None:
-            within_grace = (now_ts - stale_since_ts) <= SERVICE_DNS_CACHE_GRACE_SECONDS
+            within_grace = 0 <= (now_ts - stale_since_ts) <= SERVICE_DNS_CACHE_GRACE_SECONDS
 
         if is_current or within_grace:
             active_ips.add(ip)

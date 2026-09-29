@@ -145,11 +145,28 @@ const profileCommands = buildMikroTikCommunityFilterCommands({
 });
 assert.match(profileCommands, /bgp-large-communities includes 64512:600:1/);
 assert.match(profileCommands, /BGP connection не найден или имя не уникально/);
-assert.match(profileCommands, /name="the333-bgp-vm"\] input\.filter=the333-bgp-profile-in/);
+assert.match(profileCommands, /name="the333-bgp-vm"\] input\.filter=the333-profile-64512-600-1/);
 assert.match(profileCommands, /input\.filter=the333-bgp-in/);
 assert.match(profileCommands, /prefix-count/);
 assert.doesNotMatch(profileCommands, /routing-protocol=bgp/);
-assert.equal((profileCommands.match(/the333 profile: reserved/g) ?? []).length, RESERVED_PREFIXES.length);
+assert.match(profileCommands, /jump the333-bgp-in/);
+assert.doesNotMatch(profileCommands, /\{ accept \}|filter\/rule\/remove|set gw/);
+assert.match(profileCommands, /base filter missing/);
+assert.match(profileCommands, /custom input filter; review configuration manually/);
+assert.match(profileCommands, /profile chain modified; inspect it/);
+assert.match(profileCommands, /name~"\^the333-bgp-vm\(-\[0-9\]\+\)\?\$"/);
+// Profile selection delegates to the same base chain with or without a custom gateway.
+assert.match(legacyCommands.prepare, /chain=the333-bgp-in .*\{ accept \}/);
+assert.match(currentCommands.prepare, /chain=the333-bgp-in .*set gw 172\.18\.20\.2/);
+assert.equal(profileCommands, buildMikroTikCommunityFilterCommands({
+  community: "64512:600:1", connectionName: "the333-bgp-vm", profileId: "ai-profile",
+}));
+const secondProfile = buildMikroTikCommunityFilterCommands({
+  community: "64512:600:2", connectionName: "the333-bgp-vm", profileId: "video",
+});
+assert.match(secondProfile, /input\.filter=the333-profile-64512-600-2/);
+assert.doesNotMatch(secondProfile, /filter\/rule\/remove|the333-profile-64512-600-1/);
+assert.match(secondProfile, /# \/routing\/bgp\/connection\/set .*input\.filter=the333-bgp-in/);
 assert.throws(
   () => buildMikroTikCommunityFilterCommands({ community: "64512:600", connectionName: "the333-bgp", profileId: "bad" }),
   /Large Community/,

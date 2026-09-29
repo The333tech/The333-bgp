@@ -153,27 +153,35 @@ export function buildMikroTikCommunityFilterCommands({
     throw new Error("Некорректное имя BGP connection");
   }
   const safeProfileId = isRouterOsObjectName(profileId) ? profileId : "selected";
-  const filterChain = "the333-bgp-profile-in";
+  // Immutable per-community gates can be shared without changing another peer.
+  const filterChain = `the333-profile-${community.replaceAll(":", "-")}`;
+  const gateRule = `if (afi ipv4 && bgp-large-communities includes ${community}) { jump the333-bgp-in }`;
+  const sessionPattern = `^${connectionName.replaceAll(".", "\\\\.")}(-[0-9]+)?$`;
   return [
     "# RouterOS v7. Выполняйте в Safe Mode после backup конфигурации.",
     `# Выбран профиль ${safeProfileId}: ${community}.`,
-    "# Создаём отдельную входящую цепочку и не меняем базовую the333-bgp-in.",
+    "# Профиль ограничивает набор; шлюз и защитные правила остаются в the333-bgp-in.",
+    "# Вставьте блок целиком: ошибка проверки отменяет последующие команды.",
+    "{",
     `:if ([:len [/routing/bgp/connection/find where name="${connectionName}"]] != 1) do={ :error "The333-BGP: BGP connection не найден или имя не уникально" }`,
-    `/routing/filter/rule/remove [find where chain="${filterChain}"]`,
-    ...RESERVED_PREFIXES.map((prefix, index) => (
-      `/routing/filter/rule/add chain=${filterChain} rule="if (dst in ${prefix}) { reject }" comment="the333 profile: reserved ${index + 1}"`
-    )),
-    `/routing/filter/rule/add chain=${filterChain} rule="if (afi ipv4 && bgp-large-communities includes ${community} && dst-len>=8 && dst-len<=32) { accept }" comment="the333 profile: ${safeProfileId}"`,
-    `/routing/filter/rule/add chain=${filterChain} rule="reject" comment="the333 profile: final reject"`,
+    ':if ([:len [/routing/filter/rule/find where chain="the333-bgp-in" and disabled=no]] = 0) do={ :error "The333-BGP: base filter missing; configure gateway and safety rules first" }',
+    `:local previous [/routing/bgp/connection/get [find where name="${connectionName}"] input.filter]`,
+    ':if (($previous != "the333-bgp-in") && ($previous != "the333-bgp-profile-in") && !($previous ~ "^the333-profile-[0-9]+-[0-9]+-[0-9]+$")) do={ :error "The333-BGP: custom input filter; review configuration manually" }',
+    `:local rules [/routing/filter/rule/find where chain="${filterChain}"]`,
+    `:if ([:len $rules] = 0) do={ /routing/filter/rule/add chain=${filterChain} rule="${gateRule}" comment="the333: community gate"; /routing/filter/rule/add chain=${filterChain} rule="reject" comment="the333: community gate end" } else={`,
+    ':if ([:len $rules] != 2) do={ :error "The333-BGP: profile chain modified; inspect it" }',
+    `:if (([/routing/filter/rule/get [:pick $rules 0] rule] != "${gateRule}") || ([/routing/filter/rule/get [:pick $rules 1] rule] != "reject") || [/routing/filter/rule/get [:pick $rules 0] disabled] || [/routing/filter/rule/get [:pick $rules 1] disabled]) do={ :error "The333-BGP: profile chain modified; inspect it" }`,
+    "}",
     `/routing/bgp/connection/set [find where name="${connectionName}"] input.filter=${filterChain}`,
-    `/routing/bgp/session/reset [find where name~"${connectionName}"]`,
+    `/routing/bgp/session/reset [find where name~"${sessionPattern}"]`,
+    "}",
     ":delay 5s",
     `/routing/bgp/connection/print detail where name="${connectionName}"`,
-    `/routing/bgp/session/print detail where name~"${connectionName}"`,
+    `/routing/bgp/session/print detail where name~"${sessionPattern}"`,
     "# В выводе session проверьте state=established и prefix-count: это число полученных маршрутов выбранного профиля.",
     "# Rollback к полному базовому набору:",
     `# /routing/bgp/connection/set [find where name="${connectionName}"] input.filter=the333-bgp-in`,
-    `# /routing/bgp/session/reset [find where name~"${connectionName}"]`,
+    `# /routing/bgp/session/reset [find where name~"${sessionPattern}"]`,
   ].join("\n");
 }
 
