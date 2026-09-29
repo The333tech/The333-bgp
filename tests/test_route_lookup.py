@@ -34,11 +34,16 @@ class RouteLookupTests(unittest.TestCase):
             "route_communities": {"1.1.1.0/24": ["64500:510:1"]},
         })
 
+    def lookup(self, query: str):
+        return self.client.post("/api/routes/lookup", json={"query": query})
+
     def test_ip_uses_longest_match_and_snapshot_attributes(self) -> None:
         self.save_snapshot()
 
-        payload = self.client.get("/api/routes/lookup", params={"q": "1.1.1.42"}).json()
+        response = self.lookup("1.1.1.42")
+        payload = response.json()
 
+        self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(payload["kind"], "ip")
         self.assertEqual(payload["snapshot_route_count"], 3)
         self.assertEqual(payload["snapshot_updated_at"], "2026-09-29T00:00:00+00:00")
@@ -51,7 +56,7 @@ class RouteLookupTests(unittest.TestCase):
     def test_no_match_is_not_reported_as_router_state(self) -> None:
         self.save_snapshot()
 
-        payload = self.client.get("/api/routes/lookup", params={"q": "192.168.1.1"}).json()
+        payload = self.lookup("192.168.1.1").json()
 
         self.assertEqual(payload["addresses"][0]["matches"], [])
         self.assertEqual(payload["addresses"][0]["match_count"], 0)
@@ -65,7 +70,7 @@ class RouteLookupTests(unittest.TestCase):
         ]
 
         with patch.object(socket, "getaddrinfo", return_value=fake_answers) as resolver:
-            payload = self.client.get("/api/routes/lookup", params={"q": "Example.COM"}).json()
+            payload = self.lookup("Example.COM").json()
 
         self.assertEqual(payload["normalized"], "example.com")
         self.assertEqual([item["address"] for item in payload["addresses"]], ["1.1.1.42", "8.8.8.8"])
@@ -75,7 +80,7 @@ class RouteLookupTests(unittest.TestCase):
     def test_dns_failure_is_explicit_not_a_false_negative(self) -> None:
         self.save_snapshot()
         with patch.object(socket, "getaddrinfo", side_effect=socket.gaierror()):
-            payload = self.client.get("/api/routes/lookup", params={"q": "example.com"}).json()
+            payload = self.lookup("example.com").json()
 
         self.assertEqual(payload["addresses"], [])
         self.assertIsNotNone(payload["dns_error"])
@@ -83,7 +88,7 @@ class RouteLookupTests(unittest.TestCase):
     def test_empty_or_large_dns_answer_is_not_silently_complete(self) -> None:
         self.save_snapshot()
         with patch.object(socket, "getaddrinfo", return_value=[]):
-            empty = self.client.get("/api/routes/lookup", params={"q": "example.com"}).json()
+            empty = self.lookup("example.com").json()
         self.assertEqual(empty["addresses"], [])
         self.assertIsNotNone(empty["dns_error"])
 
@@ -92,29 +97,50 @@ class RouteLookupTests(unittest.TestCase):
             for index in range(1, 19)
         ]
         with patch.object(socket, "getaddrinfo", return_value=answers):
-            large = self.client.get("/api/routes/lookup", params={"q": "example.com"}).json()
+            large = self.lookup("example.com").json()
         self.assertTrue(large["dns_truncated"])
         self.assertEqual(len(large["addresses"]), 16)
 
     def test_rejects_invalid_input_and_missing_snapshot(self) -> None:
         self.save_snapshot()
         for query in ("", "localhost", "2001:db8::1", "1.1.1.1/32", "a..example.com"):
-            self.assertEqual(self.client.get("/api/routes/lookup", params={"q": query}).status_code, 400)
+            self.assertEqual(self.lookup(query).status_code, 400)
+        self.assertEqual(self.client.post("/api/routes/lookup", json={}).status_code, 400)
 
         self.snapshot.unlink()
-        self.assertEqual(self.client.get("/api/routes/lookup", params={"q": "1.1.1.1"}).status_code, 503)
+        self.assertEqual(self.lookup("1.1.1.1").status_code, 503)
 
     def test_corrupt_snapshot_does_not_fall_back_to_current_files(self) -> None:
         self.snapshot.write_text("{", encoding="utf-8")
 
-        response = self.client.get("/api/routes/lookup", params={"q": "1.1.1.1"})
+        response = self.lookup("1.1.1.1")
 
         self.assertEqual(response.status_code, 503)
 
     def test_requires_authentication(self) -> None:
         main.app.dependency_overrides.pop(main.require_auth, None)
 
-        self.assertEqual(self.client.get("/api/routes/lookup", params={"q": "1.1.1.1"}).status_code, 401)
+        self.assertEqual(self.lookup("1.1.1.1").status_code, 401)
+
+    def test_session_requires_csrf_for_lookup_post(self) -> None:
+        self.save_snapshot()
+        main.app.dependency_overrides.pop(main.require_auth, None)
+        with (
+            patch.object(main, "WEB_PASSWORD", "unit-test-password"),
+            patch.object(main, "WEB_PASSWORD_HASH", ""),
+            patch.object(main, "SESSION_COOKIE_SECURE", False),
+        ):
+            login = self.client.post("/auth/login", json={"password": "unit-test-password"})
+            self.assertEqual(login.status_code, 200)
+            self.assertEqual(self.lookup("1.1.1.1").status_code, 403)
+            response = self.client.post(
+                "/api/routes/lookup",
+                json={"query": "1.1.1.1"},
+                headers={"X-CSRF-Token": login.json()["csrf_token"]},
+            )
+            self.assertEqual(response.status_code, 200)
+        with main.AUTH_LOCK:
+            main.AUTH_SESSIONS.clear()
 
 
 if __name__ == "__main__":

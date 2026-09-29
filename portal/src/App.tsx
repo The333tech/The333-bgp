@@ -3611,7 +3611,10 @@ function RoutesPage({
     setLookupError(null);
     setLookupData(null);
     try {
-      const payload = await apiFetch<RouteLookupResponse>(`/api/routes/lookup?q=${encodeURIComponent(value)}`, auth);
+      const payload = await apiFetch<RouteLookupResponse>("/api/routes/lookup", auth, {
+        method: "POST",
+        body: JSON.stringify({ query: value }),
+      });
       if (requestId === lookupRequestId.current) setLookupData(payload);
     } catch (err) {
       if (requestId === lookupRequestId.current) setLookupError(err instanceof Error ? err.message : String(err));

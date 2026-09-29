@@ -14,7 +14,7 @@ test("explains longest saved prefix without claiming router state", async ({ pag
       file: { name: "advertised_prefixes.txt", path: "", exists: false }, time: new Date().toISOString(),
     } });
     if (path === "/api/routes/lookup") return route.fulfill({ json: {
-      ok: true, kind: "ip", query: url.searchParams.get("q"), normalized: "1.1.1.42",
+      ok: true, kind: "ip", query: route.request().postDataJSON().query, normalized: "1.1.1.42",
       snapshot_updated_at: "2026-09-29T00:00:00Z", snapshot_route_count: 3,
       checked_at: "2026-09-29T01:00:00Z", dns_error: null, origin_available: false,
       addresses: [{ address: "1.1.1.42", match_count: 2, matches: [

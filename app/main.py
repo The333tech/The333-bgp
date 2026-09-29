@@ -6528,9 +6528,15 @@ def route_lookup_host(query: str) -> tuple[str, str]:
     return "domain", ascii_name
 
 
-@app.get("/api/routes/lookup")
-async def api_route_lookup(q: str = "", _: str = Depends(require_auth)) -> JSONResponse:
-    query = q.strip()
+@app.post("/api/routes/lookup")
+async def api_route_lookup(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeError) as exc:
+        raise HTTPException(status_code=400, detail="Ожидается JSON с адресом для проверки.") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("query"), str):
+        raise HTTPException(status_code=400, detail="Введите адрес IPv4 или полное имя домена.")
+    query = payload["query"].strip()
     if not query or len(query) > 253:
         raise HTTPException(status_code=400, detail="Введите адрес IPv4 или полное имя домена.")
     kind, normalized = route_lookup_host(query)
@@ -6581,7 +6587,7 @@ async def api_route_lookup(q: str = "", _: str = Depends(require_auth)) -> JSONR
         "dns_truncated": dns_truncated,
         "addresses": results,
         "origin_available": False,
-    })
+    }, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/routes")
