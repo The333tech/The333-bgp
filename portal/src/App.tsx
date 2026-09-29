@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { createPortal } from "react-dom";
 import {
@@ -38,6 +38,7 @@ import {
   PublicationStatus,
   ReadyResponse,
   RouteDiffSection,
+  RouteLookupResponse,
   RouteSetKind,
   RoutesDiffResponse,
   RoutesResponse,
@@ -3445,6 +3446,11 @@ function RoutesPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [lookupQuery, setLookupQuery] = useState("");
+  const [lookupData, setLookupData] = useState<RouteLookupResponse | null>(null);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const lookupRequestId = useRef(0);
   const [diffBase, setDiffBase] = useState<RouteSetKind>("last_good");
   const [diffTarget, setDiffTarget] = useState<RouteSetKind>("advertised");
   const [diffSection, setDiffSection] = useState<RouteDiffSection>("added");
@@ -3596,6 +3602,27 @@ function RoutesPage({
 
   const routeAutoUpdate = runtimeSettings?.route_auto_update;
 
+  const runLookup = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = lookupQuery.trim();
+    if (!value) return;
+    const requestId = ++lookupRequestId.current;
+    setLookupBusy(true);
+    setLookupError(null);
+    setLookupData(null);
+    try {
+      const payload = await apiFetch<RouteLookupResponse>("/api/routes/lookup", auth, {
+        method: "POST",
+        body: JSON.stringify({ query: value }),
+      });
+      if (requestId === lookupRequestId.current) setLookupData(payload);
+    } catch (err) {
+      if (requestId === lookupRequestId.current) setLookupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (requestId === lookupRequestId.current) setLookupBusy(false);
+    }
+  };
+
   return (
     <motion.div className="dashboard routes-page" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
       <div className="compact-summary-grid">
@@ -3629,6 +3656,65 @@ function RoutesPage({
           ariaLabel={routesData?.file?.exists ? `Скачать ${routesData.file.name}` : "Файл маршрутов недоступен"}
         />
       </div>
+
+      <section className="panel-card route-lookup-panel" aria-label="Проверка адреса по маршрутам">
+        <div className="panel-title">
+          <div>
+            <h2>Проверка адреса</h2>
+            <p>По последнему успешно применённому набору. Установка маршрута на MikroTik здесь не проверяется.</p>
+          </div>
+          <span className="pill">только чтение</span>
+        </div>
+        <form className="route-lookup-form" onSubmit={(event) => void runLookup(event)}>
+          <label className="route-search-field">
+            <IconSearch size={17} stroke={2} />
+            <input
+              aria-label="IP-адрес или домен"
+              value={lookupQuery}
+              onChange={(event) => {
+                lookupRequestId.current += 1;
+                setLookupQuery(event.target.value);
+                setLookupData(null);
+                setLookupError(null);
+                setLookupBusy(false);
+              }}
+              placeholder="IP-адрес или домен"
+              maxLength={253}
+            />
+          </label>
+          <button className="primary-button" type="submit" disabled={lookupBusy || !lookupQuery.trim()}>
+            {lookupBusy ? "Проверяю..." : "Проверить"}
+          </button>
+        </form>
+        {lookupError && <div className="action-status-box bad" role="alert">{lookupError}</div>}
+        {lookupData && (
+          <div className="route-lookup-results" aria-live="polite">
+            <div className="route-lookup-meta">
+              <span>Снимок: {lookupData.snapshot_updated_at ? formatDate(lookupData.snapshot_updated_at) : "время неизвестно"}</span>
+              {lookupData.kind === "domain" && <span>DNS на сервере: {formatDate(lookupData.checked_at)}</span>}
+            </div>
+            {lookupData.dns_error && <div className="action-status-box bad">{lookupData.dns_error}</div>}
+            {lookupData.dns_truncated && <p className="route-lookup-caveat">DNS вернул больше 16 адресов; показаны только первые 16. Остальные могут иметь другой маршрут.</p>}
+            {lookupData.addresses.map((item) => (
+              <div className="route-lookup-address" key={item.address}>
+                <div className="route-lookup-address-header">
+                  <code>{item.address}</code>
+                  <span>{item.match_count ? `${formatCount(item.match_count)} совпадений` : "совпадений нет"}</span>
+                </div>
+                {item.matches.map((match, index) => (
+                  <div className="route-lookup-match" key={match.prefix}>
+                    <code>{match.prefix}</code>
+                    <span>{index === 0 ? "самый длинный префикс" : "перекрывающий префикс"}</span>
+                    {match.communities.length > 0 && <small>Community: {match.communities.join(", ")}</small>}
+                  </div>
+                ))}
+                {item.match_count > item.matches.length && <small>Показаны первые {item.matches.length} совпадений.</small>}
+              </div>
+            ))}
+            {lookupData.addresses.length > 0 && <p className="route-lookup-caveat">Исходный источник префикса в снимке не сохранён. Наличие префикса не подтверждает получение маршрута роутером или работу VPN.</p>}
+          </div>
+        )}
+      </section>
 
       <div className="panel-card route-control-panel">
         <div className="panel-title">

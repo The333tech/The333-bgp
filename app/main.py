@@ -6476,6 +6476,120 @@ def route_set_meta() -> list[dict[str, Any]]:
     ]
 
 
+def route_lookup_snapshot() -> tuple[list[tuple[ipaddress.IPv4Network, list[str]]], str | None]:
+    if not LAST_GOOD_SNAPSHOT_FILE.is_file():
+        raise HTTPException(status_code=503, detail="Сохранённый снимок маршрутов пока недоступен.")
+    try:
+        snapshot = read_json(LAST_GOOD_SNAPSHOT_FILE, {}, strict=True)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Не удалось прочитать сохранённый снимок маршрутов.") from exc
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("prefixes"), list):
+        raise HTTPException(status_code=503, detail="Сохранённый снимок маршрутов повреждён.")
+
+    communities = snapshot.get("route_communities", {})
+    if not isinstance(communities, dict):
+        raise HTTPException(status_code=503, detail="Атрибуты сохранённого снимка повреждены.")
+    routes: list[tuple[ipaddress.IPv4Network, list[str]]] = []
+    for prefix in snapshot["prefixes"]:
+        try:
+            network = ipaddress.ip_network(prefix, strict=True)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="В сохранённом снимке найден неверный префикс.") from exc
+        if not isinstance(network, ipaddress.IPv4Network):
+            raise HTTPException(status_code=503, detail="Сохранённый снимок содержит неподдерживаемый адрес IPv6.")
+        attributes = communities.get(prefix, [])
+        if not isinstance(attributes, list) or any(not isinstance(item, str) for item in attributes):
+            raise HTTPException(status_code=503, detail="Атрибуты сохранённого снимка повреждены.")
+        routes.append((network, attributes))
+    return routes, snapshot.get("updated_at") if isinstance(snapshot.get("updated_at"), str) else None
+
+
+def route_lookup_host(query: str) -> tuple[str, str]:
+    try:
+        address = ipaddress.ip_address(query)
+    except ValueError:
+        pass
+    else:
+        if not isinstance(address, ipaddress.IPv4Address):
+            raise HTTPException(status_code=400, detail="Поддерживаются только адреса IPv4.")
+        return "ip", str(address)
+
+    hostname = query.rstrip(".")
+    try:
+        ascii_name = hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise HTTPException(status_code=400, detail="Неверное имя домена.") from exc
+    labels = ascii_name.split(".")
+    if (
+        len(ascii_name) > 253 or len(labels) < 2
+        or any(not 1 <= len(label) <= 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) for label in labels)
+    ):
+        raise HTTPException(status_code=400, detail="Введите адрес IPv4 или полное имя домена.")
+    return "domain", ascii_name
+
+
+@app.post("/api/routes/lookup")
+async def api_route_lookup(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeError) as exc:
+        raise HTTPException(status_code=400, detail="Ожидается JSON с адресом для проверки.") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("query"), str):
+        raise HTTPException(status_code=400, detail="Введите адрес IPv4 или полное имя домена.")
+    query = payload["query"].strip()
+    if not query or len(query) > 253:
+        raise HTTPException(status_code=400, detail="Введите адрес IPv4 или полное имя домена.")
+    kind, normalized = route_lookup_host(query)
+    routes, snapshot_at = route_lookup_snapshot()
+
+    dns_error = None
+    dns_truncated = False
+    if kind == "ip":
+        addresses = [normalized]
+    else:
+        try:
+            loop = asyncio.get_running_loop()
+            answers = await asyncio.wait_for(
+                loop.getaddrinfo(normalized, None, family=socket.AF_INET, type=socket.SOCK_STREAM),
+                timeout=3,
+            )
+            resolved = sorted({item[4][0] for item in answers}, key=ipaddress.IPv4Address)
+            dns_truncated = len(resolved) > 16
+            addresses = resolved[:16]
+            if not addresses:
+                dns_error = "DNS не вернул адреса IPv4."
+        except (OSError, asyncio.TimeoutError, ValueError):
+            addresses = []
+            dns_error = "DNS не вернул адреса IPv4 или не ответил вовремя."
+
+    results = []
+    for address in addresses:
+        ip = ipaddress.IPv4Address(address)
+        matches = sorted(
+            ((network, communities) for network, communities in routes if ip in network),
+            key=lambda item: (-item[0].prefixlen, int(item[0].network_address)),
+        )
+        results.append({
+            "address": address,
+            "matches": [{"prefix": str(network), "communities": communities} for network, communities in matches[:16]],
+            "match_count": len(matches),
+        })
+
+    return JSONResponse({
+        "ok": True,
+        "kind": kind,
+        "query": query,
+        "normalized": normalized,
+        "snapshot_updated_at": snapshot_at,
+        "snapshot_route_count": len(routes),
+        "checked_at": now_iso(),
+        "dns_error": dns_error,
+        "dns_truncated": dns_truncated,
+        "addresses": results,
+        "origin_available": False,
+    }, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/routes")
 async def api_routes(
     kind: str = "advertised",

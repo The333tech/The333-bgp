@@ -193,6 +193,24 @@ export type RoutesResponse = {
   time: string;
 };
 
+export type RouteLookupResponse = {
+  ok: boolean;
+  kind: "ip" | "domain";
+  query: string;
+  normalized: string;
+  snapshot_updated_at: string | null;
+  snapshot_route_count: number;
+  checked_at: string;
+  dns_error: string | null;
+  dns_truncated: boolean;
+  origin_available: boolean;
+  addresses: Array<{
+    address: string;
+    match_count: number;
+    matches: Array<{ prefix: string; communities: string[] }>;
+  }>;
+};
+
 export type RoutesDiffResponse = {
   ok: boolean;
   base: RouteSetMeta;
