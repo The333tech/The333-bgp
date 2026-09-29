@@ -5954,6 +5954,84 @@ body.scroll-drag-active * {
   gap: 16px;
 }
 
+.route-lookup-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.route-lookup-form .primary-button {
+  min-height: 48px;
+}
+
+.route-lookup-results {
+  margin-top: 18px;
+  border-top: 1px solid var(--border-1);
+}
+
+.route-lookup-meta,
+.route-lookup-address-header {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+
+.route-lookup-meta {
+  padding: 14px 0;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.route-lookup-address {
+  padding: 13px 0;
+  border-top: 1px solid var(--border-1);
+}
+
+.route-lookup-address-header {
+  align-items: baseline;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.route-lookup-address-header code {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.route-lookup-match {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 12px;
+  padding-top: 9px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.route-lookup-match code,
+.route-lookup-match small {
+  overflow-wrap: anywhere;
+}
+
+.route-lookup-match code {
+  color: var(--text-1);
+  font-size: 12px;
+}
+
+.route-lookup-match small {
+  grid-column: 1 / -1;
+  color: var(--text-2);
+}
+
+.route-lookup-caveat {
+  margin: 10px 0 0;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .route-set-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -6958,6 +7036,14 @@ button.route-diff-stat:hover {
 }
 
 @media (max-width: 680px) {
+  .route-lookup-form {
+    grid-template-columns: 1fr;
+  }
+
+  .route-lookup-match {
+    grid-template-columns: 1fr;
+  }
+
   .route-set-grid,
   .route-toolbar,
   .route-diff-controls,
