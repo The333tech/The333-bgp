@@ -610,6 +610,109 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertIn("environment migration", result.stderr)
         self.assertIn("previous version was restored automatically", result.stderr)
 
+    def test_prebuilt_image_failure_does_not_activate_or_stop_runtime(self) -> None:
+        patched = self._patched_update_controller()
+        event_log = self.root / "prebuilt-prestage-failure.log"
+        release_dir = self.root / "release-download" / "src"
+        release_dir.mkdir(parents=True)
+        self._write(release_dir / ".env.example", "GOBGP_CORE_IMAGE_VERSION=4.9.0-r1\n")
+        harness = self.root / "run-prebuilt-prestage-failure.sh"
+        self._write(
+            harness,
+            textwrap.dedent(
+                """
+                #!/usr/bin/env bash
+                set -Eeuo pipefail
+                export THE333_UPDATE_TEST_HARNESS=true
+                export THE333_PROJECT_DIR="$2"
+                source "$1"
+                event_log="$3"
+                fixture_release_dir="$4"
+                NON_INTERACTIVE=true
+                CHANNEL=beta
+
+                fetch_manifest() { printf '%s\n' '{"versions":[]}'; }
+                select_version_json() { printf '%s\n' '{"version":"9.9b"}'; }
+                version_is_newer() { return 0; }
+                runtime_image_mode() { printf 'prebuilt\n'; }
+                check_update_disk_space() { printf 'disk-preflight\n' >> "${event_log}"; }
+                make_backup() { printf 'backup\n' >> "${event_log}"; LAST_BACKUP_ARCHIVE=/tmp/fixture.zip; }
+                download_release() { printf '%s\n' "${fixture_release_dir}"; }
+                prestage_prebuilt_release_images() { printf 'prestage-failed\n' >> "${event_log}"; return 88; }
+                copy_release_files() { printf 'unexpected-copy\n' >> "${event_log}"; }
+                stop_runtime_for_rollback() { printf 'unexpected-stop\n' >> "${event_log}"; }
+
+                update_project
+                """
+            ).lstrip(),
+            0o755,
+        )
+
+        result = subprocess.run(
+            ["bash", str(harness), str(patched), str(self.project), str(event_log), str(release_dir)],
+            cwd=self.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("prebuilt image preparation failed before release activation", result.stderr)
+        self.assertEqual(
+            event_log.read_text(encoding="utf-8").splitlines(),
+            ["disk-preflight", "backup", "disk-preflight", "prestage-failed"],
+        )
+        self.assertEqual((self.project / "VERSION").read_text(encoding="utf-8"), "0.1\n")
+
+    def test_prebuilt_images_are_pulled_before_activation_without_repulling_core(self) -> None:
+        patched = self._patched_update_controller()
+        self._write(self.project / "scripts" / "migrate-env.py", (ROOT / "scripts" / "migrate-env.py").read_text(encoding="utf-8"))
+        old_core = "ghcr.io/the333tech/the333-bgp-core@sha256:" + "a" * 64
+        new_core = "ghcr.io/the333tech/the333-bgp-core@sha256:" + "b" * 64
+        backend = "ghcr.io/the333tech/the333-bgp-backend@sha256:" + "b" * 64
+        portal = "ghcr.io/the333tech/the333-bgp-portal@sha256:" + "b" * 64
+        self._write(self.project / ".env", "\n".join((
+            "PRODUCT_VERSION=0.90.2b", "THE333_IMAGE_MODE=prebuilt",
+            "GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", f"THE333_GOBGP_IMAGE={old_core}",
+            "THE333_BACKEND_IMAGE=", "THE333_PORTAL_IMAGE=", "",
+        )))
+        before = (self.project / ".env").read_bytes()
+        release_dir = self.root / "staged-release"
+        release_dir.mkdir()
+        self._write(release_dir / "update-manifest.json", json.dumps({
+            "versions": [{"version": "1.1", "images": {
+                "core": new_core, "backend": backend, "portal": portal,
+            }}],
+        }))
+        event_log = self.root / "prebuilt-pulls.log"
+        harness = self.root / "run-prebuilt-pulls.sh"
+        self._write(harness, textwrap.dedent("""
+            #!/usr/bin/env bash
+            set -Eeuo pipefail
+            export THE333_UPDATE_TEST_HARNESS=true
+            export THE333_PROJECT_DIR="$2"
+            source "$1"
+            THE333_IMAGE_MODE=prebuilt
+            event_log="$3"
+            old_core="$5"
+            docker_cli() {
+              if [[ "$1" == "image" && "$2" == "inspect" ]]; then
+                [[ "$3" == "${old_core}" ]]
+                return
+              fi
+              if [[ "$1" == "pull" ]]; then
+                printf 'pull:%s\n' "$2" >> "${event_log}"
+                return 0
+              fi
+              return 1
+            }
+            prestage_prebuilt_release_images "$4" 1.1 4.9.0-r1
+        """).lstrip(), 0o755)
+
+        result = subprocess.run(
+            ["bash", str(harness), str(patched), str(self.project), str(event_log), str(release_dir), old_core],
+            cwd=self.root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(event_log.read_text(encoding="utf-8").splitlines(), [f"pull:{backend}", f"pull:{portal}"])
+        self.assertEqual((self.project / ".env").read_bytes(), before)
+
     def test_update_rejects_unwritable_release_tree_before_backup(self) -> None:
         if os.geteuid() == 0:
             self.skipTest("permission preflight requires an unprivileged test user")

@@ -113,6 +113,63 @@ class ImageDeliveryTests(unittest.TestCase):
             for reference in old_refs.values():
                 self.assertNotIn(reference, migrated)
 
+    def test_prebuilt_image_preflight_is_read_only_and_uses_target_digests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = self._project(root, "prebuilt", version="1.0")
+            staging = root / "staged-release"
+            staging.mkdir()
+            refs = image_refs("b")
+            old_core = image_refs("a")["core"]
+            (staging / "update-manifest.json").write_text(
+                json.dumps({"versions": [{"version": "1.1", "images": refs}]}), encoding="utf-8",
+            )
+            env_path = project / ".env"
+            env_path.write_text(
+                env_path.read_text(encoding="utf-8")
+                + f"GOBGP_CORE_IMAGE_VERSION=4.9.0-r1\nTHE333_GOBGP_IMAGE={old_core}\n",
+                encoding="utf-8",
+            )
+            before = env_path.read_bytes()
+
+            result = subprocess.run(
+                [sys.executable, str(MIGRATOR), "--env", str(env_path), "--project-dir", str(staging),
+                 "--version", "1.1", "--target-core-version", "4.9.0-r1", "--list-prebuilt-images"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(result.stdout.splitlines(), [old_core, refs["backend"], refs["portal"]])
+            self.assertEqual(env_path.read_bytes(), before)
+            self.assertEqual(sorted(item.name for item in staging.iterdir()), ["update-manifest.json"])
+
+            changed_core = subprocess.run(
+                [sys.executable, str(MIGRATOR), "--env", str(env_path), "--project-dir", str(staging),
+                 "--version", "1.1", "--target-core-version", "4.10.0-r1", "--list-prebuilt-images"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(changed_core.returncode, 0, msg=changed_core.stderr)
+            self.assertEqual(changed_core.stdout.splitlines(), list(refs.values()))
+
+    def test_prebuilt_image_preflight_rejects_untrusted_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = self._project(root, "prebuilt")
+            staging = root / "staged-release"
+            staging.mkdir()
+            refs = image_refs()
+            refs["backend"] = refs["backend"].replace("the333-bgp-backend", "other/backend")
+            (staging / "update-manifest.json").write_text(
+                json.dumps({"versions": [{"version": "1.1", "images": refs}]}), encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(MIGRATOR), "--env", str(project / ".env"),
+                 "--project-dir", str(staging), "--version", "1.1", "--list-prebuilt-images"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+
     def test_prebuilt_upgrade_preserves_core_when_its_version_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = self._project(Path(directory), "prebuilt")

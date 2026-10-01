@@ -58,6 +58,32 @@ def release_image_refs(project_dir: Path, version: str) -> dict[str, str]:
     }
 
 
+def planned_prebuilt_image_refs(
+    project_dir: Path, version: str, values: dict[str, str], target_core_version: str = GOBGP_CORE_IMAGE_VERSION,
+) -> dict[str, str]:
+    try:
+        image_refs = release_image_refs(project_dir, version)
+    except ValueError as exc:
+        current_version = values.get("PRODUCT_VERSION", "").strip()
+        if current_version != version:
+            raise
+        try:
+            image_refs = {
+                key: validate_prebuilt_image_ref(key, values.get(key, "").strip())
+                for key in IMAGE_REPOSITORIES
+            }
+        except ValueError:
+            raise exc from None
+    if values.get("GOBGP_CORE_IMAGE_VERSION", "").strip() == target_core_version:
+        try:
+            image_refs["THE333_GOBGP_IMAGE"] = validate_prebuilt_image_ref(
+                "THE333_GOBGP_IMAGE", values.get("THE333_GOBGP_IMAGE", "").strip()
+            )
+        except ValueError:
+            pass
+    return image_refs
+
+
 def parse_env(lines: list[str]) -> dict[str, str]:
     result: dict[str, str] = {}
     for line in lines:
@@ -118,11 +144,13 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--channel", choices=("stable", "beta"), default="beta")
     parser.add_argument("--update-url", default=OFFICIAL_RELEASES_URL)
+    parser.add_argument("--list-prebuilt-images", action="store_true")
+    parser.add_argument("--target-core-version", default=GOBGP_CORE_IMAGE_VERSION)
     args = parser.parse_args()
 
     env_path = Path(args.env).resolve()
     project_dir = Path(args.project_dir).resolve()
-    if env_path.parent != project_dir or env_path.name != ".env":
+    if env_path.name != ".env" or (not args.list_prebuilt_images and env_path.parent != project_dir):
         raise SystemExit("--env must point to PROJECT_DIR/.env")
     if not env_path.is_file() or env_path.is_symlink():
         raise SystemExit(".env is missing or unsafe")
@@ -133,29 +161,25 @@ def main() -> int:
     image_mode = values.get("THE333_IMAGE_MODE", "source").strip().lower() or "source"
     if image_mode not in {"source", "prebuilt"}:
         raise SystemExit("THE333_IMAGE_MODE must be source or prebuilt")
+    if args.list_prebuilt_images and not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+", args.target_core_version):
+        raise SystemExit("invalid target core version")
     if image_mode == "prebuilt":
         try:
-            image_refs = release_image_refs(project_dir, args.version)
+            image_refs = planned_prebuilt_image_refs(
+                project_dir, args.version, values,
+                args.target_core_version if args.list_prebuilt_images else GOBGP_CORE_IMAGE_VERSION,
+            )
         except ValueError as exc:
-            current_version = values.get("PRODUCT_VERSION", "").strip()
-            if current_version != args.version:
-                raise SystemExit(str(exc)) from exc
-            try:
-                image_refs = {
-                    key: validate_prebuilt_image_ref(key, values.get(key, "").strip())
-                    for key in IMAGE_REPOSITORIES
-                }
-            except ValueError:
-                raise SystemExit(str(exc)) from exc
-        if values.get("GOBGP_CORE_IMAGE_VERSION", "").strip() == GOBGP_CORE_IMAGE_VERSION:
-            try:
-                image_refs["THE333_GOBGP_IMAGE"] = validate_prebuilt_image_ref(
-                    "THE333_GOBGP_IMAGE", values.get("THE333_GOBGP_IMAGE", "").strip()
-                )
-            except ValueError:
-                pass
+            raise SystemExit(str(exc)) from exc
     else:
         image_refs = {key: "" for key in IMAGE_REPOSITORIES}
+
+    if args.list_prebuilt_images:
+        if image_mode != "prebuilt":
+            raise SystemExit("--list-prebuilt-images requires THE333_IMAGE_MODE=prebuilt")
+        for key in IMAGE_REPOSITORIES:
+            print(image_refs[key])
+        return 0
 
     secret_file = project_dir / "data" / "secrets" / "bgp_tcp_md5"
     secret_file.parent.mkdir(parents=True, exist_ok=True)
