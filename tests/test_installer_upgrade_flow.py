@@ -607,6 +607,8 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 "build:legacy",
             ],
         )
+        self.assertIn("environment migration", result.stderr)
+        self.assertIn("previous version was restored automatically", result.stderr)
 
     def test_prebuilt_image_failure_does_not_activate_or_stop_runtime(self) -> None:
         patched = self._patched_update_controller()
@@ -710,8 +712,6 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertEqual(event_log.read_text(encoding="utf-8").splitlines(), [f"pull:{backend}", f"pull:{portal}"])
         self.assertEqual((self.project / ".env").read_bytes(), before)
-        self.assertIn("environment migration", result.stderr)
-        self.assertIn("previous version was restored automatically", result.stderr)
 
     def test_update_rejects_unwritable_release_tree_before_backup(self) -> None:
         if os.geteuid() == 0:
