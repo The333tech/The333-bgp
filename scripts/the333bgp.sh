@@ -1332,8 +1332,12 @@ build_update_images() {
   image_mode="$(runtime_image_mode)"
   if [[ "${image_mode}" == "prebuilt" ]]; then
     validate_prebuilt_images
-    log "Pulling immutable prebuilt runtime images from GHCR."
-    compose pull the333-gobgp-core the333-bgp-backend the333-portal || return 1
+    if docker_cli image inspect "${THE333_GOBGP_IMAGE}" "${THE333_BACKEND_IMAGE}" "${THE333_PORTAL_IMAGE}" >/dev/null 2>&1; then
+      log "Verified prebuilt runtime images are already available locally."
+    else
+      log "Pulling immutable prebuilt runtime images from GHCR."
+      compose pull the333-gobgp-core the333-bgp-backend the333-portal || return 1
+    fi
     return 0
   fi
 
@@ -1351,6 +1355,26 @@ build_update_images() {
 
   log "Routing-core ${core_image} отсутствует; выполняется полная сборка."
   compose build || return 1
+}
+
+prestage_prebuilt_release_images() {
+  local release_dir="$1" version="$2" target_core_version="$3" references_text reference
+  local -a references=()
+  [[ "$(runtime_image_mode)" == "prebuilt" ]] || return 0
+
+  references_text="$(python3 "${PROJECT_DIR}/scripts/migrate-env.py" \
+    --env "${PROJECT_DIR}/.env" --project-dir "${release_dir}" --version "${version}" \
+    --target-core-version "${target_core_version}" --list-prebuilt-images)" || return 1
+  mapfile -t references <<< "${references_text}"
+  [[ ${#references[@]} -eq 3 ]] || return 1
+
+  for reference in "${references[@]}"; do
+    if docker_cli image inspect "${reference}" >/dev/null 2>&1; then
+      continue
+    fi
+    log "Preloading verified release image: ${reference%%@*}"
+    docker_cli pull "${reference}" || return 1
+  done
 }
 
 host_updater_service_ready() {
@@ -1436,6 +1460,20 @@ update_project() {
       rm -rf "${release_tmp}"
     fi
     fail "disk-space recheck failed before release activation; existing containers and project files were not changed"
+  fi
+  if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+    if ! prestage_prebuilt_release_images "${release_dir}" "${selected_version}" "${target_core_version}"; then
+      if [[ "${release_tmp}" == /tmp/* ]]; then
+        rm -rf "${release_tmp}"
+      fi
+      fail "prebuilt image preparation failed before release activation; existing containers and project files were not changed"
+    fi
+    if ! check_update_disk_space "${target_core_version}"; then
+      if [[ "${release_tmp}" == /tmp/* ]]; then
+        rm -rf "${release_tmp}"
+      fi
+      fail "disk-space recheck failed after image preparation; existing containers and project files were not changed"
+    fi
   fi
   update_rc=0
   failed_stage=""
