@@ -31,6 +31,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from app.maintenance import ACTIVE_STATUSES, MaintenanceBusy, mutation_lease, read_state
+from app.route_policy import assess_route_change, normalize_exclusions, route_plan_sha256, subtract_exclusions
 from app.session_store import SessionStore, load_or_create_salt
 
 
@@ -71,6 +72,7 @@ LAST_GOOD_FILE = DATA_DIR / "last_good_prefixes.txt"
 LAST_GOOD_SNAPSHOT_FILE = DATA_DIR / "last_good_route_snapshot.json"
 ADVERTISED_ROUTE_ATTRIBUTES_FILE = DATA_DIR / "advertised_route_attributes.json"
 PUBLICATION_CONTROL_FILE = DATA_DIR / "publication_control.json"
+ROUTE_EXCLUSIONS_FILE = DATA_DIR / "route_exclusions.json"
 GOBGP_GENERATION_FILE = Path(
     os.getenv("GOBGP_GENERATION_FILE", str(DATA_DIR / "gobgp-state" / "gobgp_generation"))
 )
@@ -177,6 +179,10 @@ HOST_UPDATER_RESULT_STALE_SECONDS = max(
 UPDATE_MIN_FREE_BYTES = int(os.getenv("UPDATE_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
 
 PUBLIC_OPERATION_ERROR = "Операция не выполнена. Подробности смотри в логах backend."
+
+
+class RoutePolicyReviewRequired(RuntimeError):
+    pass
 
 
 def public_error(message: str = PUBLIC_OPERATION_ERROR) -> str:
@@ -2383,7 +2389,12 @@ def write_route_attributes(route_communities: dict[str, list[str]]) -> None:
 
 
 def read_last_good_snapshot() -> tuple[list[str], dict[str, list[str]]]:
-    snapshot = read_json(LAST_GOOD_SNAPSHOT_FILE, {})
+    snapshot = read_json(LAST_GOOD_SNAPSHOT_FILE, {}, strict=True)
+    if LAST_GOOD_SNAPSHOT_FILE.exists() and (
+        not isinstance(snapshot, dict) or not isinstance(snapshot.get("prefixes"), list)
+        or ("route_communities" in snapshot and not isinstance(snapshot["route_communities"], dict))
+    ):
+        raise RuntimeError("Последний успешный снимок маршрутов повреждён.")
 
     if isinstance(snapshot, dict) and isinstance(snapshot.get("prefixes"), list):
         prefixes = sort_prefixes(
@@ -2954,9 +2965,11 @@ def create_job(kind: str, key: str, title: str, payload: dict[str, Any] | None =
             None,
         )
         if existing:
+            if kind == "route_exclusions_apply":
+                raise HTTPException(status_code=409, detail="Применение исключений уже выполняется.")
             return public_job_record(existing), True
 
-        exclusive_kinds = {"product_update", "system_restore"}
+        exclusive_kinds = {"product_update", "system_restore", "route_exclusions_apply"}
         active_exclusive = next(
             (job for job in reversed(active_jobs) if str(job.get("kind")) in exclusive_kinds),
             None,
@@ -3061,7 +3074,7 @@ def summarize_job_result(kind: str, result: dict[str, Any]) -> dict[str, Any]:
             "time": result.get("time"),
         }
 
-    if kind == "route_update":
+    if kind in {"route_update", "route_exclusions_apply"}:
         apply_data = result.get("apply", {}) if isinstance(result.get("apply"), dict) else {}
         prefix_summary = result.get("prefix_summary", {}) if isinstance(result.get("prefix_summary"), dict) else {}
         meta = result.get("meta", {}) if isinstance(result.get("meta"), dict) else {}
@@ -3238,7 +3251,7 @@ async def run_background_job(job_id: str, kind: str, target: Any) -> None:
                 "progress_percent": 100,
                 "finished_at": now_iso(),
                 "duration_seconds": round(time.time() - started, 3),
-                "error": public_error("Фоновая задача завершилась с ошибкой."),
+                "error": str(e) if isinstance(e, RoutePolicyReviewRequired) else public_error("Фоновая задача завершилась с ошибкой."),
             },
         )
     finally:
@@ -4170,6 +4183,105 @@ async def api_job_cancel(job_id: str, _: str = Depends(require_auth)) -> JSONRes
     raise HTTPException(status_code=404, detail=f"job not found: {job_id}")
 
 
+def route_exclusions_hash(exclusions: list[str]) -> str:
+    return hashlib.sha256(json.dumps(exclusions, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def read_route_exclusions_state() -> dict[str, Any]:
+    state = read_json(ROUTE_EXCLUSIONS_FILE, {"version": 1, "active": [], "pending": None}, strict=True)
+    if not isinstance(state, dict) or state.get("version") != 1 or not isinstance(state.get("active"), list):
+        raise RuntimeError("Состояние исключений повреждено; обновление маршрутов заблокировано.")
+    try:
+        active = [str(network) for network in normalize_exclusions(state["active"])]
+    except ValueError as exc:
+        raise RuntimeError("Состояние исключений повреждено; обновление маршрутов заблокировано.") from exc
+    pending = state.get("pending")
+    if pending is not None:
+        if not isinstance(pending, dict):
+            raise RuntimeError("Состояние исключений повреждено; обновление маршрутов заблокировано.")
+        try:
+            normalize_exclusions(pending.get("exclusions"))
+        except ValueError as exc:
+            raise RuntimeError("Состояние исключений повреждено; обновление маршрутов заблокировано.") from exc
+    return {"version": 1, "active": active, "pending": pending}
+
+
+def collect_route_policy_candidate(exclusions: list[str]) -> tuple[dict[str, list[str]], dict[str, Any]]:
+    base_prefixes, source_meta = collect_static_prefixes()
+    service_prefixes, service_meta = collect_service_prefixes_for_update()
+    validate_route_collection_health(source_meta, service_meta)
+    community_plan = build_community_route_plan(base_prefixes, service_prefixes)
+    validate_community_profile_health(community_plan)
+    routes, stats = subtract_exclusions(
+        community_plan["route_communities"], normalize_exclusions(exclusions), MAX_PREFIXES,
+    )
+    if len(routes) < max(MIN_PREFIXES_TO_APPLY, MIN_EXPECTED_PREFIXES):
+        raise RuntimeError("После исключений осталось меньше разрешённого минимума маршрутов.")
+    if len(routes) > MAX_PREFIXES:
+        raise RuntimeError("После исключений превышен лимит маршрутов.")
+    return routes, {"exclusions": stats, "source": source_meta, "service": service_meta}
+
+
+def preview_route_exclusions(exclusions: list[str]) -> dict[str, Any]:
+    with ROUTE_MUTATION_LOCK:
+        state = read_route_exclusions_state()
+        normalized = [str(network) for network in normalize_exclusions(exclusions)]
+        if not LAST_GOOD_SNAPSHOT_FILE.exists() and not LAST_GOOD_FILE.exists():
+            raise RuntimeError("Нет последнего успешного снимка маршрутов для сравнения.")
+        current_prefixes, current_attributes = read_last_good_snapshot()
+        current = {prefix: current_attributes.get(prefix, []) for prefix in current_prefixes}
+        candidate, meta = collect_route_policy_candidate(normalized)
+        change = assess_route_change(current, candidate, MAX_DELTA_PERCENT)
+        return {
+            "ok": True,
+            "exclusions": normalized,
+            "active_sha256": route_exclusions_hash(state["active"]),
+            "current_count": len(current),
+            "candidate_count": len(candidate),
+            "change": change,
+            "exclusion_stats": meta["exclusions"],
+            "pending": state["pending"] is not None,
+            "time": now_iso(),
+        }
+
+
+def apply_route_exclusions(
+    exclusions: list[str], active_sha256: str, current_sha256: str, candidate_sha256: str,
+) -> dict[str, Any]:
+    with ROUTE_MUTATION_LOCK:
+        if publication_is_paused():
+            raise PublicationPaused("Публикация маршрутов приостановлена.")
+        preview = preview_route_exclusions(exclusions)
+        change = preview["change"]
+        if (
+            preview["active_sha256"] != active_sha256
+            or change["current_sha256"] != current_sha256
+            or change["candidate_sha256"] != candidate_sha256
+        ):
+            raise RoutePolicyReviewRequired("Маршруты или настройки изменились; повторите предпросмотр.")
+        state = read_route_exclusions_state()
+        backup = create_system_backup(trigger="route_exclusions", reason="before route exclusion change")
+        state["pending"] = {"exclusions": preview["exclusions"], "started_at": now_iso()}
+        write_json_atomic(ROUTE_EXCLUSIONS_FILE, state)
+        candidate, _ = collect_route_policy_candidate(preview["exclusions"])
+        if route_plan_sha256(candidate) != candidate_sha256:
+            raise RoutePolicyReviewRequired("Маршруты изменились после резервирования; повторите предпросмотр.")
+        prefixes = sort_prefixes(candidate)
+        apply_result = apply_prefixes(prefixes, route_communities=candidate)
+        write_last_good_snapshot(prefixes, candidate)
+        state["active"] = preview["exclusions"]
+        state["pending"] = None
+        write_json_atomic(ROUTE_EXCLUSIONS_FILE, state)
+        result = {
+            "ok": True, "mode": "route_exclusions_apply", "prefix_summary": summarize_prefixes(prefixes),
+            "meta": {"route_set_sha256": route_set_sha256(prefixes), "final_count_with_services": len(prefixes)},
+            "apply": apply_result, "backup_name": backup["backup_name"], "time": now_iso(),
+        }
+        save_status(result)
+        append_update_history(result, "route_exclusions")
+        return result
+
+
 def validate_update_safety(prefixes: list[str], force_reannounce: bool = False) -> dict[str, Any]:
     new_count = len(prefixes)
     previous_count = len(read_lines(ADVERTISED_FILE))
@@ -4254,9 +4366,19 @@ def validate_route_collection_health(
     return result
 
 
+def validate_community_profile_health(plan: dict[str, Any]) -> None:
+    failed = [str(item.get("id") or "unnamed") for item in plan.get("profiles", [])
+              if isinstance(item, dict) and item.get("enabled") and item.get("errors")]
+    if failed:
+        raise RuntimeError(f"community profile route collection incomplete: {failed[:10]}")
+
+
 def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", allow_large: bool = False) -> dict[str, Any]:
     if publication_is_paused():
         raise PublicationPaused("Публикация маршрутов приостановлена. Возобновите её явно.")
+    exclusion_state = read_route_exclusions_state()
+    if exclusion_state["pending"] is not None:
+        raise RoutePolicyReviewRequired("Изменение исключений не завершено; автоматическое применение заблокировано.")
     started = time.time()
 
     prefixes, meta = collect_static_prefixes()
@@ -4264,12 +4386,19 @@ def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", 
     service_prefixes, service_meta = collect_service_prefixes_for_update()
     collection_health = validate_route_collection_health(meta, service_meta)
     community_plan = build_community_route_plan(prefixes, service_prefixes)
-    prefixes = community_plan["prefixes"]
+    validate_community_profile_health(community_plan)
+    route_communities, exclusion_stats = subtract_exclusions(
+        community_plan["route_communities"],
+        normalize_exclusions(exclusion_state["active"]),
+        MAX_PREFIXES if exclusion_state["active"] else max(MAX_PREFIXES, len(community_plan["prefixes"])),
+    )
+    prefixes = sort_prefixes(route_communities)
 
     meta["service_routes"] = service_meta
     meta["collection_health"] = collection_health
     meta["final_count_with_services"] = len(prefixes)
     meta["route_set_sha256"] = route_set_sha256(prefixes)
+    meta["route_exclusions"] = exclusion_stats
     meta["community_routes"] = {
         "profiles_count": community_plan.get("profiles_count"),
         "enabled_count": community_plan.get("enabled_count"),
@@ -4288,7 +4417,13 @@ def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", 
             f"too many prefixes: {len(prefixes)} > MAX_PREFIXES={MAX_PREFIXES}"
         )
 
+    previous_prefixes, previous_attributes = read_last_good_snapshot()
+    previous_routes = {prefix: previous_attributes.get(prefix, []) for prefix in previous_prefixes}
+    change = assess_route_change(previous_routes, route_communities, MAX_DELTA_PERCENT)
+    if change["requires_approval"]:
+        raise RoutePolicyReviewRequired("Большое изменение маршрутов или охвата требует предпросмотра и подтверждения в разделе маршрутов.")
     safety = validate_update_safety(prefixes, force_reannounce=force_reannounce)
+    safety["route_change"] = change
     safety["allow_large"] = allow_large
     safety["max_prefixes"] = MAX_PREFIXES
 
@@ -4299,11 +4434,11 @@ def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", 
     apply_result = apply_prefixes(
         prefixes,
         force_reannounce=force_reannounce,
-        route_communities=community_plan.get("route_communities", {}),
+        route_communities=route_communities,
     )
     write_last_good_snapshot(
         prefixes,
-        community_plan.get("route_communities", {}),
+        route_communities,
     )
 
     result = {
@@ -5288,7 +5423,7 @@ async def update(request: Request, _: str = Depends(require_auth)) -> JSONRespon
         result = {
             "ok": False,
             "mode": "manual_update_failed",
-            "error": public_error("Ручное обновление маршрутов не выполнено."),
+            "error": str(e) if isinstance(e, RoutePolicyReviewRequired) else public_error("Ручное обновление маршрутов не выполнено."),
             "time": now_iso(),
         }
         save_status(result)
@@ -5316,6 +5451,50 @@ async def update_job(request: Request, _: str = Depends(require_auth)) -> JSONRe
             payload={"allow_large": allow_large},
         )
     )
+
+
+@app.get("/api/routes/exclusions")
+async def api_route_exclusions(_: str = Depends(require_auth)) -> JSONResponse:
+    try:
+        state = await asyncio.to_thread(read_route_exclusions_state)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "active": state["active"], "pending": state["pending"], "time": now_iso()})
+
+
+@app.post("/api/routes/exclusions/preview")
+async def api_route_exclusions_preview(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Некорректный список исключений.")
+        exclusions = body.get("exclusions")
+        normalize_exclusions(exclusions)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Нужен список из максимум 64 IPv4-адресов или CIDR.") from exc
+    try:
+        return JSONResponse(await asyncio.to_thread(preview_route_exclusions, exclusions))
+    except Exception as exc:
+        log_exception("route exclusion preview failed", exc)
+        raise HTTPException(status_code=503, detail=public_error("Предпросмотр маршрутов не выполнен; проверь источники и снимок.")) from exc
+
+
+@app.post("/api/routes/exclusions/apply/job")
+async def api_route_exclusions_apply_job(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    try:
+        body = await request.json()
+        exclusions = body.get("exclusions") if isinstance(body, dict) else None
+        normalize_exclusions(exclusions)
+        hashes = [body.get(key) for key in ("active_sha256", "current_sha256", "candidate_sha256")]
+        if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes):
+            raise ValueError("invalid preview hashes")
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Сначала выполни предпросмотр, затем подтверди неизменённый план.") from exc
+    return JSONResponse(start_background_job(
+        kind="route_exclusions_apply", key="route_exclusions:apply", title="Применение исключений маршрутов",
+        target=lambda: apply_route_exclusions(exclusions, *hashes),
+        payload={"exclusions_count": len(exclusions)},
+    ))
 
 
 def preflight_group(group_name: str) -> dict[str, Any]:
