@@ -570,20 +570,20 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.90.2b";
+const PRODUCT_VERSION = "0.91b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.90.2b",
-    version: "0.90.2b",
-    title: "v0.90.2b",
+    id: "0.91b",
+    version: "0.91b",
+    title: "v0.91b",
     channel: "beta",
     status: "текущая версия",
-    date: "сентябрь 2026",
+    date: "октябрь 2026",
     changelog: [
-      "После успешного обновления портал перезагружается без предупреждения о ручном уходе со страницы.",
-      "Исправлено завершение окна обновления после успешной проверки готовности сервиса.",
-      "GoBGP Core 4.9.0 и инструкция для проверенной конфигурации MikroTik/AWG 3.1."
+      "Аварийная приостановка и возобновление публикации маршрутов.",
+      "Поиск сохранённых маршрутов по IP-адресу или домену и исключения IPv4-сетей с предварительным просмотром.",
+      "Предварительная загрузка готовых образов при поддержке установленным updater; GoBGP Core остаётся 4.9.0."
     ]
   }
 ];

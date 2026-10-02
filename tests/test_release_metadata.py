@@ -104,6 +104,18 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.assertIn("--max-filesize 2097152", download_path)
             self.assertIn("--max-filesize 268435456", download_path)
 
+    def test_published_release_is_installed_from_archive(self) -> None:
+        release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        published_install = release.split("\n  published-install:\n", 1)[1]
+
+        self.assertIn("needs: release", published_install)
+        self.assertIn('export THE333_VERSION="${GITHUB_REF_NAME#v}"', published_install)
+        self.assertIn('cp ./install.sh "${RUNNER_TEMP}/the333-release-install.sh"', published_install)
+        self.assertIn('bash "${RUNNER_TEMP}/the333-release-install.sh" --non-interactive', published_install)
+        self.assertIn("--pattern update-manifest.json", published_install)
+        self.assertIn('docker inspect -f \'{{.Config.Image}}\' the333-gobgp-core', published_install)
+        self.assertIn('docker inspect -f \'{{.State.Health.Status}}\' the333-portal', published_install)
+
     def test_default_sources_are_safe_and_opt_in(self) -> None:
         sources = json.loads((ROOT / "config" / "default_sources.json").read_text(encoding="utf-8"))
         names = {str(item.get("name", "")) for item in sources}
