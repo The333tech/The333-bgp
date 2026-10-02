@@ -373,3 +373,107 @@ jobs:
             "${release_state[@]}" \
             --title "${title}" \
             --notes-file dist/RELEASE_NOTES.md
+
+  published-install:
+    name: Smoke-test published release archive
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      THE333_SMOKE_DIR: /opt/the333-release-smoke
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Read published image references
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/published-release"
+          gh release download "${GITHUB_REF_NAME}" \
+            --pattern update-manifest.json \
+            --dir "${RUNNER_TEMP}/published-release"
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          manifest = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "published-release" / "update-manifest.json")
+              .read_text(encoding="utf-8")
+          )
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          matches = [item for item in manifest["versions"] if item.get("version") == version]
+          if len(matches) != 1:
+              raise SystemExit("published manifest has no unique release entry")
+          images = matches[0]["images"]
+          repositories = {
+              "core": ("EXPECTED_GOBGP_IMAGE", "ghcr.io/the333tech/the333-bgp-core"),
+              "backend": ("EXPECTED_BACKEND_IMAGE", "ghcr.io/the333tech/the333-bgp-backend"),
+              "portal": ("EXPECTED_PORTAL_IMAGE", "ghcr.io/the333tech/the333-bgp-portal"),
+          }
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
+              for name, (variable, repository) in repositories.items():
+                  reference = str(images.get(name, ""))
+                  if not re.fullmatch(rf"{re.escape(repository)}@sha256:[0-9a-f]{{64}}", reference):
+                      raise SystemExit(f"invalid published image reference: {name}")
+                  output.write(f"{variable}={reference}\n")
+          PY
+
+      - name: Install from the published archive
+        shell: bash
+        run: |
+          cp ./install.sh "${RUNNER_TEMP}/the333-release-install.sh"
+          export THE333_PROJECT_DIR="${THE333_SMOKE_DIR}"
+          export THE333_IMAGE_MODE=prebuilt
+          export THE333_VERSION="${GITHUB_REF_NAME#v}"
+          export THE333_BIND_IP=127.0.0.1
+          export LOCAL_AS=64512
+          export ROUTER_ID=127.0.0.2
+          export BGP_NEXTHOP=127.0.0.2
+          export PEER_ADDRESS=127.0.0.1
+          export PEER_AS=64513
+          export BGP_COMMUNITY=64512:500
+          export BGP_TTL_SECURITY_ENABLED=false
+          export WEB_PASSWORD=ci-release-password
+          bash "${RUNNER_TEMP}/the333-release-install.sh" --non-interactive
+
+      - name: Verify installed runtime
+        shell: bash
+        run: |
+          test "$(cat "${THE333_SMOKE_DIR}/VERSION")" = "${GITHUB_REF_NAME#v}"
+          test "$(awk -F= '$1 == "THE333_IMAGE_MODE" {print $2; exit}' "${THE333_SMOKE_DIR}/.env")" = prebuilt
+          test "$(docker inspect -f '{{.Config.Image}}' the333-gobgp-core)" = "${EXPECTED_GOBGP_IMAGE}"
+          test "$(docker inspect -f '{{.Config.Image}}' the333-bgp-backend)" = "${EXPECTED_BACKEND_IMAGE}"
+          test "$(docker inspect -f '{{.Config.Image}}' the333-portal)" = "${EXPECTED_PORTAL_IMAGE}"
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-gobgp-core)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-bgp-backend)" = healthy
+          test "$(docker inspect -f '{{.State.Health.Status}}' the333-portal)" = healthy
+          curl -fsS http://127.0.0.1:8090/ >/dev/null
+          THE333_PROJECT_DIR="${THE333_SMOKE_DIR}" bash "${THE333_SMOKE_DIR}/scripts/the333bgp.sh" status
+
+      - name: Show diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          if [ -d "${THE333_SMOKE_DIR}" ]; then
+            cd "${THE333_SMOKE_DIR}"
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml ps || true
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml logs --no-color --tail=200 || true
+          fi
+          sudo systemctl status --no-pager the333-bgp-updater.service || true
+
+      - name: Clean up smoke runtime
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "${THE333_SMOKE_DIR}/.env" ]; then
+            cd "${THE333_SMOKE_DIR}"
+            docker compose -f docker-compose.yml -f docker-compose.portal.yml down --remove-orphans --volumes || true
+          fi
+          sudo systemctl disable --now the333-bgp-updater.service || true
+          sudo rm -f /etc/systemd/system/the333-bgp-updater.service
+          sudo systemctl daemon-reload
+          sudo rm -rf "${THE333_SMOKE_DIR}" /run/the333-bgp
