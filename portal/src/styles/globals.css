@@ -6054,6 +6054,51 @@ body.scroll-drag-active * {
   color: var(--text-2);
 }
 
+.route-lookup-match .route-lookup-rib-missing {
+  color: var(--bad);
+}
+
+.route-lookup-probe {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 11px;
+}
+
+.route-lookup-probe .ghost-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+}
+
+.route-lookup-probe-result {
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.route-lookup-next-checks {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-1);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.route-lookup-next-checks strong {
+  color: var(--text-1);
+}
+
+.route-lookup-next-checks code {
+  overflow-wrap: anywhere;
+}
+
 .route-lookup-caveat {
   margin: 10px 0 0;
   color: var(--text-3);
@@ -6225,6 +6270,12 @@ body.scroll-drag-active * {
   color: #ffd8d8;
   border-color: rgba(255, 107, 107, 0.24);
   background: rgba(255, 107, 107, 0.08);
+}
+
+.action-status-box.warn {
+  color: var(--warn);
+  border-color: var(--warn-soft);
+  background: var(--warn-soft);
 }
 
 .route-list {

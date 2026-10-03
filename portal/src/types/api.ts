@@ -27,6 +27,12 @@ export type DiagnosticsResponse = {
   gobgp_ready: boolean;
   publication?: PublicationStatus;
   gobgp_rib_count: number | null;
+  route_freshness?: {
+    status: "fresh" | "stale" | "paused" | "disabled" | "unknown";
+    snapshot_updated_at: string | null;
+    age_seconds: number | null;
+    threshold_seconds: number;
+  };
   sources_count: number | null;
   advertised_routes_summary?: {
     count: number;
@@ -203,12 +209,25 @@ export type RouteLookupResponse = {
   checked_at: string;
   dns_error: string | null;
   dns_truncated: boolean;
+  rib_checked?: boolean;
+  rib_error?: string | null;
+  publication_mode?: PublicationStatus["mode"];
   origin_available: boolean;
   addresses: Array<{
     address: string;
+    probe_allowed?: boolean;
     match_count: number;
-    matches: Array<{ prefix: string; communities: string[] }>;
+    matches: Array<{ prefix: string; communities: string[]; in_gobgp_rib?: boolean | null }>;
   }>;
+};
+
+export type RouteProbeResponse = {
+  ok: boolean;
+  address: string;
+  tcp_443_connected: boolean;
+  elapsed_ms: number;
+  checked_at: string;
+  checked_from: "backend_container";
 };
 
 export type RoutesDiffResponse = {

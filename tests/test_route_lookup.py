@@ -21,6 +21,12 @@ class RouteLookupTests(unittest.TestCase):
         self.snapshot_patch = patch.object(main, "LAST_GOOD_SNAPSHOT_FILE", self.snapshot)
         self.snapshot_patch.start()
         self.addCleanup(self.snapshot_patch.stop)
+        self.publication_patch = patch.object(main, "PUBLICATION_CONTROL_FILE", Path(self.temp_dir.name) / "publication_control.json")
+        self.publication_patch.start()
+        self.addCleanup(self.publication_patch.stop)
+        self.rib_patch = patch.object(main, "gobgp_current_prefixes", return_value={"1.1.0.0/16", "1.1.1.0/24"})
+        self.mock_rib = self.rib_patch.start()
+        self.addCleanup(self.rib_patch.stop)
         self.client = TestClient(main.app)
         self.addCleanup(self.client.close)
         main.app.dependency_overrides[main.require_auth] = lambda: "test"
@@ -48,9 +54,12 @@ class RouteLookupTests(unittest.TestCase):
         self.assertEqual(payload["snapshot_route_count"], 3)
         self.assertEqual(payload["snapshot_updated_at"], "2026-09-29T00:00:00+00:00")
         self.assertEqual(payload["addresses"][0]["matches"], [
-            {"prefix": "1.1.1.0/24", "communities": ["64500:510:1"]},
-            {"prefix": "1.1.0.0/16", "communities": []},
+            {"prefix": "1.1.1.0/24", "communities": ["64500:510:1"], "in_gobgp_rib": True},
+            {"prefix": "1.1.0.0/16", "communities": [], "in_gobgp_rib": True},
         ])
+        self.assertTrue(payload["addresses"][0]["probe_allowed"])
+        self.assertTrue(payload["rib_checked"])
+        self.assertEqual(payload["publication_mode"], "publishing")
         self.assertFalse(payload["origin_available"])
 
     def test_no_match_is_not_reported_as_router_state(self) -> None:
@@ -60,6 +69,35 @@ class RouteLookupTests(unittest.TestCase):
 
         self.assertEqual(payload["addresses"][0]["matches"], [])
         self.assertEqual(payload["addresses"][0]["match_count"], 0)
+        self.mock_rib.assert_not_called()
+
+    def test_unavailable_rib_never_looks_confirmed(self) -> None:
+        self.save_snapshot()
+        self.mock_rib.side_effect = RuntimeError("private CLI detail")
+
+        payload = self.lookup("1.1.1.42").json()
+
+        self.assertFalse(payload["rib_checked"])
+        self.assertEqual(payload["addresses"][0]["matches"][0]["in_gobgp_rib"], None)
+        self.assertNotIn("private CLI detail", payload["rib_error"])
+
+    def test_rib_absence_is_distinct_from_snapshot_match(self) -> None:
+        self.save_snapshot()
+        self.mock_rib.return_value = set()
+
+        payload = self.lookup("1.1.1.42").json()
+
+        self.assertTrue(payload["rib_checked"])
+        self.assertEqual(payload["addresses"][0]["matches"][0]["in_gobgp_rib"], False)
+
+    def test_paused_publication_is_reported_even_when_rib_has_prefix(self) -> None:
+        self.save_snapshot()
+        main.write_publication_control("paused", True)
+
+        payload = self.lookup("1.1.1.42").json()
+
+        self.assertEqual(payload["publication_mode"], "paused")
+        self.assertTrue(payload["addresses"][0]["matches"][0]["in_gobgp_rib"])
 
     def test_domain_resolves_ipv4_without_http_fetch(self) -> None:
         self.save_snapshot()

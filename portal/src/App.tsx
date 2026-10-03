@@ -39,6 +39,7 @@ import {
   ReadyResponse,
   RouteDiffSection,
   RouteLookupResponse,
+  RouteProbeResponse,
   RouteSetKind,
   RoutesDiffResponse,
   RoutesResponse,
@@ -570,20 +571,20 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.91b";
+const PRODUCT_VERSION = "0.92b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.91b",
-    version: "0.91b",
-    title: "v0.91b",
+    id: "0.92b",
+    version: "0.92b",
+    title: "v0.92b",
     channel: "beta",
     status: "текущая версия",
     date: "октябрь 2026",
     changelog: [
-      "Аварийная приостановка и возобновление публикации маршрутов.",
-      "Поиск сохранённых маршрутов по IP-адресу или домену и исключения IPv4-сетей с предварительным просмотром.",
-      "Предварительная загрузка готовых образов при поддержке установленным updater; GoBGP Core остаётся 4.9.0."
+      "Проверка совпадений адреса с локальным GoBGP RIB и ручной TCP/443-тест из Backend.",
+      "Предупреждение об устаревшем успешно применённом наборе маршрутов.",
+      "Инструкция уточняет раздельную проверку маршрута MikroTik и VPN; GoBGP Core остаётся 4.9.0."
     ]
   }
 ];
@@ -2452,6 +2453,27 @@ ${failedServices.map((service) => `- ${service.title ?? service.id}: ${service.e
     }
   ];
   const readyErrors = ready?.errors ?? [];
+  const routeFreshness = diagnostics?.route_freshness;
+
+  if (routeFreshness?.status === "stale") {
+    statusItems.push({
+      label: "Свежесть маршрутов",
+      detail: `нет успешного применения ${formatDurationSeconds(routeFreshness.age_seconds)}`,
+      tone: "warn",
+      help: `Последний успешный набор маршрутов:
+${formatDate(routeFreshness.snapshot_updated_at ?? undefined)}
+Порог предупреждения: ${formatDurationSeconds(routeFreshness.threshold_seconds)}.
+
+Проверьте автообновление, доступность источников и последние события. Старые маршруты остаются опубликованными до успешного применения нового набора.`
+    });
+  } else if (routeFreshness?.status === "unknown" && (lastGoodCount ?? 0) > 0) {
+    statusItems.push({
+      label: "Свежесть маршрутов",
+      detail: "время успешного набора неизвестно",
+      tone: "warn",
+      help: "Проверьте сохранённый снимок и последнее успешное обновление. Возраст маршрутов не удалось подтвердить."
+    });
+  }
 
   if (readyErrors.length > 0) {
     statusItems.unshift({
@@ -3619,6 +3641,8 @@ function RoutesPage({
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [lookupBusy, setLookupBusy] = useState(false);
   const lookupRequestId = useRef(0);
+  const [probeBusyAddress, setProbeBusyAddress] = useState<string | null>(null);
+  const [probeResults, setProbeResults] = useState<Record<string, RouteProbeResponse | string>>({});
   const [diffBase, setDiffBase] = useState<RouteSetKind>("last_good");
   const [diffTarget, setDiffTarget] = useState<RouteSetKind>("advertised");
   const [diffSection, setDiffSection] = useState<RouteDiffSection>("added");
@@ -3778,6 +3802,7 @@ function RoutesPage({
     setLookupBusy(true);
     setLookupError(null);
     setLookupData(null);
+    setProbeResults({});
     try {
       const payload = await apiFetch<RouteLookupResponse>("/api/routes/lookup", auth, {
         method: "POST",
@@ -3789,6 +3814,38 @@ function RoutesPage({
     } finally {
       if (requestId === lookupRequestId.current) setLookupBusy(false);
     }
+  };
+
+  const runProbe = async (address: string) => {
+    const lookupId = lookupRequestId.current;
+    setProbeBusyAddress(address);
+    setProbeResults((current) => ({ ...current, [address]: "" }));
+    try {
+      const result = await apiFetch<RouteProbeResponse>("/api/routes/probe", auth, {
+        method: "POST",
+        body: JSON.stringify({ address }),
+      });
+      if (lookupId === lookupRequestId.current) setProbeResults((current) => ({ ...current, [address]: result }));
+    } catch (err) {
+      if (lookupId === lookupRequestId.current) setProbeResults((current) => ({ ...current, [address]: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setProbeBusyAddress(null);
+    }
+  };
+
+  const renderProbeResult = (address: string) => {
+    const result = probeResults[address];
+    if (!result) return null;
+    if (typeof result === "string") {
+      return <span className="route-lookup-probe-result" role="alert">{result}</span>;
+    }
+    return (
+      <span className="route-lookup-probe-result" role="status">
+        {result.tcp_443_connected
+          ? `TCP/443 из Backend доступен (${result.elapsed_ms} мс).`
+          : "TCP/443 из Backend не ответил. Это может быть ограничение сервиса или сети."}
+      </span>
+    );
   };
 
   return (
@@ -3845,6 +3902,7 @@ function RoutesPage({
                 setLookupData(null);
                 setLookupError(null);
                 setLookupBusy(false);
+                setProbeResults({});
               }}
               placeholder="IP-адрес или домен"
               maxLength={253}
@@ -3863,6 +3921,10 @@ function RoutesPage({
             </div>
             {lookupData.dns_error && <div className="action-status-box bad">{lookupData.dns_error}</div>}
             {lookupData.dns_truncated && <p className="route-lookup-caveat">DNS вернул больше 16 адресов; показаны только первые 16. Остальные могут иметь другой маршрут.</p>}
+            {lookupData.rib_error && <div className="action-status-box warn">{lookupData.rib_error}</div>}
+            {lookupData.publication_mode && lookupData.publication_mode !== "publishing" && (
+              <div className="action-status-box warn">Публикация BGP сейчас остановлена или её состояние не подтверждено.</div>
+            )}
             {lookupData.addresses.map((item) => (
               <div className="route-lookup-address" key={item.address}>
                 <div className="route-lookup-address-header">
@@ -3874,12 +3936,36 @@ function RoutesPage({
                     <code>{match.prefix}</code>
                     <span>{index === 0 ? "самый длинный префикс" : "перекрывающий префикс"}</span>
                     {match.communities.length > 0 && <small>Community: {match.communities.join(", ")}</small>}
+                    <small className={match.in_gobgp_rib === false ? "route-lookup-rib-missing" : ""}>
+                      GoBGP RIB: {match.in_gobgp_rib === true ? "префикс найден" : match.in_gobgp_rib === false ? "префикс отсутствует" : "не проверено"}
+                    </small>
                   </div>
                 ))}
                 {item.match_count > item.matches.length && <small>Показаны первые {item.matches.length} совпадений.</small>}
+                {item.probe_allowed && item.matches.some((match) => match.in_gobgp_rib === true)
+                  && lookupData.publication_mode === "publishing" && (
+                    <div className="route-lookup-probe">
+                      <button className="ghost-button" type="button" onClick={() => void runProbe(item.address)} disabled={probeBusyAddress !== null}>
+                        <IconStethoscope size={16} stroke={2} />
+                        {probeBusyAddress === item.address ? "Проверяю..." : "Проверить TCP/443"}
+                      </button>
+                      {renderProbeResult(item.address)}
+                    </div>
+                  )}
               </div>
             ))}
-            {lookupData.addresses.length > 0 && <p className="route-lookup-caveat">Исходный источник префикса в снимке не сохранён. Наличие префикса не подтверждает получение маршрута роутером или работу VPN.</p>}
+            {lookupData.addresses.some((item) => item.match_count > 0) && (
+              <div className="route-lookup-next-checks">
+                <strong>Дальше на MikroTik</strong>
+                <span>BGP-сессия: проверьте state=established и prefix-count через <code>/routing/bgp/session/print detail</code>.</span>
+                <span>Маршрут: проверьте активный префикс и его gateway в IP → Routes. Наличие в GoBGP RIB не подтверждает приём роутером.</span>
+                <span>VPN: проверьте на MikroTik активный gateway, свежий AWG handshake и рост счётчиков передачи при тесте; затем проверьте выход с LAN-клиента. DNS клиента может отличаться от DNS сервера.</span>
+              </div>
+            )}
+            {lookupData.addresses.length > 0 && lookupData.addresses.every((item) => item.match_count === 0) && (
+              <p className="route-lookup-caveat">В последнем успешном наборе нет маршрута для этих адресов. Проверка VPN-пути через The333-BGP для них неприменима.</p>
+            )}
+            {lookupData.addresses.some((item) => item.match_count > 0) && <p className="route-lookup-caveat">Пробник устанавливает только TCP-соединение с выбранным публичным IPv4:443 из контейнера Backend. Сервис может не принимать соединения на 443. Успех не доказывает приём маршрута MikroTik или выход LAN-клиента через VPN. Исходный источник префикса в снимке не сохранён.</p>}
           </div>
         )}
       </section>
