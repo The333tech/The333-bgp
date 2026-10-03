@@ -235,6 +235,8 @@ REMOTE_FETCH_CACHE_LOCK = threading.RLock()
 SERVICE_DNS_CACHE_LOCK = threading.RLock()
 STATE_WRITE_LOCK = threading.RLock()
 RUNTIME_SETTINGS_LOCK = threading.RLock()
+ROUTE_PROBE_LOCK = threading.Lock()
+ROUTE_PROBE_LAST_AT = 0.0
 RUNNING_JOB_IDS: set[str] = set()
 AUTH_FAILURES: dict[str, dict[str, float | int]] = {}
 AUTH_SESSIONS: dict[str, dict[str, Any]] = {}
@@ -552,7 +554,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.91b"
+    return "0.92b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
@@ -2479,10 +2481,10 @@ def gobgp_del(prefix: str) -> tuple[bool, str]:
     return ok, msg
 
 
-def gobgp_current_prefixes() -> set[str]:
+def gobgp_current_prefixes(timeout_seconds: int = 120) -> set[str]:
     result = run_cmd(
         gobgp_cli_args(["global", "rib", "-a", "ipv4"]),
-        timeout=120,
+        timeout=timeout_seconds,
     )
 
     if result.returncode != 0:
@@ -4793,6 +4795,43 @@ def gobgp_rib_count() -> int:
     return count
 
 
+def route_freshness_status(
+    settings: dict[str, Any], snapshot: Any, current_time: datetime | None = None,
+) -> dict[str, Any]:
+    route_settings = settings["route_auto_update"]
+    interval_seconds = int(route_settings["interval_minutes"]) * 60
+    threshold_seconds = max(interval_seconds * 3, 1800)
+    updated_at = snapshot.get("updated_at") if isinstance(snapshot, dict) else None
+    result: dict[str, Any] = {
+        "status": "unknown",
+        "snapshot_updated_at": updated_at if isinstance(updated_at, str) else None,
+        "age_seconds": None,
+        "threshold_seconds": threshold_seconds,
+    }
+    if not route_settings["enabled"]:
+        result["status"] = "disabled"
+        return result
+    if publication_is_paused():
+        result["status"] = "paused"
+        return result
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("prefixes"), list) or not snapshot["prefixes"]:
+        return result
+    if not isinstance(updated_at, str):
+        return result
+    try:
+        updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        if updated.tzinfo is None:
+            return result
+        age = int(((current_time or datetime.now(timezone.utc)) - updated).total_seconds())
+    except (ValueError, TypeError, OverflowError):
+        return result
+    if age < -300:
+        return result
+    result["age_seconds"] = max(0, age)
+    result["status"] = "stale" if age > threshold_seconds else "fresh"
+    return result
+
+
 @app.get("/api/update-history")
 async def api_update_history(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(
@@ -4813,6 +4852,7 @@ def build_diagnostics_payload() -> dict[str, Any]:
     status_data = read_json(STATUS_FILE, {})
     runtime_settings = read_runtime_settings()
     route_auto_update = runtime_settings["route_auto_update"]
+    snapshot = read_json(LAST_GOOD_SNAPSHOT_FILE, {})
 
     diagnostics: dict[str, Any] = {
         "ok": True,
@@ -4828,6 +4868,7 @@ def build_diagnostics_payload() -> dict[str, Any]:
         "last_good_routes_summary": summarize_prefixes(last_good_routes),
         "sources_count": len(sources) if isinstance(sources, list) else None,
         "last_status": status_data,
+        "route_freshness": route_freshness_status(runtime_settings, snapshot),
         "safe_env": {
             "AUTO_UPDATE": bool(route_auto_update["enabled"]),
             "UPDATE_INTERVAL_SECONDS": int(route_auto_update["interval_minutes"]) * 60,
@@ -6707,6 +6748,62 @@ def route_lookup_host(query: str) -> tuple[str, str]:
     return "domain", ascii_name
 
 
+def probe_route_tcp_443(address: str) -> bool:
+    try:
+        with socket.create_connection((address, 443), timeout=3):
+            return True
+    except (OSError, TimeoutError):
+        return False
+
+
+@app.post("/api/routes/probe")
+async def api_route_probe(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeError) as exc:
+        raise HTTPException(status_code=400, detail="Ожидается JSON с адресом IPv4.") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("address"), str):
+        raise HTTPException(status_code=400, detail="Введите публичный адрес IPv4.")
+    try:
+        address = ipaddress.IPv4Address(payload["address"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Введите публичный адрес IPv4.") from exc
+    if not is_public_remote_ip(str(address)):
+        raise HTTPException(status_code=400, detail="Проверять можно только публичный адрес IPv4.")
+
+    routes, _ = route_lookup_snapshot()
+    matching_prefixes = {str(network) for network, _ in routes if address in network}
+    if not matching_prefixes:
+        raise HTTPException(status_code=409, detail="Адрес отсутствует в последнем успешном наборе маршрутов.")
+    if publication_is_paused():
+        raise HTTPException(status_code=409, detail="Публикация BGP приостановлена; сетевой тест не запускается.")
+
+    global ROUTE_PROBE_LAST_AT
+    with ROUTE_PROBE_LOCK:
+        now = time.monotonic()
+        if ROUTE_PROBE_LAST_AT and now - ROUTE_PROBE_LAST_AT < 5:
+            raise HTTPException(status_code=429, detail="Подождите 5 секунд перед повторной проверкой.")
+        ROUTE_PROBE_LAST_AT = now
+    try:
+        current_prefixes = await asyncio.to_thread(gobgp_current_prefixes, 15)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        LOGGER.warning("route probe could not read GoBGP RIB (%s)", type(exc).__name__)
+        raise HTTPException(status_code=409, detail="GoBGP RIB недоступен; сетевой тест не запускается.") from exc
+    if not matching_prefixes.intersection(current_prefixes):
+        raise HTTPException(status_code=409, detail="Маршрут не найден в GoBGP RIB; сетевой тест не запускается.")
+
+    started = time.monotonic()
+    connected = await asyncio.to_thread(probe_route_tcp_443, str(address))
+    return JSONResponse({
+        "ok": True,
+        "address": str(address),
+        "tcp_443_connected": connected,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+        "checked_at": now_iso(),
+        "checked_from": "backend_container",
+    }, headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/routes/lookup")
 async def api_route_lookup(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
     try:
@@ -6742,17 +6839,33 @@ async def api_route_lookup(request: Request, _: str = Depends(require_auth)) -> 
             dns_error = "DNS не вернул адреса IPv4 или не ответил вовремя."
 
     results = []
+    has_matches = False
     for address in addresses:
         ip = ipaddress.IPv4Address(address)
         matches = sorted(
             ((network, communities) for network, communities in routes if ip in network),
             key=lambda item: (-item[0].prefixlen, int(item[0].network_address)),
         )
+        has_matches = has_matches or bool(matches)
         results.append({
             "address": address,
-            "matches": [{"prefix": str(network), "communities": communities} for network, communities in matches[:16]],
+            "probe_allowed": is_public_remote_ip(address),
+            "matches": [{"prefix": str(network), "communities": communities, "in_gobgp_rib": None}
+                        for network, communities in matches[:16]],
             "match_count": len(matches),
         })
+
+    rib_checked = False
+    rib_error = None
+    if has_matches:
+        try:
+            current_prefixes = await asyncio.to_thread(gobgp_current_prefixes, 15)
+            rib_checked = True
+            for item in results:
+                for match in item["matches"]:
+                    match["in_gobgp_rib"] = match["prefix"] in current_prefixes
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            rib_error = "GoBGP RIB временно недоступен; наличие маршрута не подтверждено."
 
     return JSONResponse({
         "ok": True,
@@ -6765,6 +6878,9 @@ async def api_route_lookup(request: Request, _: str = Depends(require_auth)) -> 
         "dns_error": dns_error,
         "dns_truncated": dns_truncated,
         "addresses": results,
+        "rib_checked": rib_checked,
+        "rib_error": rib_error,
+        "publication_mode": read_publication_control()["mode"],
         "origin_available": False,
     }, headers={"Cache-Control": "no-store"})
 
