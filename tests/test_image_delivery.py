@@ -176,7 +176,7 @@ class ImageDeliveryTests(unittest.TestCase):
             old_refs = image_refs("a")
             env_path = project / ".env"
             text = env_path.read_text(encoding="utf-8")
-            text += "GOBGP_CORE_IMAGE_VERSION=4.9.0-r1\n"
+            text += "GOBGP_CORE_IMAGE_VERSION=4.9.0-r2\n"
             for key, image_key in (("THE333_GOBGP_IMAGE", "core"),
                                    ("THE333_BACKEND_IMAGE", "backend"),
                                    ("THE333_PORTAL_IMAGE", "portal")):
@@ -217,7 +217,7 @@ class ImageDeliveryTests(unittest.TestCase):
             result = self._run_migration(project, "0.90b")
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             migrated = env_path.read_text(encoding="utf-8")
-            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", migrated)
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r2", migrated)
             for reference in new_refs.values():
                 self.assertIn(reference, migrated)
             for reference in old_refs.values():
@@ -228,7 +228,7 @@ class ImageDeliveryTests(unittest.TestCase):
             project = self._project(Path(directory), "prebuilt")
             env_path = project / ".env"
             text = env_path.read_text(encoding="utf-8")
-            text += "GOBGP_CORE_IMAGE_VERSION=4.9.0-r1\n"
+            text += "GOBGP_CORE_IMAGE_VERSION=4.9.0-r2\n"
             text = text.replace("THE333_GOBGP_IMAGE=", "THE333_GOBGP_IMAGE=untrusted/core:latest")
             env_path.write_text(text, encoding="utf-8")
             new_refs = image_refs("b")
@@ -241,6 +241,28 @@ class ImageDeliveryTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertIn(f"THE333_GOBGP_IMAGE={new_refs['core']}",
                           env_path.read_text(encoding="utf-8"))
+
+    def test_prebuilt_security_rebuild_replaces_core_without_changing_gobgp_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = self._project(Path(directory), "prebuilt")
+            old_refs = image_refs("a")
+            env_path = project / ".env"
+            text = env_path.read_text(encoding="utf-8")
+            text += "GOBGP_CORE_IMAGE_VERSION=4.9.0-r1\n"
+            text = text.replace("THE333_GOBGP_IMAGE=", f"THE333_GOBGP_IMAGE={old_refs['core']}")
+            env_path.write_text(text, encoding="utf-8")
+            new_refs = image_refs("b")
+            (project / "update-manifest.json").write_text(
+                json.dumps({"versions": [{"version": "1.1", "images": new_refs}]}),
+                encoding="utf-8",
+            )
+
+            result = self._run_migration(project, "1.1")
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            migrated = env_path.read_text(encoding="utf-8")
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r2", migrated)
+            self.assertIn(f"THE333_GOBGP_IMAGE={new_refs['core']}", migrated)
+            self.assertNotIn(old_refs["core"], migrated)
 
     def test_prebuilt_migration_rejects_wrong_repository_without_modifying_env(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

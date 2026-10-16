@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 env:
-  GRYPE_VERSION: v0.112.0
+  GRYPE_VERSION: v0.120.1
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -74,6 +74,7 @@ jobs:
           npm test
           npm run build
           npm audit --omit=dev --audit-level=moderate
+          npm audit --audit-level=high
 
       - name: Test update interface in Chromium
         working-directory: portal

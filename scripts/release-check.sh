@@ -106,7 +106,9 @@ source_required_files=(
   ".github/workflows/codeql.yml"
   ".github/workflows/docker-awg.yml"
   ".github/workflows/ghcr-candidate.yml"
+  ".github/workflows/published-security.yml"
   ".github/workflows/release.yml"
+  "scripts/release-image-matrix.py"
   "tests/test_auth_sessions.py"
   "tests/test_background_jobs.py"
   "tests/test_catalog_migration.py"
@@ -114,6 +116,7 @@ source_required_files=(
   "tests/test_installer_upgrade_flow.py"
   "tests/test_image_delivery.py"
   "tests/test_release_metadata.py"
+  "tests/test_published_image_scan.py"
   "tests/test_remote_fetch_security.py"
   "tests/test_route_transaction.py"
   "tests/test_release_archive_and_env_migration.py"
@@ -163,7 +166,8 @@ else
   log "installed tree detected; runtime .env/data/backups checks skipped"
 fi
 
-if grep -RIn \
+placeholder_scan_status=0
+grep -RIn \
     --exclude-dir=.git \
     --exclude-dir=.github \
     --exclude-dir=node_modules \
@@ -172,9 +176,12 @@ if grep -RIn \
     --exclude-dir=data \
     --exclude-dir=backups \
     --exclude='release-check.sh' \
-    -E 'the333ctl|OWNER/REPO|TODO_RELEASE|CHANGE_ME_REAL_SECRET' .; then
-  fail "forbidden placeholder or old control name found"
-fi
+    -E 'the333ctl|OWNER/REPO|TODO_RELEASE|CHANGE_ME_REAL_SECRET' . || placeholder_scan_status=$?
+case "${placeholder_scan_status}" in
+  0) fail "forbidden placeholder or old control name found" ;;
+  1) ;;
+  *) fail "release tree search failed (exit ${placeholder_scan_status})" ;;
+esac
 
 "${PYTHON_BIN}" -m py_compile app/main.py scripts/host-updater.py scripts/extract-release.py scripts/migrate-env.py
 bash -n install.sh

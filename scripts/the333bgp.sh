@@ -309,7 +309,7 @@ check_update_disk_space() {
   min_bytes="${configured_min_bytes}"
   recommended_bytes="${configured_recommended_bytes}"
   image_mode="$(runtime_image_mode)"
-  core_image="${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1}}"
+  core_image="${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r2}}"
   if [[ -n "${target_core_version}" && "${target_core_version}" != "${GOBGP_CORE_IMAGE_VERSION:-}" ]]; then
     if (( min_bytes < DEFAULT_MIN_CORE_UPDATE_FREE_BYTES )); then
       min_bytes="${DEFAULT_MIN_CORE_UPDATE_FREE_BYTES}"
@@ -1341,7 +1341,7 @@ build_update_images() {
     return 0
   fi
 
-  core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1}"
+  core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r2}"
   if [[ "${readiness_mode}" == "legacy" ]]; then
     log "Rollback: выполняется полная сборка предыдущего runtime."
     compose build || return 1

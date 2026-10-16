@@ -35,6 +35,7 @@ npm ci
 npm test
 npm run build
 npm audit --omit=dev --audit-level=moderate
+npm audit --audit-level=high
 ```
 
 Для Docker, установщика или runtime дополнительно проверь Compose-конфигурацию и сборку затронутых образов. Не выполняй тестовое применение маршрутов на рабочем роутере без backup, Safe Mode и независимого доступа к MikroTik.

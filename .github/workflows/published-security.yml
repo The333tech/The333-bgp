@@ -1,0 +1,132 @@
+name: Scan published release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 2"
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  GRYPE_VERSION: v0.120.1
+
+concurrency:
+  group: published-security
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Read published image references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.references.outputs.matrix }}
+      tag: ${{ steps.references.outputs.tag }}
+    steps:
+      - name: Checkout scan tools
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Read latest published release manifest
+        id: references
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')"
+          [[ "${tag}" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?b?$ ]] || { echo "No supported published release tag found" >&2; exit 1; }
+          mkdir -p "${RUNNER_TEMP}/published-release"
+          gh release download "${tag}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern update-manifest.json --dir "${RUNNER_TEMP}/published-release"
+          matrix="$(python3 scripts/release-image-matrix.py "${RUNNER_TEMP}/published-release/update-manifest.json" "${tag#v}")"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+
+  scan:
+    name: Scan ${{ matrix.service }} (${{ matrix.architecture }})
+    needs: discover
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout scanner configuration
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR for read-only access
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan immutable published image
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        env:
+          GRYPE_PLATFORM: ${{ matrix.platform }}
+          GRYPE_DB_VALIDATE_AGE: "true"
+        with:
+          image: registry:${{ matrix.image }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: json
+          output-file: scan-report.json
+          cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+      - name: Preserve scan report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-security-${{ needs.discover.outputs.tag }}-${{ matrix.service }}-${{ matrix.architecture }}
+          path: scan-report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  scan-source:
+    name: Scan published source dependencies
+    needs: discover
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout scanner configuration
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Download published source SBOM
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.discover.outputs.tag }}
+        run: |
+          gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern the333-bgp.spdx.json --dir "${RUNNER_TEMP}/published-source"
+
+      - name: Scan published source SBOM
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        env:
+          GRYPE_DB_VALIDATE_AGE: "true"
+        with:
+          sbom: ${{ runner.temp }}/published-source/the333-bgp.spdx.json
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: json
+          output-file: source-scan-report.json
+          cache-db: true
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+      - name: Preserve source scan report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-security-${{ needs.discover.outputs.tag }}-source
+          path: source-scan-report.json
+          if-no-files-found: warn
+          retention-days: 30

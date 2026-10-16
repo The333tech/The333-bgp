@@ -31,3 +31,4 @@ Dockerfile text eol=lf
 
 /.github export-ignore
 /tests export-ignore
+/scripts/release-image-matrix.py export-ignore
