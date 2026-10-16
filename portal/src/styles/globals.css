@@ -3120,6 +3120,28 @@ body,
   border-color: var(--border-1);
 }
 
+.service-power-badge.enabled.neutral {
+  color: var(--text-2);
+  background: var(--panel-2);
+  border-color: var(--border-1);
+  animation: none;
+}
+
+.service-provider-data {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.service-details-data-status {
+  margin-top: 12px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
 @keyframes serviceEnabledPulse {
   0%, 100% {
     transform: scale(1);
@@ -3444,6 +3466,14 @@ body,
   background: rgba(28, 28, 30, 0.97);
   border: 1px solid var(--border-2);
   box-shadow: var(--shadow-card);
+}
+
+.service-details-modal:not(.candidate-details-modal) {
+  grid-template-rows: none;
+  grid-auto-rows: max-content;
+  overflow-y: auto;
+  scrollbar-color: rgba(200, 134, 22, 0.46) rgba(255, 255, 255, 0.08);
+  scrollbar-width: thin;
 }
 
 .service-details-summary {
