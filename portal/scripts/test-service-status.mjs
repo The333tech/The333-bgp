@@ -110,6 +110,15 @@ test("a valid but empty result is not a successful module", () => {
   assert.equal(serviceDataStatus(runtime({ type: "static_prefixes", accepted: 1 })).kind, "checked");
 });
 
+test("failed DNS without a usable cache is empty, not partially successful", () => {
+  const provider = remote({ accepted: 0, warnings_count: 1,
+    domain_stats: [{ domain: "example.com", warning: "DNS unavailable", resolve_status: "temporary_failure", last_success_at: null, cache_hit: false }] });
+  assert.equal(providerDataStatus(provider).kind, "empty");
+  assert.equal(providerDataStatus(provider).label, "нет DNS-данных");
+  assert.equal(serviceDataStatus(runtime(provider)).kind, "empty");
+  assert.equal(countProviderWarnings(provider), 1);
+});
+
 test("infrastructure scope and data quality are independent", () => {
   const small = { accepted: 5, providers: [remote({ warnings_count: 1 })] };
   assert.equal(serviceCoverageProfile({ id: "small" }, small).broad, false);

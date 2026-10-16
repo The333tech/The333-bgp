@@ -146,6 +146,9 @@ export function providerDataStatus(provider?: ServiceProvider): DataStatus {
   if (dnsIssues) reasons.push("Есть предупреждения DNS; часть адресов могла не попасть в результат.");
   const warnings = countProviderWarnings(provider);
   if (warnings > 0) reasons.push(`Предупреждений: ${warnings}.`);
+  if (dnsIssues && !cached && provider.accepted === 0) {
+    return { kind: "empty", label: "нет DNS-данных", tone: "warn", text: "Допустимых IPv4-адресов не получено: есть предупреждения DNS, а пригодного кэша нет. Результат не считается частично успешным." };
+  }
 
   if (reasons.length > 0) {
     const kind = limited ||

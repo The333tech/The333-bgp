@@ -20,6 +20,10 @@ const cases = [
   { id: "healthy", title: "Проверенный модуль", stat: { accepted: 5, providers: [provider()] } },
   { id: "google", title: "Google", stat: { accepted: 5, providers: [provider()] } },
   { id: "failed", title: "Ошибка источника", stat: { accepted: 0, error: "Unavailable", providers: [provider({ accepted: 0, error: "Unavailable" })] } },
+  { id: "dns-empty", title: "DNS без сохранённых адресов", stat: { accepted: 0, providers: [provider({
+    accepted: 0, warnings_count: 1,
+    domain_stats: [{ domain: "example.com", warning: "DNS unavailable", resolve_status: "temporary_failure", cache_hit: false, last_success_at: null }],
+  })] } },
 ];
 
 async function installFixture(context: BrowserContext, options: { unavailable?: boolean } = {}) {
@@ -75,7 +79,7 @@ test("module scope and data status remain independent on dashboard and catalog",
   const active = page.locator(".ops-active-modules-card");
   await expect(active.locator(".ops-module-row").filter({ hasText: "Модуль без результата" })).toContainText("не проверен");
   await expect(active.locator(".ops-module-row").filter({ hasText: "Неполный список" })).toContainText("частично");
-  await expect(page.locator(".ops-status-card")).toContainText("проверить данные: 5");
+  await expect(page.locator(".ops-status-card")).toContainText("проверить данные: 6");
 
   await page.locator(".nav-item").filter({ hasText: "Модули сервисов" }).click();
   const card = (id: string) => page.locator(".service-catalog-panel .service-compact-card").filter({ has: page.locator(".table-sub", { hasText: new RegExp(`^${id}$`) }) });
@@ -86,6 +90,7 @@ test("module scope and data status remain independent on dashboard and catalog",
   await expect(card("cached").locator(".service-data-status")).toHaveText("кэш");
   await expect(card("failed").locator(".service-data-status")).toHaveText("ошибка");
   await expect(card("healthy").locator(".service-data-status")).toHaveText("проверен");
+  await expect(card("dns-empty").locator(".service-data-status")).toHaveText("нет маршрутов");
   await expect(card("dns-warning").locator(".quality-profile-pill")).toHaveText("компактный");
   await expect(card("google").locator(".quality-profile-pill")).toHaveText("инфраструктурный");
   await expect(card("google").locator(".service-data-status")).toHaveText("проверен");
