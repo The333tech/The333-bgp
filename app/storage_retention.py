@@ -20,6 +20,7 @@ REPOSITORIES = ("the333-bgp-core", "the333-bgp-backend", "the333-bgp-portal")
 ARCHIVE_RE = re.compile(r"the333-bgp-before-update-\d{8}-\d{6}(?:-[A-Za-z0-9]{8})?\.tar\.gz")
 IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 VERSION_RE = re.compile(r"[0-9]+(?:\.[0-9]+)+(?:[a-z][0-9]*)?")
+LAZY_SNAPSHOTTERS = {"stargz", "nydus", "overlaybd", "soci"}
 
 
 class StorageError(RuntimeError):
@@ -89,7 +90,8 @@ class Docker:
         return result.stdout
 
     def info(self) -> dict:
-        return json.loads(self.run("info", "--format", '{"id":{{json .ID}},"root":{{json .DockerRootDir}}}'))
+        return json.loads(self.run("info", "--format",
+            '{"id":{{json .ID}},"root":{{json .DockerRootDir}},"driver":{{json .Driver}},"driver_status":{{json .DriverStatus}}}'))
 
     def image(self, reference: str) -> dict | None:
         output = self.run("image", "inspect", "--format",
@@ -264,6 +266,8 @@ class Retention:
                            key=lambda r: r["generation"], reverse=True)
         protected = succeeded[:self.keep] + [r for r in records if r["status"] == "pending"]
         blockers = []
+        if info.get("driver") in LAZY_SNAPSHOTTERS:
+            blockers.append("Очистка отключена: полное локальное наличие слоёв lazy-snapshotter не подтверждено.")
         if len(succeeded) < self.keep:
             blockers.append(f"Нужно {self.keep} подтверждённых комплектов; сейчас {len(succeeded)}. Удаление пока отключено.")
         for record in protected:
@@ -393,6 +397,13 @@ def directory_bytes(path: Path, excluded: set[str] | None = None) -> dict:
 
 def storage_report(retention: Retention) -> dict:
     info = retention.docker.info()
+    notes = []
+    if ["driver-type", "io.containerd.snapshotter.v1"] in (info.get("driver_status") or []):
+        notes.append("containerd может хранить образы отдельно от Docker Root Dir. "
+                     "Путь отдельного хранилища не определён этим отчётом; если он на другом разделе, проверь место там отдельно.")
+    if info.get("driver") in LAZY_SNAPSHOTTERS:
+        notes.append("Обнаружен snapshotter с возможной lazy-загрузкой: наличие image ID не гарантирует все слои для офлайн-отката. "
+                     "До обновления нужна полная локальная копия образов и проверка восстановления.")
     current = retention.docker.current_images(retention.project)
     references = {i["reference"] for i in current}
     references.update(i["reference"] for r in retention.read_records() for i in r["images"])
@@ -405,6 +416,7 @@ def storage_report(retention: Retention) -> dict:
             "update_backups": directory_bytes(retention.backups),
             "portal_backups": directory_bytes(retention.project / "data" / "system_backups"),
             "project_filesystem": filesystem_space(retention.project), "docker_root": info["root"],
+            "storage_notes": notes,
             "docker_filesystem": filesystem_space(Path(info["root"])), "tracked_images": list(images.values()),
             "cleanup": retention.plan()}
 

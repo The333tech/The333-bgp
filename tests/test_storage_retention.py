@@ -1,5 +1,6 @@
 import hashlib
 import io
+import importlib.util
 import json
 import os
 import subprocess
@@ -331,11 +332,31 @@ class StorageRetentionTests(unittest.TestCase):
         self.assertIn("error", report["docker_filesystem"])
         self.assertTrue(report["cleanup"]["blockers"])
 
+    def test_report_does_not_claim_containerd_or_lazy_layers_are_fully_measured(self):
+        self.snapshot("1.0", "1.1", 1)
+        info = {**self.docker.info(), "driver": "stargz", "driver_status": [["driver-type", "io.containerd.snapshotter.v1"]]}
+        with patch.object(self.docker, "info", return_value=info):
+            report = storage_report(self.retention)
+        self.assertEqual(len(report["storage_notes"]), 2)
+        self.assertIn("Путь отдельного хранилища не определён", report["storage_notes"][0])
+        self.assertIn("не гарантирует все слои", report["storage_notes"][1])
+        self.assertTrue(any("lazy-snapshotter" in reason for reason in report["cleanup"]["blockers"]))
+        self.assertEqual(report["cleanup"]["files"], [])
+        self.assertEqual(report["cleanup"]["images"], [])
+
     def test_measurement_does_not_follow_external_symlink(self):
         outside = self.project.parent / "large-file"
         outside.write_bytes(b"123456789")
         (self.project / "external").symlink_to(outside)
         self.assertEqual(directory_bytes(self.project)["bytes"], len((self.project / ".env").read_bytes()))
+
+    def test_cli_formats_space_without_turning_unknown_into_zero(self):
+        spec = importlib.util.spec_from_file_location("storage_cli_test", Path(__file__).resolve().parents[1] / "scripts" / "storage-maintenance.py")
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        self.assertEqual(cli.size_text(1073741824), "1.0 ГиБ")
+        self.assertEqual(cli.measurement_text({"error": "нет доступа"}), "нет доступа")
+        self.assertIn("каталог отсутствует", cli.measurement_text({"bytes": 0, "exists": False}))
 
     def test_cleanup_refuses_update_lock_and_orphaned_operation(self):
         from app.update_runner import prepare_runtime, runtime_identity

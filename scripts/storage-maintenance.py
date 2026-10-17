@@ -12,15 +12,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.storage_retention import Docker, Retention, StorageError, operation_lock, storage_report
 
 
+def size_text(value: int) -> str:
+    amount = float(value)
+    for unit in ("Б", "КиБ", "МиБ", "ГиБ", "ТиБ"):
+        if amount < 1024 or unit == "ТиБ":
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+
+
+def measurement_text(value: dict) -> str:
+    if value.get("error"):
+        return value["error"]
+    if "free_bytes" in value:
+        return f"свободно {size_text(value['free_bytes'])} из {size_text(value['total_bytes'])} (устройство {value['device']})"
+    return size_text(value["bytes"]) + ("; каталог отсутствует" if not value.get("exists", True) else "")
+
+
 def show_plan(plan: dict) -> None:
     print(f"Сохранить проверенных комплектов отката: {plan['keep']}")
     for name in plan["protected"]:
         print(f"  Оставить: {name}")
     for item in plan["files"]:
-        print(f"  Удалить архив: {item['name']} ({item['bytes']} байт)")
-    print(f"Объём архивов в списке удаления: {plan['archive_bytes']} байт")
+        print(f"  Удалить архив: {item['name']} ({size_text(item['bytes'])})")
+    print(f"Объём архивов в списке удаления: {size_text(plan['archive_bytes'])}")
     for image in plan["images"]:
-        print(f"  Удалить свободный образ: {', '.join(image['references'])} (логический размер {image['logical_bytes']} байт)")
+        print(f"  Удалить свободный образ: {', '.join(image['references'])} (логический размер {size_text(image['logical_bytes'])})")
     print(plan["image_space_note"])
     for message in [*plan["blockers"], *plan["skipped"]]:
         print(f"  Оставлено без изменений: {message}")
@@ -53,10 +69,12 @@ def main() -> int:
                 for label, key in (("Файлы проекта без архивов", "project_files"), ("Архивы обновлятора", "update_backups"),
                                    ("ZIP-бэкапы портала", "portal_backups"), ("Файловая система проекта", "project_filesystem"),
                                    ("Файловая система Docker", "docker_filesystem")):
-                    print(f"{label}: {json.dumps(report[key], ensure_ascii=False)}")
+                    print(f"{label}: {measurement_text(report[key])}")
                 print(f"Docker Root Dir: {report['docker_root']}")
+                for note in report["storage_notes"]:
+                    print(f"Важно: {note}")
                 for image in report["tracked_images"]:
-                    print(f"Образ: {', '.join(image['references'])}; логический размер {image['logical_bytes']} байт")
+                    print(f"Образ: {', '.join(image['references'])}; логический размер {size_text(image['logical_bytes'])}")
                 show_plan(report["cleanup"])
             return 0
         if args.command in {"record", "complete"}:
@@ -85,7 +103,12 @@ def main() -> int:
                 return 0
         with operation_lock(project):
             result = retention.apply(plan)
-        print(json.dumps(result, ensure_ascii=False))
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            print(f"Удалено архивов: {len(result['removed_archives'])}; ссылок на образы: {len(result['removed_image_references'])}.")
+            print(f"Файловая система проекта после очистки: {measurement_text(result['project_filesystem_after'])}")
+            print(f"Docker Root Dir после очистки: {measurement_text(result['docker_filesystem_after'])}")
         return 0
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, StorageError) as exc:
         print(f"Обслуживание хранилища не выполнено: {exc}", file=sys.stderr)
