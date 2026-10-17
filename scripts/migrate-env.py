@@ -219,6 +219,7 @@ def main() -> int:
         "HOST_UPDATER_RESULT_DIR": str(project_dir / "data" / "host-updater-results"),
         "HOST_UPDATER_TOKEN": updater_token,
         "UPDATE_MIN_FREE_BYTES": update_min_free_bytes,
+        "UPDATE_BACKUP_RETENTION": "2",
         "AUTH_ALLOW_BASIC": "false",
         "SESSION_COOKIE_NAME": "the333_session",
         "SESSION_TTL_SECONDS": "43200",

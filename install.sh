@@ -1143,10 +1143,13 @@ resume_backend_after_interrupted_fallback_backup() {
 }
 
 fallback_backup_existing_install() {
+  local old_umask
+  old_umask="$(umask)"
+  umask 077
   mkdir -p "${PROJECT_DIR}/backups"
   local ts archive backend_was_running backup_rc restart_rc status
   ts="$(date +%Y%m%d-%H%M%S)"
-  archive="${PROJECT_DIR}/backups/the333-bgp-before-installer-upgrade-${ts}.tar.gz"
+  archive="$(mktemp --suffix=.tar.gz "${PROJECT_DIR}/backups/the333-bgp-before-installer-upgrade-${ts}-XXXXXXXX")"
   backend_was_running="false"
   backup_rc=0
   restart_rc=0
@@ -1206,6 +1209,7 @@ fallback_backup_existing_install() {
   [[ -s "${archive}" ]] || fail "fallback backup failed"
   tar -tzf "${archive}" >/dev/null || fail "fallback backup integrity check failed"
   log "Fallback backup ready: ${archive}"
+  umask "${old_umask}"
 }
 
 ensure_env_defaults() {

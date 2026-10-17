@@ -88,7 +88,7 @@ BGP:     IP_VM:179
 | `the333-bgp-backend` | API, расчёт маршрутов, источники, модули, Community, jobs |
 | `the333-bgp-updater.service` | изолированный host-side обновлятор через systemd и Unix socket |
 | `the333-portal` | веб-портал через nginx |
-| `scripts/the333bgp.sh` | CLI-команда для status, backup, update и смены пароля |
+| `scripts/the333bgp.sh` | CLI-команда для status, backup, update, отчёта о месте и безопасной ротации |
 
 ## Возможности
 

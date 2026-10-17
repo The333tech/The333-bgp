@@ -89,6 +89,8 @@ Usage:
   scripts/the333bgp.sh image-mode prebuilt CORE_REF BACKEND_REF PORTAL_REF
   scripts/the333bgp.sh install-updater-service
   scripts/the333bgp.sh backup
+  scripts/the333bgp.sh storage [--json]
+  scripts/the333bgp.sh cleanup [--dry-run|--apply] [--non-interactive] [--json]
   scripts/the333bgp.sh check-update [--manifest URL] [--channel stable|beta]
   scripts/the333bgp.sh update [--manifest URL] [--channel stable|beta] [--version VERSION] [--non-interactive] [--dry-run]
 
@@ -400,10 +402,13 @@ resume_backend_after_interrupted_backup() {
 }
 
 make_backup() {
+  local old_umask
+  old_umask="$(umask)"
+  umask 077
   mkdir -p "${BACKUP_DIR}"
   local ts archive backend_was_running backup_rc restart_rc
   ts="$(date +%Y%m%d-%H%M%S)"
-  archive="${BACKUP_DIR}/the333-bgp-before-update-${ts}.tar.gz"
+  archive="$(mktemp --suffix=.tar.gz "${BACKUP_DIR}/the333-bgp-before-update-${ts}-XXXXXXXX")"
   LAST_BACKUP_ARCHIVE="${archive}"
   backend_was_running="false"
   backup_rc=0
@@ -449,6 +454,15 @@ make_backup() {
   }
 
   log "Backup ready: ${archive}"
+  umask "${old_umask}"
+}
+
+storage_maintenance() {
+  configure_docker_access
+  local -a docker_options=()
+  [[ "${DOCKER_CMD[0]}" == "sudo" ]] && docker_options+=(--docker-sudo)
+  THE333_PROJECT_DIR="${PROJECT_DIR}" UPDATE_BACKUP_RETENTION="${UPDATE_BACKUP_RETENTION:-2}" \
+    python3 "${PROJECT_DIR}/scripts/storage-maintenance.py" "$@" "${docker_options[@]}"
 }
 
 runtime_host() {
@@ -1343,7 +1357,17 @@ build_update_images() {
 
   core_image="the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r2}"
   if [[ "${readiness_mode}" == "legacy" ]]; then
-    log "Rollback: выполняется полная сборка предыдущего runtime."
+    local references_text reference missing_image="false"
+    references_text="$(compose config --images)" || return 1
+    [[ -n "${references_text}" ]] || return 1
+    while IFS= read -r reference; do
+      docker_cli image inspect "${reference}" >/dev/null 2>&1 || missing_image="true"
+    done <<< "${references_text}"
+    if [[ "${missing_image}" == "false" ]]; then
+      log "Rollback: используются сохранённые образы предыдущей версии без загрузки и сборки."
+      return 0
+    fi
+    log "Rollback: прежних образов недостаточно; требуется полная сборка предыдущего runtime."
     compose build || return 1
     return 0
   fi
@@ -1415,7 +1439,7 @@ build_and_restart() {
 
 update_project() {
   local manifest version_json selected_version installed_version release_dir backup_archive release_tmp
-  local update_rc failed_stage
+  local update_rc failed_stage retention_registered="false"
   manifest="$(fetch_manifest)"
   version_json="$(printf '%s' "${manifest}" | select_version_json)"
   selected_version="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version") or "")')"
@@ -1444,6 +1468,11 @@ update_project() {
   operation_stage backup
   make_backup
   backup_archive="${LAST_BACKUP_ARCHIVE}"
+  if [[ -f "${PROJECT_DIR}/scripts/storage-maintenance.py" ]]; then
+    storage_maintenance record --archive "${backup_archive}" --target-version "${selected_version}" \
+      || fail "rollback snapshot registration failed; existing containers and project files were not changed"
+    retention_registered="true"
+  fi
   operation_stage download
   release_dir="$(download_release "${version_json}")"
   release_tmp="$(dirname "${release_dir}")"
@@ -1501,6 +1530,11 @@ update_project() {
   fi
 
   if (( update_rc == 0 )); then
+    if [[ "${retention_registered}" == "true" ]]; then
+      # Cleanup is deliberately after readiness and never turns a healthy update into rollback.
+      storage_maintenance complete --archive "${backup_archive}" \
+        || log "Warning: update is healthy, but snapshot retention needs attention; remaining files and images were kept."
+    fi
     log "Обновление успешно завершено."
     return 0
   fi
@@ -1592,6 +1626,12 @@ main() {
     backup)
       parse_common_args "$@"
       make_backup
+      ;;
+    storage)
+      storage_maintenance report "$@"
+      ;;
+    cleanup)
+      storage_maintenance cleanup "$@"
       ;;
     check-update)
       parse_common_args "$@"
