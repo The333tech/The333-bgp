@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "test": "node scripts/test-mikrotik-logic.mjs && node scripts/test-service-status.mjs",
+    "test": "node scripts/test-mikrotik-logic.mjs && node scripts/test-service-status.mjs && node scripts/test-route-path.mjs",
     "test:e2e": "playwright test",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0"

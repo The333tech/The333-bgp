@@ -50,6 +50,7 @@ import {
   RuntimeSettingsResponse
 } from "./types/api";
 import { MikroTikAssistant } from "./components/MikroTikAssistant";
+import { RoutePathDiagnostics } from "./components/RoutePathDiagnostics";
 import { useProductUpdate } from "./components/ProductUpdate";
 import {
   countProviderWarnings,
@@ -3932,6 +3933,7 @@ function RoutesPage({
               <p className="route-lookup-caveat">В последнем успешном наборе нет маршрута для этих адресов. Проверка VPN-пути через The333-BGP для них неприменима.</p>
             )}
             {lookupData.addresses.some((item) => item.match_count > 0) && <p className="route-lookup-caveat">Пробник устанавливает только TCP-соединение с выбранным публичным IPv4:443 из контейнера Backend. Сервис может не принимать соединения на 443. Успех не доказывает приём маршрута MikroTik или выход LAN-клиента через VPN. Исходный источник префикса в снимке не сохранён.</p>}
+            {lookupData.addresses.some((item) => item.matches.length > 0) && <RoutePathDiagnostics key={`${lookupData.normalized}|${lookupData.checked_at}`} lookup={lookupData} />}
           </div>
         )}
       </section>

@@ -10,6 +10,9 @@ import {
 } from "@tabler/icons-react";
 import {
   buildMikroTikCommands,
+  awgImageCompatibility,
+  awgPreparationReady,
+  containerVersionMatches,
   isAsn,
   isIpv4,
   isStandardCommunity,
@@ -143,11 +146,8 @@ export function MikroTikAssistant({
   const bgpSyntax = facts.major === 7 && facts.minor !== null && facts.minor < 20
     ? "legacy-v7"
     : "current-v7";
-  const awgReady = facts.major !== null
-    && versionAtLeast(facts, 7, 23, 1)
-    && supportedArchitecture
-    && facts.containerPackage === true
-    && facts.containerMode === true;
+  const imageCompatibility = useMemo(() => awgImageCompatibility(facts), [facts]);
+  const awgReady = awgPreparationReady(facts);
   const bgpProfileLabel = facts.major === 7
     ? bgpSyntax === "legacy-v7" ? "RouterOS 7.0–7.19" : "RouterOS 7.20+"
     : facts.major === null ? "ожидает preflight" : "не поддерживается";
@@ -169,9 +169,12 @@ export function MikroTikAssistant({
 
   const profile = useMemo(() => {
     if (!facts.analyzed || facts.major === null) return { tone: "warn", title: "Нужен preflight", text: "Вставьте вывод read-only команд." };
-    if (isRouterOs6) return { tone: "bad", title: "RouterOS 6", text: "Containers недоступны. Разрешён только отдельный BGP-only профиль." };
+    if (isRouterOs6) return { tone: "bad", title: "RouterOS 6", text: "Этот генератор предназначен для RouterOS 7. Не применяйте его команды к RouterOS 6." };
     if (facts.major !== 7) return { tone: "bad", title: "Версия не поддержана", text: "Автоматический генератор предназначен только для RouterOS 7." };
     if (!supportedArchitecture) return { tone: "warn", title: "Только BGP", text: "BGP доступен, но Containers поддерживаются только на совместимых arm, arm64 и x86 устройствах." };
+    if (facts.preview) return { tone: "warn", title: "Предварительная RouterOS", text: "Контейнерный профиль для beta/rc RouterOS не подтверждён. BGP-команды требуют отдельной проверки." };
+    if (imageCompatibility.status !== "match") return { tone: "warn", title: "BGP доступен", text: imageCompatibility.label };
+    if (facts.containerPackage && !containerVersionMatches(facts)) return { tone: "warn", title: "Проверьте пакет", text: "Версия container должна совпадать с RouterOS. Неизвестная версия не считается совпадением." };
     if (facts.version === "7.24.4" && facts.architecture === "arm"
         && facts.model === "RB3011UiAS" && facts.containerPackage === true && facts.containerMode === true) {
       return { tone: "ok", title: "RouterOS 7.24.4 ARM", text: "На RB3011 с пакетом и режимом Containers проверены BGP и AWG-контейнер 3.1 с клиентским профилем AWG 2.0. Чистая установка у стороннего пользователя ещё не проверена." };
@@ -179,7 +182,7 @@ export function MikroTikAssistant({
     if (facts.major === 7 && facts.minor === 19) return { tone: "warn", title: "RouterOS 7.0–7.19", text: "BGP-синтаксис предусмотрен; контейнерный сценарий 3.1 на этой версии не проверен. Перед изменениями сохраните backup и обеспечьте резервный доступ." };
     if (versionAtLeast(facts, 7, 23, 1)) return { tone: "warn", title: "RouterOS 7.23.1+", text: "Совместимый диапазон по документации контейнера; на реальном стенде проверен только RouterOS 7.24.4 ARM. Сохраните backup и проверьте резервный доступ." };
     return { tone: "warn", title: "Промежуточная RouterOS 7", text: "BGP доступен; AWG-контейнер требует отдельной проверки совместимости." };
-  }, [facts, isRouterOs6, supportedArchitecture]);
+  }, [facts, imageCompatibility, isRouterOs6, supportedArchitecture]);
 
   const validationErrors = useMemo(() => {
     const errors: string[] = [];
@@ -275,9 +278,12 @@ export function MikroTikAssistant({
             <div><span>RouterOS</span><strong>{facts.version ?? "не определена"}</strong></div>
             <div><span>Модель</span><strong>{facts.model ?? "не определена"}</strong></div>
             <div><span>Архитектура</span><strong>{facts.architecture ?? "не определена"}</strong></div>
+            <div><span>CPU</span><strong>{facts.cpu ?? "не определён"}</strong></div>
             <div><span>Container package</span><strong>{facts.containerPackage === null ? "не определён" : facts.containerPackage ? "установлен" : "не установлен/выключен"}</strong></div>
             <div><span>Container mode</span><strong>{facts.containerMode === null ? "не определён" : facts.containerMode ? "включён" : "выключен"}</strong></div>
-            <div><span>AWG-сценарий</span><strong>{awgReady ? "доступен для подготовки" : "заблокирован"}</strong></div>
+            <div><span>Версия container</span><strong>{facts.containerVersion ?? "не определена"}</strong></div>
+            <div><span>Образ AWG</span><strong>{imageCompatibility.platform ?? "не выбран"}</strong></div>
+            <div><span>AWG-сценарий</span><strong>{awgReady ? "доступен для подготовки" : imageCompatibility.status === "unknown" ? "нужна проверка CPU" : "условия не выполнены"}</strong></div>
           </div>
         </section>
       </div>
@@ -286,7 +292,7 @@ export function MikroTikAssistant({
         <div className="panel-title">
           <div>
             <h2>2. Сценарий подключения</h2>
-            <div className="panel-subtitle">Containers в RouterOS 6 отсутствуют. AWG 3.1 показывается после preflight RouterOS 7.23.1+ и совместимой архитектуры.</div>
+            <div className="panel-subtitle">Для AWG нужны совместимые CPU/образ, RouterOS 7.23.1+, совпадающая версия container и включённый режим Containers. BGP-only не зависит от AWG-образа.</div>
           </div>
         </div>
         <div className="mikrotik-scenario-grid">
