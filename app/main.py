@@ -554,7 +554,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.92b"
+    return "0.93b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
