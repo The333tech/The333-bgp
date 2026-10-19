@@ -182,7 +182,20 @@ PUBLIC_OPERATION_ERROR = "Операция не выполнена. Подроб
 
 
 class RoutePolicyReviewRequired(RuntimeError):
-    pass
+    MESSAGES = {
+        "stale_preview": "Маршруты или настройки изменились; повторите предпросмотр.",
+        "changed_after_backup": "Маршруты изменились после резервирования; повторите предпросмотр.",
+        "exclusions_incomplete": "Изменение исключений не завершено; автоматическое применение заблокировано.",
+        "large_change": "Большое изменение маршрутов или охвата требует предпросмотра и подтверждения в разделе маршрутов.",
+    }
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(self.public_message)
+
+    @property
+    def public_message(self) -> str:
+        return self.MESSAGES.get(self.reason, "Изменение маршрутов требует проверки в разделе маршрутов.")
 
 
 def public_error(message: str = PUBLIC_OPERATION_ERROR) -> str:
@@ -3253,7 +3266,7 @@ async def run_background_job(job_id: str, kind: str, target: Any) -> None:
                 "progress_percent": 100,
                 "finished_at": now_iso(),
                 "duration_seconds": round(time.time() - started, 3),
-                "error": str(e) if isinstance(e, RoutePolicyReviewRequired) else public_error("Фоновая задача завершилась с ошибкой."),
+                "error": e.public_message if isinstance(e, RoutePolicyReviewRequired) else public_error("Фоновая задача завершилась с ошибкой."),
             },
         )
     finally:
@@ -4260,14 +4273,14 @@ def apply_route_exclusions(
             or change["current_sha256"] != current_sha256
             or change["candidate_sha256"] != candidate_sha256
         ):
-            raise RoutePolicyReviewRequired("Маршруты или настройки изменились; повторите предпросмотр.")
+            raise RoutePolicyReviewRequired("stale_preview")
         state = read_route_exclusions_state()
         backup = create_system_backup(trigger="route_exclusions", reason="before route exclusion change")
         state["pending"] = {"exclusions": preview["exclusions"], "started_at": now_iso()}
         write_json_atomic(ROUTE_EXCLUSIONS_FILE, state)
         candidate, _ = collect_route_policy_candidate(preview["exclusions"])
         if route_plan_sha256(candidate) != candidate_sha256:
-            raise RoutePolicyReviewRequired("Маршруты изменились после резервирования; повторите предпросмотр.")
+            raise RoutePolicyReviewRequired("changed_after_backup")
         prefixes = sort_prefixes(candidate)
         apply_result = apply_prefixes(prefixes, route_communities=candidate)
         write_last_good_snapshot(prefixes, candidate)
@@ -4380,7 +4393,7 @@ def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", 
         raise PublicationPaused("Публикация маршрутов приостановлена. Возобновите её явно.")
     exclusion_state = read_route_exclusions_state()
     if exclusion_state["pending"] is not None:
-        raise RoutePolicyReviewRequired("Изменение исключений не завершено; автоматическое применение заблокировано.")
+        raise RoutePolicyReviewRequired("exclusions_incomplete")
     started = time.time()
 
     prefixes, meta = collect_static_prefixes()
@@ -4423,7 +4436,7 @@ def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", 
     previous_routes = {prefix: previous_attributes.get(prefix, []) for prefix in previous_prefixes}
     change = assess_route_change(previous_routes, route_communities, MAX_DELTA_PERCENT)
     if change["requires_approval"]:
-        raise RoutePolicyReviewRequired("Большое изменение маршрутов или охвата требует предпросмотра и подтверждения в разделе маршрутов.")
+        raise RoutePolicyReviewRequired("large_change")
     safety = validate_update_safety(prefixes, force_reannounce=force_reannounce)
     safety["route_change"] = change
     safety["allow_large"] = allow_large
@@ -5464,7 +5477,7 @@ async def update(request: Request, _: str = Depends(require_auth)) -> JSONRespon
         result = {
             "ok": False,
             "mode": "manual_update_failed",
-            "error": str(e) if isinstance(e, RoutePolicyReviewRequired) else public_error("Ручное обновление маршрутов не выполнено."),
+            "error": e.public_message if isinstance(e, RoutePolicyReviewRequired) else public_error("Ручное обновление маршрутов не выполнено."),
             "time": now_iso(),
         }
         save_status(result)
