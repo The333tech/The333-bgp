@@ -4,6 +4,9 @@ import {
   PREFLIGHT_COMMANDS,
   buildMikroTikCommunityFilterCommands,
   buildMikroTikCommands,
+  awgImageCompatibility,
+  awgPreparationReady,
+  containerVersionMatches,
   isAsn,
   isIpv4,
   isLargeCommunity,
@@ -61,6 +64,35 @@ container: yes
 `);
 assert.equal(currentTable.containerPackage, true);
 assert.equal(currentTable.containerMode, true);
+assert.equal(currentTable.containerVersion, "7.24.4");
+assert.equal(awgPreparationReady(currentTable), true);
+assert.equal(awgPreparationReady(legacy), false);
+assert.equal(awgPreparationReady(withoutContainer), false);
+assert.equal(awgPreparationReady(empty), false);
+assert.equal(awgImageCompatibility(empty).status, "unknown");
+assert.equal(awgImageCompatibility({ ...currentTable, model: "E50UG", cpu: "EN7562CT" }).status, "incompatible");
+assert.equal(awgImageCompatibility({ ...currentTable, model: "hEX Refresh", cpu: "ARM" }).platform, "linux/arm/v5");
+assert.equal(awgImageCompatibility({ ...currentTable, model: "Unknown ARM" }).status, "unknown");
+assert.equal(awgPreparationReady({ ...currentTable, model: "Unknown ARM" }), false);
+assert.equal(awgImageCompatibility({ ...currentTable, model: "Unknown ARM", cpu: "IPQ8060" }).status, "match");
+assert.equal(awgImageCompatibility({ ...currentTable, architecture: "arm64", model: "Other" }).platform, "linux/arm64");
+assert.equal(awgImageCompatibility({ ...currentTable, architecture: "x86", model: "Other" }).status, "unknown");
+assert.equal(awgImageCompatibility({ ...currentTable, architecture: "mipsbe", model: "Other" }).status, "incompatible");
+assert.equal(awgImageCompatibility({ ...currentTable, architecture: "x86_64", model: "Other" }).platform, "linux/amd64");
+assert.equal(awgPreparationReady({ ...currentTable, containerVersion: null }), false);
+assert.equal(awgPreparationReady({ ...currentTable, containerVersion: "7.24.3" }), false);
+assert.equal(awgPreparationReady({ ...currentTable, containerMode: false }), false);
+assert.equal(containerVersionMatches({ ...currentTable, version: "7.24.0", containerVersion: "7.24" }), true);
+const disabled = parseRouterFacts('version: 7.24.4\narchitecture-name: arm\nboard-name: RB3011UiAS\ncpu: ARM\n0 X container 7.24.4\n1 routeros 7.24.4\ncontainer: yes');
+assert.equal(disabled.containerPackage, false);
+assert.equal(disabled.cpu, "ARM");
+assert.equal(awgPreparationReady(disabled), false);
+assert.equal(parseRouterFacts('version: 7.24.4\n0 X name="container" version="7.24.4"\n1 name="routeros" version="7.24.4"').containerPackage, false);
+for (const version of ["7.25rc1", "7.25beta2", "7.25alpha3", "7.24.4 (testing)"]) {
+  const preview = parseRouterFacts(`version: ${version}\narchitecture-name: arm64\n0 container ${version}\n1 routeros ${version}\ncontainer: yes`);
+  assert.equal(preview.preview, true);
+  assert.equal(awgPreparationReady(preview), false);
+}
 const missingPackage = parseRouterFacts(`
 version: 7.24.4 (stable)
 architecture-name: arm

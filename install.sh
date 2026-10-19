@@ -982,7 +982,7 @@ write_env() {
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
   host_updater_token="${HOST_UPDATER_TOKEN:-$(make_token)}"
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.92b}"
+  product_version="${product_version:-0.93b}"
   image_mode="$(runtime_image_mode)"
   RESOLVED_GOBGP_IMAGE=""
   RESOLVED_BACKEND_IMAGE=""
@@ -1007,7 +1007,7 @@ LOCAL_AS=${local_as}
 ROUTER_ID=${router_id}
 BGP_NEXTHOP=${nexthop}
 BGP_LISTEN_PORT=1179
-GOBGP_CORE_IMAGE_VERSION=4.9.0-r1
+GOBGP_CORE_IMAGE_VERSION=4.9.0-r2
 THE333_IMAGE_MODE=${image_mode}
 THE333_GOBGP_IMAGE=${RESOLVED_GOBGP_IMAGE}
 THE333_BACKEND_IMAGE=${RESOLVED_BACKEND_IMAGE}
@@ -1143,10 +1143,13 @@ resume_backend_after_interrupted_fallback_backup() {
 }
 
 fallback_backup_existing_install() {
+  local old_umask
+  old_umask="$(umask)"
+  umask 077
   mkdir -p "${PROJECT_DIR}/backups"
   local ts archive backend_was_running backup_rc restart_rc status
   ts="$(date +%Y%m%d-%H%M%S)"
-  archive="${PROJECT_DIR}/backups/the333-bgp-before-installer-upgrade-${ts}.tar.gz"
+  archive="$(mktemp --suffix=.tar.gz "${PROJECT_DIR}/backups/the333-bgp-before-installer-upgrade-${ts}-XXXXXXXX")"
   backend_was_running="false"
   backup_rc=0
   restart_rc=0
@@ -1206,6 +1209,7 @@ fallback_backup_existing_install() {
   [[ -s "${archive}" ]] || fail "fallback backup failed"
   tar -tzf "${archive}" >/dev/null || fail "fallback backup integrity check failed"
   log "Fallback backup ready: ${archive}"
+  umask "${old_umask}"
 }
 
 ensure_env_defaults() {
@@ -1213,7 +1217,7 @@ ensure_env_defaults() {
 
   local product_version update_url backup_env
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.92b}"
+  product_version="${product_version:-0.93b}"
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-$(awk -F= '$1 == "PRODUCT_UPDATE_MANIFEST_URL" {print $2; exit}' "${PROJECT_DIR}/.env" | tr -d '[:space:]')}"
   update_url="${update_url:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
 

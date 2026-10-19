@@ -36,6 +36,10 @@ class DnsCacheTests(unittest.TestCase):
             self.assertTrue(stat["cache_hit"])
             self.assertEqual(stat["resolve_status"], "temporary_failure")
             self.assertEqual(stat["stale_ips"], ["8.8.8.8"])
+            original = datetime.fromtimestamp(self.epoch, timezone.utc).isoformat()
+            self.assertEqual(stat["last_success_at"], original)
+            self.assertEqual(stat["cache_oldest_at"], original)
+            self.assertNotEqual(stat["checked_at"], original)
         self.assertEqual(self.resolve(61, error=error)[0], set())
 
     def test_nxdomain_has_distinct_status_and_bounded_grace(self):
@@ -53,8 +57,13 @@ class DnsCacheTests(unittest.TestCase):
 
     def test_changed_answer_keeps_old_address_for_bounded_grace(self):
         self.resolve(0, ["8.8.8.8"])
-        self.assertEqual(self.resolve(10, ["1.1.1.1"])[0], {"8.8.8.8/32", "1.1.1.1/32"})
-        self.assertEqual(self.resolve(71, ["1.1.1.1"])[0], {"1.1.1.1/32"})
+        routes, stat = self.resolve(10, ["1.1.1.1"])
+        self.assertEqual(routes, {"8.8.8.8/32", "1.1.1.1/32"})
+        self.assertEqual(stat["last_success_at"], datetime.fromtimestamp(self.epoch + 10, timezone.utc).isoformat())
+        self.assertEqual(stat["cache_oldest_at"], datetime.fromtimestamp(self.epoch, timezone.utc).isoformat())
+        routes, stat = self.resolve(71, ["1.1.1.1"])
+        self.assertEqual(routes, {"1.1.1.1/32"})
+        self.assertIsNone(stat["cache_oldest_at"])
 
     def test_recovered_answer_clears_previous_stale_timestamp(self):
         self.resolve(0, ["8.8.8.8"])
@@ -67,7 +76,16 @@ class DnsCacheTests(unittest.TestCase):
 
     def test_bad_cache_metadata_is_not_trusted(self):
         self.cache["domains"]["example.com"] = {"ips": {"8.8.8.8": {"last_seen": "invalid"}, "1.1.1.1": None}}
-        self.assertEqual(self.resolve(0, error=socket.gaierror(socket.EAI_AGAIN, "temporary"))[0], set())
+        routes, stat = self.resolve(0, error=socket.gaierror(socket.EAI_AGAIN, "temporary"))
+        self.assertEqual(routes, set())
+        self.assertIsNone(stat["last_success_at"])
+        self.assertIsNone(stat["cache_oldest_at"])
+
+    def test_legacy_cache_reports_known_time_without_renewing_it(self):
+        self.resolve(0, ["8.8.8.8"])
+        self.cache["domains"]["example.com"].pop("last_success_at")
+        _, stat = self.resolve(20, error=socket.gaierror(socket.EAI_AGAIN, "temporary"))
+        self.assertEqual(stat["last_success_at"], datetime.fromtimestamp(self.epoch, timezone.utc).isoformat())
 
     def test_long_outage_is_not_extended_by_first_failed_check(self):
         self.resolve(0, ["8.8.8.8"])

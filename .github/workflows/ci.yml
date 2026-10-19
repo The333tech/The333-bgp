@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 env:
-  GRYPE_VERSION: v0.112.0
+  GRYPE_VERSION: v0.120.1
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -24,11 +24,29 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate release tree
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.arch == 'amd64' && 'Validate release tree' || 'Validate release tree (arm64)' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Verify native host architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(docker info --format '{{.Architecture}}')" = "$(uname -m)"
+          case "${EXPECTED_ARCH}:$(uname -m)" in
+            amd64:x86_64|arm64:aarch64) ;;
+            *) echo 'Unexpected runner architecture; emulation is not a native test.' >&2; exit 1 ;;
+          esac
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -74,6 +92,7 @@ jobs:
           npm test
           npm run build
           npm audit --omit=dev --audit-level=moderate
+          npm audit --audit-level=high
 
       - name: Test update interface in Chromium
         working-directory: portal

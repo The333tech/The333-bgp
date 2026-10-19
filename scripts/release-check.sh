@@ -76,8 +76,10 @@ required_files=(
   "app/maintenance.py"
   "app/session_store.py"
   "app/update_runner.py"
+  "app/storage_retention.py"
   "scripts/host-updater.py"
   "scripts/update-operation.py"
+  "scripts/storage-maintenance.py"
   "scripts/extract-release.py"
   "scripts/migrate-env.py"
   "portal/Dockerfile"
@@ -86,9 +88,14 @@ required_files=(
   "portal/package.json"
   "portal/package-lock.json"
   "portal/scripts/test-mikrotik-logic.mjs"
+  "portal/scripts/test-service-status.mjs"
+  "portal/scripts/test-route-path.mjs"
   "portal/src/App.tsx"
   "portal/src/components/MikroTikAssistant.tsx"
   "portal/src/components/mikrotikAssistantLogic.ts"
+  "portal/src/components/serviceStatusLogic.ts"
+  "portal/src/components/RoutePathDiagnostics.tsx"
+  "portal/src/components/routePathLogic.ts"
   "config/default_sources.json"
   "config/service_catalog.builtin.json"
   "config/service_candidates.seed.json"
@@ -106,14 +113,24 @@ source_required_files=(
   ".github/workflows/codeql.yml"
   ".github/workflows/docker-awg.yml"
   ".github/workflows/ghcr-candidate.yml"
+  ".github/workflows/delivery.yml"
+  ".github/workflows/published-security.yml"
   ".github/workflows/release.yml"
+  "scripts/release-image-matrix.py"
+  "portal/tests/route-path.spec.ts"
   "tests/test_auth_sessions.py"
   "tests/test_background_jobs.py"
   "tests/test_catalog_migration.py"
   "tests/test_host_updater.py"
   "tests/test_installer_upgrade_flow.py"
   "tests/test_image_delivery.py"
+  "tests/delivery_smoke.py"
+  "tests/test_delivery_checks.py"
   "tests/test_release_metadata.py"
+  "tests/test_published_image_scan.py"
+  "tests/test_service_metadata.py"
+  "tests/test_storage_retention.py"
+  "tests/storage_docker_smoke.py"
   "tests/test_remote_fetch_security.py"
   "tests/test_route_transaction.py"
   "tests/test_release_archive_and_env_migration.py"
@@ -163,7 +180,8 @@ else
   log "installed tree detected; runtime .env/data/backups checks skipped"
 fi
 
-if grep -RIn \
+placeholder_scan_status=0
+grep -RIn \
     --exclude-dir=.git \
     --exclude-dir=.github \
     --exclude-dir=node_modules \
@@ -172,11 +190,14 @@ if grep -RIn \
     --exclude-dir=data \
     --exclude-dir=backups \
     --exclude='release-check.sh' \
-    -E 'the333ctl|OWNER/REPO|TODO_RELEASE|CHANGE_ME_REAL_SECRET' .; then
-  fail "forbidden placeholder or old control name found"
-fi
+    -E 'the333ctl|OWNER/REPO|TODO_RELEASE|CHANGE_ME_REAL_SECRET' . || placeholder_scan_status=$?
+case "${placeholder_scan_status}" in
+  0) fail "forbidden placeholder or old control name found" ;;
+  1) ;;
+  *) fail "release tree search failed (exit ${placeholder_scan_status})" ;;
+esac
 
-"${PYTHON_BIN}" -m py_compile app/main.py scripts/host-updater.py scripts/extract-release.py scripts/migrate-env.py
+"${PYTHON_BIN}" -m py_compile app/main.py app/storage_retention.py scripts/storage-maintenance.py scripts/host-updater.py scripts/extract-release.py scripts/migrate-env.py
 bash -n install.sh
 bash -n docker/gobgp-entrypoint.sh
 bash -n docker/backend-entrypoint.sh

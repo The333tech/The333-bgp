@@ -38,3 +38,23 @@ container: yes
   await page.getByLabel("IP VPN gateway").fill("172.19.33.2");
   await expect(activate).toBeDisabled();
 });
+
+test("ARMv5 and unknown ARM CPUs do not silently select the ARMv7 image", async ({ page, context }) => {
+  await context.route("**/backend/**", route => {
+    const path = new URL(route.request().url()).pathname.replace("/backend", "");
+    if (path === "/auth/session") return route.fulfill({ json: { csrf_token: "test", expires_at: "2099-01-01T00:00:00Z" } });
+    return route.fulfill({ status: 503, body: "Unavailable in fixture" });
+  });
+  await page.goto("/");
+  await page.locator("button.nav-item").filter({ hasText: "Для MikroTik" }).click();
+  const preflight = page.locator(".mikrotik-preflight-input");
+  const awg = page.locator(".mikrotik-scenario-card").filter({ hasText: "BGP + AWG-контейнер" });
+  await preflight.fill("version: 7.24.4\narchitecture-name: arm\nboard-name: E50UG\ncpu: EN7562CT\n0 container 7.24.4\n1 routeros 7.24.4\ncontainer: yes");
+  await expect(awg).toBeDisabled();
+  await expect(page.locator(".mikrotik-page")).toContainText("ARMv7-образ не подходит");
+  await expect(page.locator(".mikrotik-scenario-card").filter({ hasText: "Только BGP" })).toBeEnabled();
+  await preflight.fill("version: 7.24.4\narchitecture-name: arm\nboard-name: Unknown ARM\ncpu: ARM\n0 container 7.24.4\n1 routeros 7.24.4\ncontainer: yes");
+  await expect(awg).toBeDisabled();
+  await expect(page.locator(".mikrotik-page")).toContainText("не означает несовместимость");
+  await expect(page.locator(".mikrotik-scenario-card").filter({ hasText: "Только BGP" })).toBeEnabled();
+});

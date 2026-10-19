@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 OFFICIAL_RELEASES_URL = "https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20"
-GOBGP_CORE_IMAGE_VERSION = "4.9.0-r1"
+GOBGP_CORE_IMAGE_VERSION = "4.9.0-r2"
 LEGACY_OFFICIAL_MANIFEST_MARKERS = (
     "raw.githubusercontent.com/The333tech/The333-bgp/",
     "api.github.com/repos/The333tech/The333-bgp/releases/latest",
@@ -219,6 +219,7 @@ def main() -> int:
         "HOST_UPDATER_RESULT_DIR": str(project_dir / "data" / "host-updater-results"),
         "HOST_UPDATER_TOKEN": updater_token,
         "UPDATE_MIN_FREE_BYTES": update_min_free_bytes,
+        "UPDATE_BACKUP_RETENTION": "2",
         "AUTH_ALLOW_BASIC": "false",
         "SESSION_COOKIE_NAME": "the333_session",
         "SESSION_TTL_SECONDS": "43200",

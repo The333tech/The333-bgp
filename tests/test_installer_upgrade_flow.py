@@ -1091,6 +1091,123 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
             events,
             ["container-inspect", "running-inspect", "stop", "archive", "start", "wait", "verify"],
         )
+        archives = list((self.root / "update-backups").glob("*.tar.gz"))
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0].stat().st_mode & 0o777, 0o600)
+
+    def test_source_rollback_reuses_local_images_without_build_or_pull(self) -> None:
+        patched = self._patched_update_controller()
+        harness = self.root / "offline-rollback.sh"
+        self._write(harness, textwrap.dedent("""
+            #!/usr/bin/env bash
+            set -Eeuo pipefail
+            export THE333_UPDATE_TEST_HARNESS=true
+            source "$1"
+            THE333_IMAGE_MODE=source
+            compose() {
+              if [[ "$*" == "config --images" ]]; then
+                printf '%s\n' the333-bgp-core:1.0 the333-bgp-backend:1.0 the333-bgp-portal:1.0
+                return 0
+              fi
+              printf 'unexpected compose call: %s\n' "$*" >&2
+              return 99
+            }
+            docker_cli() { [[ "$1 $2" == "image inspect" ]]; }
+            build_update_images legacy
+        """).lstrip(), 0o755)
+        result = subprocess.run(["bash", str(harness), str(patched)], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("без загрузки и сборки", result.stderr)
+
+    def test_full_snapshot_restores_user_data_before_offline_image_reuse(self) -> None:
+        patched = self._patched_update_controller()
+        original_env = (self.project / ".env").read_bytes()
+        self._write(self.project / "data" / "settings.json", '{"user_setting": "keep"}\n')
+        archive = self.root / "complete-rollback.tar.gz"
+        with tarfile.open(archive, "w:gz") as handle:
+            for name in (".env", "VERSION", "docker-compose.yml", "config", "data"):
+                handle.add(self.project / name, arcname=name)
+        self._write(self.project / ".env", "NEW_SETTING=wrong-for-old-version\n")
+        self._write(self.project / "VERSION", "9.9b\n")
+        self._write(self.project / "data" / "settings.json", '{"user_setting": "changed"}\n')
+        self._write(self.project / "data" / "new-format.json", '{}\n')
+        harness = self.root / "full-offline-rollback.sh"
+        self._write(harness, textwrap.dedent("""
+            #!/usr/bin/env bash
+            set -Eeuo pipefail
+            export THE333_UPDATE_TEST_HARNESS=true THE333_PROJECT_DIR="$2"
+            source "$1"
+            restore_release_files_from_backup "$3"
+            THE333_IMAGE_MODE=source
+            compose() {
+              [[ "$*" == "config --images" ]] || return 99
+              printf '%s\n' the333-bgp-core:1.0 the333-bgp-backend:1.0 the333-bgp-portal:1.0
+            }
+            docker_cli() { [[ "$1 $2" == "image inspect" ]]; }
+            build_update_images legacy
+        """).lstrip(), 0o755)
+        result = subprocess.run(["bash", str(harness), str(patched), str(self.project), str(archive)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual((self.project / ".env").read_bytes(), original_env)
+        self.assertEqual((self.project / ".env").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.project / "VERSION").read_text(), "0.1\n")
+        self.assertEqual((self.project / "data" / "settings.json").read_text(), '{"user_setting": "keep"}\n')
+        self.assertFalse((self.project / "data" / "new-format.json").exists())
+
+    def test_retention_runs_after_readiness_only_and_cannot_trigger_rollback(self) -> None:
+        patched = self._patched_update_controller()
+        self._write(self.project / "scripts" / "storage-maintenance.py", "# hook is replaced by harness\n")
+        release = self.root / "retention-release" / "src"
+        self._write(release / ".env.example", "GOBGP_CORE_IMAGE_VERSION=4.9.0-r2\n")
+        harness = self.root / "retention-order.sh"
+        self._write(harness, textwrap.dedent("""
+            #!/usr/bin/env bash
+            set -Eeuo pipefail
+            export THE333_UPDATE_TEST_HARNESS=true THE333_PROJECT_DIR="$2"
+            source "$1"
+            event_log="$3"
+            fixture_release_dir="$4"
+            scenario="$5"
+            NON_INTERACTIVE=true
+            fetch_manifest() { printf '{}\n'; }
+            select_version_json() { printf '{"version":"9.9b"}\n'; }
+            version_is_newer() { return 0; }
+            check_update_disk_space() { return 0; }
+            check_release_tree_writable() { return 0; }
+            make_backup() { LAST_BACKUP_ARCHIVE=/tmp/fixture.tar.gz; }
+            storage_maintenance() {
+              printf 'storage:%s\n' "$1" >> "${event_log}"
+              [[ "${scenario}:$1" != "record-fail:record" && "${scenario}:$1" != "cleanup-fail:complete" ]]
+            }
+            download_release() { printf '%s\n' "${fixture_release_dir}"; }
+            copy_release_files() { printf 'activate\n' >> "${event_log}"; }
+            migrate_release_env() { return 0; }
+            load_env() { return 0; }
+            configure_compose_files() { return 0; }
+            build_and_restart() {
+              printf 'readiness:%s\n' "$1" >> "${event_log}"
+              [[ "${scenario}:$1" != "runtime-fail:strict" ]]
+            }
+            stop_runtime_for_rollback() { printf 'stop\n' >> "${event_log}"; }
+            restore_release_files_from_backup() { printf 'restore\n' >> "${event_log}"; }
+            update_project
+        """).lstrip(), 0o755)
+        for scenario in ("success", "record-fail", "runtime-fail", "cleanup-fail"):
+            self._write(release / ".env.example", "GOBGP_CORE_IMAGE_VERSION=4.9.0-r2\n")
+            log = self.root / f"retention-{scenario}.log"
+            result = subprocess.run(["bash", str(harness), str(patched), str(self.project), str(log), str(release), scenario],
+                                    capture_output=True, text=True, check=False)
+            events = log.read_text().splitlines()
+            if scenario in {"success", "cleanup-fail"}:
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertEqual(events, ["storage:record", "activate", "readiness:strict", "storage:complete"])
+            elif scenario == "record-fail":
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(events, ["storage:record"])
+            else:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(events, ["storage:record", "activate", "readiness:strict", "stop", "restore", "readiness:legacy"])
 
     def test_update_backup_restores_backend_after_archive_failure(self) -> None:
         result, events = self._run_update_backup_harness(archive_failure=True)

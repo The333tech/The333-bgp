@@ -1,4 +1,4 @@
-ARG GO_IMAGE=golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc
+ARG GO_IMAGE=golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
 ARG ALPINE_IMAGE=alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 FROM ${GO_IMAGE} AS builder
@@ -10,7 +10,7 @@ ARG AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d
 ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
 ARG AWG_X_CRYPTO_VERSION=v0.57.0
-ARG AWG_X_NET_VERSION=v0.59.0
+ARG AWG_X_NET_VERSION=v0.60.0
 ARG AWG_X_SYS_VERSION=v0.48.0
 
 RUN apk add --no-cache \
@@ -48,7 +48,7 @@ ARG AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d
 ARG AWG_TOOLS_TAG=v1.0.20260618-2
 ARG AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a
 ARG AWG_X_CRYPTO_VERSION=v0.57.0
-ARG AWG_X_NET_VERSION=v0.59.0
+ARG AWG_X_NET_VERSION=v0.60.0
 ARG AWG_X_SYS_VERSION=v0.48.0
 
 LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
@@ -59,7 +59,8 @@ LABEL org.opencontainers.image.title="The333 docker-awg candidate" \
       org.opencontainers.image.version="${AWG_GO_TAG}+tools.${AWG_TOOLS_TAG}" \
       org.opencontainers.image.revision="awg-go:${AWG_GO_REF};awg-tools:${AWG_TOOLS_REF};x-crypto:${AWG_X_CRYPTO_VERSION};x-net:${AWG_X_NET_VERSION};x-sys:${AWG_X_SYS_VERSION}"
 
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
       bash=5.3.9-r1 \
       ca-certificates=20260909-r0 \
       iproute2=7.0.0-r0 \

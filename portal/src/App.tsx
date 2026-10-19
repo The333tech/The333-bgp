@@ -50,7 +50,21 @@ import {
   RuntimeSettingsResponse
 } from "./types/api";
 import { MikroTikAssistant } from "./components/MikroTikAssistant";
+import { RoutePathDiagnostics } from "./components/RoutePathDiagnostics";
 import { useProductUpdate } from "./components/ProductUpdate";
+import {
+  countProviderWarnings,
+  countServiceErrors,
+  countServiceWarnings,
+  providerDataStatus,
+  providerDataTime,
+  providerSelectionText,
+  serviceCoverageProfile,
+  serviceDataStatus,
+  serviceRouteCount,
+  type ServiceProvider,
+  type ServiceRuntimeStat,
+} from "./components/serviceStatusLogic";
 import {
   buildMikroTikCommunityFilterCommands,
   isRouterOsObjectName,
@@ -66,36 +80,6 @@ type PortalData = {
   runtimeSettings: RuntimeSettingsResponse | null;
   productUpdates: ProductUpdatesResponse | null;
   jobs: JobsResponse | null;
-};
-
-type ServiceProvider = {
-  type?: string;
-  name?: string;
-  url?: string;
-  path?: string;
-  max_prefixes?: number;
-  max_domains?: number;
-  prefixes?: string[];
-  domains?: string[];
-  accepted?: number;
-  ignored?: number;
-  error?: string | null;
-  warnings?: unknown[];
-  warnings_count?: number;
-  domain_stats?: Array<{
-    domain?: string;
-    warning?: string | null;
-    error?: string | null;
-    resolve_errors?: string[];
-  }>;
-  ignored_samples?: string[];
-  source?: {
-    source_url?: string | null;
-    source_path?: string | null;
-    url?: string | null;
-    error?: string | null;
-  };
-  [key: string]: unknown;
 };
 
 type ServiceCatalogItem = {
@@ -119,18 +103,6 @@ type ServiceStateItem = {
   enabled?: boolean;
 };
 
-type ServiceRuntimeStat = {
-  id?: string;
-  title?: string;
-  category?: string;
-  enabled?: boolean;
-  selected?: boolean;
-  accepted?: number;
-  ignored?: number;
-  error?: string | null;
-  providers?: ServiceProvider[];
-};
-
 type ServiceRoutesCache = {
   ok?: boolean;
   mode?: string;
@@ -140,6 +112,7 @@ type ServiceRoutesCache = {
   final_count?: number;
   aggregate?: boolean;
   service_stats?: ServiceRuntimeStat[];
+  time?: string;
 };
 
 type ServiceSourceRefreshStatus = {
@@ -529,7 +502,7 @@ type ServiceResolveResponse = {
   provider_count?: number;
   final_count?: number;
   first_50?: string[];
-  providers?: Array<Record<string, unknown>>;
+  providers?: ServiceProvider[];
   errors?: string[];
   time?: string;
 };
@@ -571,20 +544,22 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.92b";
+const PRODUCT_VERSION = "0.93b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.92b",
-    version: "0.92b",
-    title: "v0.92b",
+    id: "0.93b",
+    version: "0.93b",
+    title: "v0.93b",
     channel: "beta",
     status: "текущая версия",
     date: "октябрь 2026",
     changelog: [
-      "Проверка совпадений адреса с локальным GoBGP RIB и ручной TCP/443-тест из Backend.",
-      "Предупреждение об устаревшем успешно применённом наборе маршрутов.",
-      "Инструкция уточняет раздельную проверку маршрута MikroTik и VPN; GoBGP Core остаётся 4.9.0."
+      "Состояние данных модулей и возраст кэша показаны отдельно от охвата профиля.",
+      "Добавлена безопасная очистка учтённых комплектов отката с сохранением двух предыдущих версий.",
+      "Уточнена совместимость AWG-образов; добавлен пошаговый разбор сетевого пути без изменения роутера.",
+      "Установка, обновление и восстановление проверяются на нативных amd64 и ARM64 до публикации релиза.",
+      "Обновление библиотек Core до ревизии 4.9.0-r2 кратко прервёт BGP-сессию; RouterOS и VPN не меняются."
     ]
   }
 ];
@@ -2222,14 +2197,7 @@ function ModuleCard({
   );
 }
 
-type DashboardServiceStat = {
-  id?: string;
-  title?: string;
-  enabled?: boolean;
-  selected?: boolean;
-  accepted?: number;
-  error?: string | null;
-};
+type DashboardServiceStat = ServiceRuntimeStat;
 
 type DashboardStatusItem = {
   label: string;
@@ -2325,9 +2293,11 @@ function Dashboard({
           error: null
         }));
   const broadRiskModules = activeServices.filter((service) =>
-    ["youtube-googlevideo", "google", "cloudflare"].includes(service.id ?? "")
+    serviceCoverageProfile({ id: service.id ?? "", category: service.category }, service).broad
   );
-  const failedServices = activeServices.filter((service) => service.error);
+  const moduleDataIssues = activeServices.filter((service) => serviceDataStatus(service).tone !== "ok");
+  const moduleDataTone = moduleDataIssues.some((service) => serviceDataStatus(service).tone === "bad")
+    ? "bad" : moduleDataIssues.length > 0 || !services ? "warn" : "ok";
   const activeModuleCount = services
     ? servicesCache?.enabled_count ?? enabledServicesFromState.length
     : serviceRoutes?.enabled_count ?? activeServices.length;
@@ -2423,14 +2393,13 @@ error=${latestEvent?.error ?? lastStatus?.error ?? "ошибка не указа
     },
     {
       label: "Модули сервисов",
-      detail: `${activeModuleCount}/${totalModuleCount} включено`,
-      tone: failedServices.length > 0 ? "bad" : "ok",
-      help: failedServices.length > 0 ? `Модули сервисов:
+      detail: `${activeModuleCount}/${totalModuleCount} включено${moduleDataIssues.length > 0 ? ` · проверить данные: ${moduleDataIssues.length}` : ""}`,
+      tone: moduleDataTone,
+      help: moduleDataIssues.length > 0 ? `Модули сервисов:
 Источник данных: /api/services cache.service_stats
-Ошибок: ${failedServices.length}
+Требуют проверки данных: ${moduleDataIssues.length}
 
-Проблемные модули:
-${failedServices.map((service) => `- ${service.title ?? service.id}: ${service.error}`).join("\n")}
+${moduleDataIssues.map((service) => `- ${service.title ?? service.id}: ${serviceDataStatus(service).label}. ${serviceDataStatus(service).text}`).join("\n")}
 
 Что проверить:
 1. Вкладку Модули сервисов.
@@ -2628,7 +2597,7 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
           label="Модули сервисов"
           value={`${activeModuleCount}/${totalModuleCount}`}
           note="активный каталог"
-          tone={failedServices.length > 0 ? "bad" : "ok"}
+          tone={moduleDataTone}
         />
         <MetricCard
           label="Последние события"
@@ -2728,8 +2697,8 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
                   <strong>{service.title ?? service.id ?? "Модуль"}</strong>
                   <span>{service.id ?? "—"}</span>
                 </div>
-                <span className={`pill tiny ${service.error ? "bad" : "ok"}`}>
-                  {service.error ? "ошибка" : `${service.accepted ?? "—"} маршрутов`}
+                <span className={`pill tiny ${serviceDataStatus(service).tone}`} title={serviceDataStatus(service).text}>
+                  {serviceDataStatus(service).kind === "checked" ? `${serviceRouteCount(service)} маршрутов` : serviceDataStatus(service).label}
                 </span>
               </div>
             )) : (
@@ -3966,6 +3935,7 @@ function RoutesPage({
               <p className="route-lookup-caveat">В последнем успешном наборе нет маршрута для этих адресов. Проверка VPN-пути через The333-BGP для них неприменима.</p>
             )}
             {lookupData.addresses.some((item) => item.match_count > 0) && <p className="route-lookup-caveat">Пробник устанавливает только TCP-соединение с выбранным публичным IPv4:443 из контейнера Backend. Сервис может не принимать соединения на 443. Успех не доказывает приём маршрута MikroTik или выход LAN-клиента через VPN. Исходный источник префикса в снимке не сохранён.</p>}
+            {lookupData.addresses.some((item) => item.matches.length > 0) && <RoutePathDiagnostics key={`${lookupData.normalized}|${lookupData.checked_at}`} lookup={lookupData} />}
           </div>
         )}
       </section>
@@ -4635,50 +4605,12 @@ function getServiceRuntime(services: ServicesResponse | null, serviceId: string)
   return services?.cache?.service_stats?.find((service) => service.id === serviceId);
 }
 
-function countProviderWarnings(provider: ServiceProvider): number {
-  const explicitWarnings =
-    typeof provider.warnings_count === "number"
-      ? provider.warnings_count
-      : Array.isArray(provider.warnings)
-        ? provider.warnings.length
-        : 0;
-  const domainWarnings =
-    provider.domain_stats?.filter((domain) =>
-      Boolean(domain.warning) || Boolean(domain.error) || Boolean(domain.resolve_errors?.length)
-    ).length ?? 0;
-
-  return explicitWarnings + domainWarnings;
-}
-
-function countServiceWarnings(service?: ServiceRuntimeStat): number {
-  return service?.providers?.reduce((total, provider) => total + countProviderWarnings(provider), 0) ?? 0;
-}
-
-function countServiceErrors(service?: ServiceRuntimeStat): number {
-  if (!service) return 0;
-
-  const providerErrors = service.providers?.filter((provider) =>
-    Boolean(provider.error) || provider.domain_stats?.some((domain) => Boolean(domain.error))
-  ).length ?? 0;
-  return providerErrors + (service.error ? 1 : 0);
-}
-
 function countCacheWarnings(services: ServicesResponse | null): number {
   return services?.cache?.service_stats?.reduce((total, service) => total + countServiceWarnings(service), 0) ?? 0;
 }
 
 function countCacheErrors(services: ServicesResponse | null): number {
   return services?.cache?.service_stats?.reduce((total, service) => total + countServiceErrors(service), 0) ?? 0;
-}
-
-function isBroadService(serviceId: string): boolean {
-  return ["google", "microsoft", "apple", "aws", "azure"].includes(serviceId);
-}
-
-function serviceRuntimeTone(runtime?: ServiceRuntimeStat): "ok" | "warn" | "bad" {
-  if (countServiceErrors(runtime) > 0) return "bad";
-  if (countServiceWarnings(runtime) > 0) return "warn";
-  return "ok";
 }
 
 function formatServiceNumber(value: number | null | undefined): string | number {
@@ -4805,22 +4737,6 @@ function buildPortalEvents(data: PortalData): PortalEvent[] {
     .sort((a, b) => portalEventTimestamp(b) - portalEventTimestamp(a));
 }
 
-function serviceQualityProfile(service: ServiceCatalogItem, runtime?: ServiceRuntimeStat): { label: string; tone: "ok" | "warn" | "bad"; text: string } {
-  const routeCount = serviceRouteCount(runtime) ?? 0;
-  const errors = countServiceErrors(runtime);
-  const warnings = countServiceWarnings(runtime);
-
-  if (errors > 0) {
-    return { label: "ошибка", tone: "bad", text: "Есть ошибки провайдеров или DNS-резолвинга." };
-  }
-
-  if (warnings > 0 || routeCount > 500 || isBroadService(service.id)) {
-    return { label: "широкий", tone: "warn", text: "Модуль может затрагивать широкую инфраструктуру или имеет предупреждения." };
-  }
-
-  return { label: "точный", tone: "ok", text: "Небольшой профиль без ошибок и широких инфраструктурных признаков." };
-}
-
 function serviceCategoryClass(category?: string): string {
   const normalized = (category ?? "service").toLowerCase().replace(/[^a-z0-9-]/g, "-");
   return `service-category-${normalized || "service"}`;
@@ -4846,10 +4762,6 @@ const SERVICE_CATEGORY_LABELS: Record<string, string> = {
 function serviceCategoryLabel(category?: string): string {
   const normalized = (category ?? "service").toLowerCase();
   return SERVICE_CATEGORY_LABELS[normalized] ?? normalized;
-}
-
-function serviceRouteCount(runtime?: ServiceRuntimeStat): number | null {
-  return typeof runtime?.accepted === "number" ? runtime.accepted : null;
 }
 
 function serviceSearchText(service: ServiceCatalogItem): string {
@@ -4964,6 +4876,8 @@ function PaginationControl({
 
 function providerIssueText(provider: ServiceProvider): string {
   const lines = [`Провайдер: ${provider.name ?? "без имени"}`];
+  const dataStatus = providerDataStatus(provider);
+  if (dataStatus.kind !== "checked") lines.push(`Состояние данных: ${dataStatus.text}`);
 
   if (provider.error) {
     lines.push(`Ошибка: ${provider.error}`);
@@ -5020,13 +4934,13 @@ function serviceIssueText(service: ServiceRuntimeStat | undefined, fallbackTitle
   }
 
   const issueProviders = service.providers?.filter((provider) =>
-    Boolean(provider.error) || countProviderWarnings(provider) > 0
+    providerDataStatus(provider).tone !== "ok"
   ) ?? [];
 
   if (issueProviders.length > 0) {
     lines.push("Провайдеры:");
     issueProviders.slice(0, 6).forEach((provider, index) => {
-      lines.push(`${index + 1}. ${provider.name ?? "provider"}: ${countProviderWarnings(provider)} предупреждений, ${provider.error ? "есть ошибка" : "ошибок нет"}`);
+      lines.push(`${index + 1}. ${provider.name ?? "provider"}: ${providerDataStatus(provider).label}. ${providerDataStatus(provider).text}`);
     });
   }
 
@@ -5077,6 +4991,33 @@ function providerSummary(provider: ServiceProvider): string {
   const uniqueDetails = [...new Set(details)];
 
   return uniqueDetails.length ? uniqueDetails.join(" · ") : "—";
+}
+
+function ProviderDataDetails({ provider }: { provider: ServiceProvider }) {
+  const status = providerDataStatus(provider);
+  const selection = providerSelectionText(provider);
+  const dataTime = providerDataTime(provider);
+  const age = dataTime.oldest ? Math.floor((Date.now() - Date.parse(dataTime.oldest)) / 1000) : null;
+
+  return (
+    <div className="service-provider-data">
+      <div className="service-provider-status-row">
+        <span className={`pill tiny ${status.tone}`} title={status.text}>{status.label}</span>
+        {selection && <span>{selection}</span>}
+      </div>
+      {dataTime.oldest && (
+        <span title="Самая ранняя подтверждённая дата получения данных, включая вложенные списки и сохранённые DNS-адреса.">
+          {dataTime.incomplete ? "Часть данных от" : "Данные от"} {formatDate(dataTime.oldest)}
+          {age !== null && ` · ${age < 0 ? "проверьте время на сервере" : `${formatDurationSeconds(age)} назад`}`}
+        </span>
+      )}
+      {dataTime.incomplete && <span>Время получения части данных неизвестно.</span>}
+    </div>
+  );
+}
+
+function previewRuntime(result: ServiceResolveResponse): ServiceRuntimeStat {
+  return { ...result, accepted: result.final_count, error: result.errors?.join("; ") || null };
 }
 
 function bgpStateLabel(state: string): string {
@@ -5142,6 +5083,8 @@ function ServicesPage({
   const [services, setServices] = useState<ServicesResponse | null>(null);
   const [candidates, setCandidates] = useState<ServiceCandidatesResponse | null>(null);
   const [resolveResult, setResolveResult] = useState<ServiceResolveResponse | null>(null);
+  const [previewError, setPreviewError] = useState<{ id: string; message: string } | null>(null);
+  const [serviceLoadError, setServiceLoadError] = useState<string | null>(null);
   const [applyPreview, setApplyPreview] = useState<ServiceApplyPreviewResponse | null>(null);
   const [serviceQuery, setServiceQuery] = useState("");
   const [serviceCategory, setServiceCategory] = useState("all");
@@ -5167,8 +5110,14 @@ function ServicesPage({
   });
 
   const loadServices = useCallback(async () => {
-    const payload = await apiFetch<ServicesResponse>("/api/services", auth);
-    setServices(payload);
+    try {
+      const payload = await apiFetch<ServicesResponse>("/api/services", auth);
+      setServices(payload);
+      setServiceLoadError(null);
+    } catch (error) {
+      setServiceLoadError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }, [auth]);
 
   const loadJobs = useCallback(async () => {
@@ -5182,7 +5131,7 @@ function ServicesPage({
   }, [auth]);
 
   useEffect(() => {
-    void Promise.all([loadServices(), loadJobs(), loadCandidates()]);
+    void Promise.allSettled([loadServices(), loadJobs(), loadCandidates()]);
   }, [loadCandidates, loadJobs, loadServices]);
 
   const moduleJobs = jobs.filter(jobBelongsToTaskCenter);
@@ -5192,7 +5141,7 @@ function ServicesPage({
     if (activeModuleJobCount <= 0) return;
 
     const timer = window.setInterval(() => {
-      void Promise.all([loadJobs(), loadServices(), loadCandidates(), onRefresh()]);
+      void Promise.allSettled([loadJobs(), loadServices(), loadCandidates(), onRefresh()]);
     }, 2200);
 
     return () => window.clearInterval(timer);
@@ -5295,15 +5244,20 @@ function ServicesPage({
   const selectedCandidate = candidateDetailsId
     ? candidateCatalog.find((candidate) => candidate.id === candidateDetailsId) ?? null
     : null;
-  const selectedServiceRuntime = selectedService ? getServiceRuntime(services, selectedService.id) : undefined;
-  const selectedServiceEnabled = selectedService ? serviceEnabled(services, selectedService.id) : false;
-  const selectedServiceProviders = selectedServiceRuntime?.providers ?? selectedService?.providers ?? [];
   const selectedResolveResult = resolveResult?.id === selectedService?.id ? resolveResult : null;
+  const selectedServiceRuntime = selectedResolveResult
+    ? previewRuntime(selectedResolveResult)
+    : selectedService ? getServiceRuntime(services, selectedService.id) : undefined;
+  const selectedServiceEnabled = selectedService ? serviceEnabled(services, selectedService.id) : false;
+  const selectedServiceProviders = selectedServiceRuntime?.providers?.length
+    ? selectedServiceRuntime.providers : selectedService?.providers ?? [];
+  const selectedDataStatus = serviceDataStatus(selectedServiceRuntime);
   const selectedServicePreviewLoading = selectedService ? busyAction === `preview:${selectedService.id}` : false;
 
   const previewService = async (serviceId: string) => {
     try {
       setServiceDetailsId(serviceId);
+      setPreviewError(null);
       if (resolveResult?.id !== serviceId) setResolveResult(null);
       setBusyAction(`preview:${serviceId}`);
       setActionStatus(`Предпросмотр модуля ${serviceId}...`);
@@ -5316,16 +5270,18 @@ function ServicesPage({
       );
 
       setResolveResult(payload);
+      const status = serviceDataStatus(previewRuntime(payload));
       setActionStatus(
         `Предпросмотр готов: ${payload.final_count ?? "—"} маршрутов, модуль ${payload.enabled ? "включён" : "выключен"}.`
       );
       setCatalogNotice(
         makeNotice(
-          "ok",
-          `Предпросмотр ${serviceId} готов: ${payload.final_count ?? "—"} маршрутов, модуль ${payload.enabled ? "включён" : "выключен"}.`
+          status.tone === "neutral" ? "warn" : status.tone,
+          `Предпросмотр ${serviceId}: ${status.label}, ${payload.final_count ?? "—"} маршрутов. ${status.text}`
         )
       );
     } catch (error) {
+      setPreviewError({ id: serviceId, message: error instanceof Error ? error.message : String(error) });
       setActionStatus(error instanceof Error ? error.message : String(error));
       setCatalogNotice(makeNotice("bad", error instanceof Error ? error.message : String(error)));
     } finally {
@@ -6205,27 +6161,33 @@ function ServicesPage({
         </div>
 
         <div className="service-scroll-shell">
+          {serviceLoadError && (
+            <div className="service-inline-notice bad" role="alert">
+              Не удалось получить данные модулей: {serviceLoadError}.
+              {services ? " Показаны последние полученные данные; новая проверка не подтверждена." : " Состояние модулей неизвестно."}
+            </div>
+          )}
           <div className="service-grid service-compact-grid">
         {pagedCatalog.map((service) => {
           const enabled = serviceEnabled(services, service.id);
           const runtime = getServiceRuntime(services, service.id);
-          const runtimeTone = serviceRuntimeTone(runtime);
+          const dataStatus = serviceDataStatus(runtime);
           const runtimeWarnings = countServiceWarnings(runtime);
           const runtimeErrors = countServiceErrors(runtime);
           const providersToRender = runtime?.providers ?? service.providers ?? [];
           const toggleAction = `toggle:${service.id}`;
           const previewAction = `preview:${service.id}`;
           const routeCount = serviceRouteCount(runtime);
-          const quality = serviceQualityProfile(service, runtime);
+          const coverage = serviceCoverageProfile(service, runtime);
 
           return (
-            <article className={`service-compact-card ${enabled ? "enabled" : "disabled"} ${isBroadService(service.id) ? "broad-service" : ""}`} key={service.id}>
+            <article className={`service-compact-card ${enabled ? "enabled" : "disabled"} ${coverage.broad ? "broad-service" : ""}`} key={service.id}>
               <div className="service-compact-head">
                 <div>
                   <div className="table-main">{service.title ?? service.id}</div>
                   <div className="table-sub">{service.id}</div>
                 </div>
-                <span className={`service-power-badge ${enabled ? `enabled ${runtimeTone}` : "disabled"}`}>
+                <span className={`service-power-badge ${enabled ? `enabled ${dataStatus.tone}` : "disabled"}`}>
                   {enabled ? "Вкл" : "Выкл"}
                 </span>
               </div>
@@ -6241,10 +6203,13 @@ function ServicesPage({
                 </span>
                 <span className="pill tiny service-route-pill">{routeCount === null ? "—" : formatServiceNumber(routeCount)} маршрутов</span>
                 <span
-                  className={`pill tiny quality-profile-pill ${quality.tone}`}
-                  title={`Профиль качества: ${quality.label}. ${quality.text}`}
+                  className={`pill tiny quality-profile-pill ${coverage.tone}`}
+                  title={`Охват: ${coverage.text}`}
                 >
-                  {quality.label}
+                  {coverage.label}
+                </span>
+                <span className={`pill tiny service-data-status ${dataStatus.tone}`} title={dataStatus.text}>
+                  {dataStatus.label}
                 </span>
                 {runtimeWarnings > 0 && (
                   <IssueBadge
@@ -6448,7 +6413,7 @@ function ServicesPage({
             </div>
             <div>
               <span>Маршрутов</span>
-              <strong>{selectedServicePreviewLoading ? "считаю..." : formatServiceNumber(selectedResolveResult?.final_count ?? selectedServiceRuntime?.accepted)}</strong>
+              <strong>{selectedServicePreviewLoading ? "считаю..." : formatServiceNumber(serviceRouteCount(selectedServiceRuntime))}</strong>
             </div>
             <div>
               <span>Провайдеров</span>
@@ -6456,9 +6421,24 @@ function ServicesPage({
             </div>
             <div>
               <span>Диагностика</span>
-              <strong>{countServiceErrors(selectedServiceRuntime)} / {countServiceWarnings(selectedServiceRuntime)}</strong>
+              <strong>{selectedDataStatus.kind === "unknown" ? "нет данных" : `${countServiceErrors(selectedServiceRuntime)} / ${countServiceWarnings(selectedServiceRuntime)}`}</strong>
             </div>
           </div>
+
+          <div className="service-meta-row service-details-data-status">
+            <span className={`pill tiny ${selectedDataStatus.tone}`} title={selectedDataStatus.text}>{selectedDataStatus.label}</span>
+            <span>
+              {selectedResolveResult ? "Предпросмотр, не применён" : "Последний расчёт"}
+              {` · ${formatDate(selectedResolveResult?.time ?? services?.cache?.time)}`}
+            </span>
+          </div>
+
+          {previewError?.id === selectedService.id && (
+            <div className="service-inline-notice bad" role="alert">
+              Проверка не завершена: {previewError.message}.
+              {selectedServiceRuntime ? " Ниже показан предыдущий результат, а не новая успешная проверка." : " Успешного результата нет."}
+            </div>
+          )}
 
           <div className="manual-source-help">
             {selectedService.description ?? "Описание сервиса не задано."}
@@ -6538,7 +6518,7 @@ function ServicesPage({
                       text={providerIssueText(provider)}
                     />
                   )}
-                  {provider.error && (
+                  {(provider.error || provider.source?.error) && (
                     <IssueBadge
                       tone="bad"
                       count={1}
@@ -6547,6 +6527,7 @@ function ServicesPage({
                     />
                   )}
                 </div>
+                <ProviderDataDetails provider={provider} />
                 <code className="scroll-drag-x" title={providerSummary(provider)}>{providerSummary(provider)}</code>
               </div>
             ))}

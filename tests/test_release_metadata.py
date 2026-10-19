@@ -1,4 +1,3 @@
-import ast
 import json
 import re
 import unittest
@@ -7,6 +6,28 @@ from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+APPROVED_ACTIONS = {
+    "actions/checkout", "actions/setup-python", "actions/setup-node",
+    "actions/attest", "actions/upload-artifact", "actions/download-artifact",
+    "actions/dependency-review-action", "anchore/scan-action", "anchore/sbom-action",
+    "docker/setup-qemu-action", "docker/setup-buildx-action", "docker/login-action",
+    "docker/build-push-action", "github/codeql-action/init", "github/codeql-action/analyze",
+}
+LOCAL_WORKFLOWS = {"./.github/workflows/ghcr-candidate.yml", "./.github/workflows/delivery.yml"}
+
+
+def workflow_action_pins(text: str) -> list[tuple[str, str]]:
+    pins = []
+    for match in re.finditer(r"(?m)^\s*(?:-\s+)?uses:\s*([^\r\n#]+)", text):
+        reference = match.group(1).strip().strip("\"'")
+        if reference in LOCAL_WORKFLOWS:
+            continue
+        action, separator, commit = reference.partition("@")
+        if not separator or action not in APPROVED_ACTIONS or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise ValueError(f"unapproved or mutable action reference: {reference}")
+        pins.append((action, commit))
+    return pins
 
 
 class ReleaseMetadataTests(unittest.TestCase):
@@ -108,7 +129,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         published_install = release.split("\n  published-install:\n", 1)[1]
 
-        self.assertIn("needs: release", published_install)
+        self.assertIn("needs: publish", published_install)
+        self.assertIn("ubuntu-24.04-arm", published_install)
+        gate = release.split("\n  delivery:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertIn("needs: release", gate)
+        self.assertIn("uses: ./.github/workflows/delivery.yml", gate)
+        self.assertIn("release-artifact: release-assets-${{ github.sha }}", gate)
+        publish = release.split("\n  publish:\n", 1)[1].split("\n  published-install:\n", 1)[0]
+        self.assertIn("needs: delivery", publish)
         self.assertIn('export THE333_VERSION="${GITHUB_REF_NAME#v}"', published_install)
         self.assertIn('cp ./install.sh "${RUNNER_TEMP}/the333-release-install.sh"', published_install)
         self.assertIn('bash "${RUNNER_TEMP}/the333-release-install.sh" --non-interactive', published_install)
@@ -172,7 +200,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertNotIn("python", gobgp.lower())
         self.assertNotIn("VCS_REF", core_service)
         self.assertIn('org.opencontainers.image.revision="${GOBGP_REF}"', gobgp)
-        self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", gobgp)
+        self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r2", gobgp)
         portal_dockerfile = (ROOT / "portal" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("apk upgrade --no-cache", portal_dockerfile)
         self.assertIn("user[[:space:]]", portal_dockerfile)
@@ -246,7 +274,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         expected_values = [
             "GOBGP_TAG_REF=96ef11aedd066031f1bacb2c587baaa769ba07eb",
             "GOBGP_REF=01c5c4c27f9a1ac3b5927f433b5115f9b0eee791",
-            "GOBGP_X_NET_VERSION=v0.59.0",
+            "GOBGP_X_NET_VERSION=v0.60.0",
             "GOBGP_X_SYS_VERSION=v0.48.0",
             "GOBGP_X_TEXT_VERSION=v0.42.0",
             "GOBGP_GRPC_VERSION=v1.83.2",
@@ -261,7 +289,7 @@ class ReleaseMetadataTests(unittest.TestCase):
 
         self.assertEqual(compose.count("GOBGP_VERSION: v4.9.0"), 2)
         self.assertNotIn("GOBGP_VERSION: v4.7.0", compose)
-        self.assertIn("GOBGP_CORE_IMAGE_VERSION:-4.9.0-r1", compose)
+        self.assertIn("GOBGP_CORE_IMAGE_VERSION:-4.9.0-r2", compose)
 
         self.assertIn('rev-parse "refs/tags/${GOBGP_VERSION}"', build_script)
         self.assertIn('test "$(git -C /src/gobgp rev-parse HEAD)" = "${GOBGP_REF}"', build_script)
@@ -270,41 +298,30 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("go mod verify", build_script)
         self.assertIn("-mod=readonly", build_script)
 
-    def test_grype_exception_is_narrow_and_version_scoped(self) -> None:
+    def test_runtime_does_not_carry_forward_obsolete_grype_exceptions(self) -> None:
         config = (ROOT / ".grype.yaml").read_text(encoding="utf-8")
-        imported_modules: set[str] = set()
-        for source_path in (ROOT / "app").rglob("*.py"):
-            backend_tree = ast.parse(source_path.read_text(encoding="utf-8"))
-            for node in ast.walk(backend_tree):
-                if isinstance(node, ast.Import):
-                    imported_modules.update(alias.name for alias in node.names)
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    imported_modules.add(node.module)
+        active_lines = [line.strip() for line in config.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(active_lines, ["ignore: []"])
 
-        ignored_cves = (
-            "CVE-2026-15308",
-            "CVE-2026-11940",
-            "CVE-2026-11972",
-        )
-        self.assertEqual(config.count("- vulnerability:"), len(ignored_cves))
-        for cve in ignored_cves:
-            with self.subTest(cve=cve):
-                self.assertIn(f"vulnerability: {cve}", config)
-        self.assertEqual(config.count("name: python"), len(ignored_cves))
-        self.assertEqual(config.count("version: 3.14.7"), len(ignored_cves))
-        self.assertEqual(config.count("type: binary"), len(ignored_cves))
-        self.assertIn("neither imports nor", config)
-        self.assertFalse(any(name == "html" or name.startswith("html.") for name in imported_modules))
-        self.assertFalse(any(name == "tarfile" or name.startswith("tarfile.") for name in imported_modules))
+    def test_action_pin_policy_accepts_new_commits_but_rejects_unsafe_references(self) -> None:
+        for commit in ("a" * 40, "b" * 40):
+            self.assertEqual(workflow_action_pins(f"  - uses: actions/download-artifact@{commit} # release"),
+                             [("actions/download-artifact", commit)])
+        self.assertEqual(workflow_action_pins("    uses: ./.github/workflows/ghcr-candidate.yml"), [])
+        for reference in (
+            "actions/download-artifact@v8", "actions/checkout@main", "actions/checkout",
+            f"untrusted/action@{'a' * 40}", "docker://alpine:latest",
+            "../../workflow.yml", "${{ matrix.action }}", "actions/checkout@1234",
+            "./.github/workflows/../untrusted.yml",
+        ):
+            with self.subTest(reference=reference), self.assertRaises(ValueError):
+                workflow_action_pins(f"  - uses: {reference}")
 
     def test_github_actions_are_pinned_and_release_is_attested(self) -> None:
         workflow_dir = ROOT / ".github" / "workflows"
         for workflow in workflow_dir.glob("*.yml"):
-            for line in workflow.read_text(encoding="utf-8").splitlines():
-                match = re.search(r"\buses:\s*[^@\s]+@([^\s#]+)", line)
-                if match:
-                    with self.subTest(workflow=workflow.name, action=line.strip()):
-                        self.assertRegex(match.group(1), r"^[0-9a-f]{40}$")
+            with self.subTest(workflow=workflow.name):
+                workflow_action_pins(workflow.read_text(encoding="utf-8"))
 
         release = (workflow_dir / "release.yml").read_text(encoding="utf-8")
         release_check = (ROOT / "scripts" / "release-check.sh").read_text(encoding="utf-8")
@@ -317,7 +334,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("python3 scripts/extract-release.py dist/source-tree.tar.gz dist/release-tree", release)
         self.assertIn("path: dist/release-tree", release)
         self.assertNotIn("path: .\n", release)
-        self.assertIn("GRYPE_VERSION: v0.112.0", release)
+        self.assertIn("GRYPE_VERSION: v0.120.1", release)
         self.assertIn("severity-cutoff: high", release)
         self.assertIn("grype-version: ${{ env.GRYPE_VERSION }}", release)
         self.assertIn("output-format: table", release)
@@ -331,7 +348,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("packages: write", release)
         self.assertIn("linux/amd64,linux/arm64", release)
         self.assertIn('matches[0]["images"] = images', release)
-        self.assertIn("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", release)
+        self.assertIn("actions/download-artifact", {action for action, _ in workflow_action_pins(release)})
         self.assertNotIn('title="${title} beta"', release)
         self.assertIn("THE333_REQUIRE_TRACKED_RELEASE_FILES=true ./scripts/release-check.sh", release)
         self.assertIn("THE333_REQUIRE_TRACKED_RELEASE_FILES", release_check)
@@ -357,8 +374,11 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(ci.count("severity-cutoff: high"), 3)
         self.assertEqual(ci.count("grype-version: ${{ env.GRYPE_VERSION }}"), 3)
         self.assertEqual(ci.count("output-format: table"), 3)
-        self.assertIn("GRYPE_VERSION: v0.112.0", ci)
+        self.assertIn("GRYPE_VERSION: v0.120.1", ci)
         self.assertNotIn("severity-cutoff: critical", ci)
+        for workflow in (ci, release):
+            self.assertIn("npm audit --omit=dev --audit-level=moderate", workflow)
+            self.assertIn("npm audit --audit-level=high", workflow)
 
         codeql = (workflow_dir / "codeql.yml").read_text(encoding="utf-8")
         self.assertIn("build-mode: none", codeql)
@@ -440,7 +460,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("AWG_GO_REF=1cc94272ca8e9e223a5fe76382f5880f09d3c12d", dockerfile)
         self.assertIn("AWG_TOOLS_REF=61e741780e8465a67a7d7fb6cffe14a8a15d624a", dockerfile)
         self.assertIn("AWG_X_CRYPTO_VERSION=v0.57.0", dockerfile)
-        self.assertIn("AWG_X_NET_VERSION=v0.59.0", dockerfile)
+        self.assertIn("AWG_X_NET_VERSION=v0.60.0", dockerfile)
         self.assertIn("AWG_X_SYS_VERSION=v0.48.0", dockerfile)
         self.assertIn("go mod verify", dockerfile)
         self.assertEqual(dockerfile.count("@sha256:"), 2)
@@ -450,7 +470,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("--self-test", workflow)
         self.assertIn("Generate image SPDX SBOM", workflow)
         self.assertIn("Scan candidate for fixable High/Critical vulnerabilities", workflow)
-        self.assertIn("GRYPE_VERSION: v0.112.0", workflow)
+        self.assertIn("GRYPE_VERSION: v0.120.1", workflow)
         self.assertIn("severity-cutoff: high", workflow)
         self.assertIn("grype-version: ${{ env.GRYPE_VERSION }}", workflow)
         self.assertIn("output-format: table", workflow)

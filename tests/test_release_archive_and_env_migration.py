@@ -11,6 +11,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ReleaseCheckTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "release check requires a POSIX shell")
+    def test_placeholder_scan_distinguishes_no_matches_from_tool_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            fake_grep = directory / "grep"
+            env = dict(os.environ, PATH=f"{directory}{os.pathsep}{os.environ['PATH']}",
+                       PYTHON=sys.executable, PYTHONPYCACHEPREFIX=str(directory / "pycache"))
+            for status in (0, 1, 2, 127):
+                with self.subTest(status=status):
+                    fake_grep.write_text(f"#!/bin/sh\nexit {status}\n", encoding="utf-8")
+                    fake_grep.chmod(0o755)
+                    result = subprocess.run(
+                        ["bash", str(ROOT / "scripts" / "release-check.sh")],
+                        env=env, text=True, capture_output=True, check=False, timeout=120,
+                    )
+                    if status == 1:
+                        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+                        self.assertIn("[release-check] OK", result.stdout)
+                    elif status == 0:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("forbidden placeholder or old control name found", result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(f"release tree search failed (exit {status})", result.stderr)
+
+
 class EnvMigrationTests(unittest.TestCase):
     def test_migration_preserves_user_settings_and_moves_md5_secret(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -82,7 +109,7 @@ class EnvMigrationTests(unittest.TestCase):
                 migrated,
             )
             self.assertIn("BGP_TCP_MD5_CONFIGURED=true", migrated)
-            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", migrated)
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r2", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=2", migrated)
             self.assertIn("BGP_TTL_SECURITY_ENABLED=true", migrated)
             self.assertIn("UPDATE_MIN_FREE_BYTES=1073741824", migrated)
@@ -127,7 +154,7 @@ class EnvMigrationTests(unittest.TestCase):
             self.assertIn("THE333_BIND_IP=192.168.1.10", migrated)
             self.assertIn("BGP_TTL_SECURITY_ENABLED=false", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=1", migrated)
-            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r1", migrated)
+            self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r2", migrated)
             self.assertIn("UPDATE_MIN_FREE_BYTES=1073741824", migrated)
 
     def test_migration_preserves_custom_update_disk_floor(self) -> None:

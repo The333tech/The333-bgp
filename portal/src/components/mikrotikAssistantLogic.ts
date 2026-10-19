@@ -4,9 +4,12 @@ export type RouterFacts = {
   major: number | null;
   minor: number | null;
   patch: number | null;
+  preview: boolean;
   architecture: string | null;
   model: string | null;
+  cpu: string | null;
   containerPackage: boolean | null;
+  containerVersion: string | null;
   containerMode: boolean | null;
 };
 
@@ -57,9 +60,12 @@ export function parseRouterFacts(raw: string): RouterFacts {
       major: null,
       minor: null,
       patch: null,
+      preview: false,
       architecture: null,
       model: null,
+      cpu: null,
       containerPackage: null,
+      containerVersion: null,
       containerMode: null,
     };
   }
@@ -67,23 +73,68 @@ export function parseRouterFacts(raw: string): RouterFacts {
   const version = parseVersion(text);
   const architecture = text.match(/architecture-name\s*[:=]\s*"?([^\s"\r\n]+)/i)?.[1] ?? null;
   const model = text.match(/(?:board-name|model)\s*[:=]\s*"?([^"\r\n]+)/i)?.[1]?.trim() ?? null;
+  const cpu = text.match(/(?:^|\n)\s*cpu\s*[:=]\s*"?([^"\r\n]+)/i)?.[1]?.trim() ?? null;
   const containerLine = text
     .split(/\r?\n/)
     .find((line) => /(?:name\s*=\s*"?container"?|\bcontainer\b.*\b[0-9]+\.[0-9]+)/i.test(line));
   const packageOutputPresent = /name\s*=\s*"?routeros"?/i.test(text)
-    || /^\s*\d+\s+routeros\s+[0-9]+\.[0-9]+/im.test(text);
+    || /^\s*\d+\s+(?:[A-Z]+\s+)?routeros\s+[0-9]+\.[0-9]+/im.test(text);
   const modeMatch = text.match(/(?:^|\s)container\s*[:=]\s*(yes|no)/i);
 
   return {
     analyzed: true,
     ...version,
+    preview: /^\s*version\s*[:=].*(?:\d(?:rc|beta|alpha)\d|testing|development)/im.test(text),
     architecture: architecture?.toLowerCase() ?? null,
     model,
+    cpu,
     containerPackage: containerLine
-      ? !/^\s*X\s/.test(containerLine) && !/disabled\s*=\s*yes/i.test(containerLine)
+      ? !/^\s*(?:\d+\s+)?[A-Z]*X[A-Z]*\s/.test(containerLine) && !/disabled\s*=\s*yes/i.test(containerLine)
       : packageOutputPresent ? false : null,
+    containerVersion: containerLine?.match(/\bversion\s*=\s*"?([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:(?:rc|beta|alpha)[0-9]+)?)/i)?.[1]
+      ?? containerLine?.match(/\bcontainer\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?(?:(?:rc|beta|alpha)[0-9]+)?)/i)?.[1] ?? null,
     containerMode: modeMatch ? modeMatch[1].toLowerCase() === "yes" : null,
   };
+}
+
+export function awgImageCompatibility(facts: RouterFacts): {
+  status: "match" | "incompatible" | "unknown";
+  platform: string | null;
+  label: string;
+} {
+  const model = facts.model?.toLowerCase() ?? "";
+  if (/en7562ct/i.test(facts.cpu ?? "") || /^(e50ug|hex refresh)$/.test(model)) {
+    return { status: "incompatible", platform: "linux/arm/v5", label: "Требуется arm32v5; предлагаемый ARMv7-образ не подходит" };
+  }
+  if (facts.architecture === "arm64") {
+    return { status: "match", platform: "linux/arm64", label: "Архитектура соответствует ARM64-образу; работа туннеля ещё не проверена" };
+  }
+  if (["amd64", "x86_64"].includes(facts.architecture ?? "")) {
+    return { status: "match", platform: "linux/amd64", label: "Архитектура соответствует AMD64-образу; работа туннеля ещё не проверена" };
+  }
+  if (facts.architecture === "arm" && (/^rb3011uias(?:-rm)?$/.test(model) || /\barmv7\b|\bipq8060\b/i.test(facts.cpu ?? ""))) {
+    return { status: "match", platform: "linux/arm/v7", label: /^rb3011uias(?:-rm)?$/.test(model)
+      ? "Соответствует ARMv7-образу; RB3011 проверен на стенде"
+      : "Соответствует ARMv7-образу; эта модель на стенде не проверена" };
+  }
+  if (facts.architecture && !["arm", "x86"].includes(facts.architecture)) {
+    return { status: "incompatible", platform: null, label: "Для этой архитектуры готовый AWG-образ не предлагается" };
+  }
+  return { status: "unknown", platform: null, label: "Совместимость образа с CPU не подтверждена; это не означает несовместимость" };
+}
+
+export function containerVersionMatches(facts: RouterFacts): boolean {
+  const packageVersion = facts.containerVersion?.split(".");
+  if (packageVersion?.length === 2) packageVersion.push("0");
+  return facts.containerVersion !== null && packageVersion?.join(".") === facts.version;
+}
+
+export function awgPreparationReady(facts: RouterFacts): boolean {
+  return facts.major === 7 && versionAtLeast(facts, 7, 23, 1)
+    && !facts.preview
+    && facts.containerPackage === true && facts.containerMode === true
+    && containerVersionMatches(facts)
+    && awgImageCompatibility(facts).status === "match";
 }
 
 export function isIpv4(value: string): boolean {

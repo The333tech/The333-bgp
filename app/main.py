@@ -554,7 +554,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.92b"
+    return "0.93b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
@@ -8467,6 +8467,9 @@ def dns_resolve_ipv4(
         "resolve_attempts": 0,
         "resolve_errors": [],
         "resolve_status": "unavailable",
+        "checked_at": now_value,
+        "last_success_at": None,
+        "cache_oldest_at": None,
         "error": None,
         "warning": None,
     }
@@ -8606,6 +8609,17 @@ def dns_resolve_ipv4(
     stat["stale_ips"] = sorted(stale_ips)
     stat["accepted"] = len(networks)
     stat["cache_hit"] = len(active_ips) > len(current_ips) or bool(active_ips and not resolve_ok)
+
+    last_success_at = now_value if resolve_ok else domain_cache.get("last_success_at")
+    if parse_iso_ts(last_success_at) is None:
+        previous_times = [item.get("last_seen") for item in cached_ips.values() if isinstance(item, dict)]
+        valid_times = [value for value in previous_times if parse_iso_ts(value) is not None]
+        last_success_at = max(valid_times, key=parse_iso_ts) if valid_times else None
+    domain_cache["last_success_at"] = last_success_at
+    stat["last_success_at"] = last_success_at
+    cached_times = [cached_ips[ip].get("last_seen") for ip in stale_ips]
+    valid_cached_times = [value for value in cached_times if parse_iso_ts(value) is not None]
+    stat["cache_oldest_at"] = min(valid_cached_times, key=parse_iso_ts) if valid_cached_times else None
 
     return networks, stat
 
@@ -8784,6 +8798,7 @@ def collect_geosite_plain_domains(
     domains: list[str] = []
     seen_domains: set[str] = set()
     include_sources: list[dict[str, Any]] = []
+    skipped_includes: set[str] = set()
     ignored_lines = 0
     ignored_samples: list[str] = []
     line_count = 0
@@ -8807,15 +8822,12 @@ def collect_geosite_plain_domains(
         ignored_samples.extend(str(item) for item in parsed["ignored_samples"] if len(ignored_samples) < 20)
         add_domains(parsed["domains"])
 
-        if depth >= max_depth or include_count >= max_includes:
-            return
-
         for include_name in parsed["includes"]:
-            if include_count >= max_includes:
-                return
-
             include_url = geosite_include_url(current_url, include_name)
-            if not include_url or include_url in visited_urls:
+            if include_url and include_url in visited_urls:
+                continue
+            if not include_url or depth >= max_depth or include_count >= max_includes:
+                skipped_includes.add(include_url or include_name)
                 continue
 
             visited_urls.add(include_url)
@@ -8844,6 +8856,7 @@ def collect_geosite_plain_domains(
                 include_sources.append(include_meta)
 
     visit(text_value, source_url, 0)
+    unread_includes = skipped_includes.difference(visited_urls, {source_url})
 
     return {
         "line_count": line_count,
@@ -8853,6 +8866,8 @@ def collect_geosite_plain_domains(
         "domains": domains,
         "include_count": include_count,
         "include_sources": include_sources,
+        "include_truncated": bool(unread_includes),
+        "skipped_include_count": len(unread_includes),
         "include_max_depth": max_depth,
         "include_max_count": max_includes,
     }
@@ -8903,6 +8918,8 @@ def collect_geosite_plain_provider(provider: dict[str, Any]) -> tuple[set[ipaddr
     stat["parsed_domain_count"] = parsed["domain_count"]
     stat["include_count"] = parsed["include_count"]
     stat["include_sources"] = parsed["include_sources"]
+    stat["include_truncated"] = parsed["include_truncated"]
+    stat["skipped_include_count"] = parsed["skipped_include_count"]
     stat["include_max_depth"] = parsed["include_max_depth"]
     stat["include_max_count"] = parsed["include_max_count"]
     stat["ignored_lines"] = parsed["ignored_lines"]
