@@ -99,6 +99,27 @@ def extract(archive, destination):
     run("python3", str(ROOT / "scripts/extract-release.py"), str(archive), str(destination))
 
 
+def verify_release_assets(directory, images, version, destination):
+    archive = directory / f"the333-bgp-v{version}.tar.gz"
+    checksums = {}
+    for line in (directory / "SHA256SUMS").read_text().splitlines():
+        digest, name = line.split()
+        require(name not in checksums and bool(re.fullmatch(r"[a-f0-9]{64}", digest)), "invalid release checksums")
+        checksums[name] = digest
+    require(set(checksums) == {archive.name, "update-manifest.json", "the333-bgp.spdx.json"}, "unexpected release assets")
+    for name, digest in checksums.items():
+        item = directory / name
+        require(item.is_file() and not item.is_symlink(), "unsafe release asset")
+        require(hashlib.sha256(item.read_bytes()).hexdigest() == digest, "release asset checksum mismatch")
+    extract(archive, destination)
+    require((destination / "VERSION").read_text().strip() == version, "release version mismatch")
+    for manifest_path in (destination / "update-manifest.json", directory / "update-manifest.json"):
+        manifest = json.loads(manifest_path.read_text())
+        matches = [item for item in manifest["versions"] if item["version"] == version]
+        require(len(matches) == 1 and matches[0]["images"] == images, "release images differ from tested references")
+    return archive
+
+
 def candidate_archive(directory, images, version, broken=False, base_archive=None):
     """Use the git archive distribution, not the developer's untracked work tree."""
     directory.mkdir()
@@ -297,15 +318,7 @@ class DeliverySmoke:
         self.images = images
         current = (ROOT / "VERSION").read_text().strip()
         if self.args.release_assets:
-            clean = self.args.release_assets / f"the333-bgp-v{current}.tar.gz"
-            checksums = dict(line.split(None, 1)[::-1] for line in (self.args.release_assets / "SHA256SUMS").read_text().splitlines())
-            require(checksums.get(clean.name) == hashlib.sha256(clean.read_bytes()).hexdigest(), "release archive checksum mismatch")
-            verification = self.temp / "verify-release"
-            extract(clean, verification)
-            require((verification / "VERSION").read_text().strip() == current, "release version mismatch")
-            manifest = json.loads((verification / "update-manifest.json").read_text())
-            entry = next(item for item in manifest["versions"] if item["version"] == current)
-            require(entry["images"] == images, "release images differ from tested references")
+            clean = verify_release_assets(self.args.release_assets, images, current, self.temp / "verify-release")
         else:
             clean = candidate_archive(self.temp / "clean", images, current)
         self.install(clean)
@@ -321,8 +334,10 @@ class DeliverySmoke:
         (PROJECT / "config/delivery-note.json").write_text(json.dumps({"keep": "operator data"}))
         api.call("/api/routes/publication/pause", {})
         self.tls_fixture()
-        first, second = "9000.1b", "9000.2b"  # fixture versions; never published or written to the source repository
-        archive = candidate_archive(self.temp / "upgrade", images, first, base_archive=clean)
+        # The release gate tests the exact version/archive, candidates need a newer fixture number.
+        first = current if self.args.release_assets else "9000.1b"
+        second = "9000.2b"
+        archive = clean if self.args.release_assets else candidate_archive(self.temp / "upgrade", images, first, base_archive=clean)
         self.index(archive, first)
         self.update(first, "succeeded")
         self.check_state(api, first)
