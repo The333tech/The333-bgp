@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import os
+import ssl
 import tarfile
 import tempfile
 import unittest
@@ -30,6 +31,20 @@ class DeliveryCheckTests(unittest.TestCase):
         with patch("urllib.request.urlopen") as request, self.assertRaisesRegex(RuntimeError, "HTTPS"):
             fetch("http://localhost/release.tar.gz")
         request.assert_not_called()
+
+    def test_https_fixture_requires_tls_12_without_external_side_effects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = object.__new__(DeliverySmoke)
+            fixture.temp = Path(directory)
+            fixture.public = fixture.temp / "public"
+            fixture.public.mkdir()
+            fixture.ca = fixture.temp / "trusted.crt"
+            with patch("delivery_smoke.run"), patch("delivery_smoke.http.server.ThreadingHTTPServer"), \
+                    patch("delivery_smoke.threading.Thread"), patch("delivery_smoke.ssl.SSLContext") as contexts:
+                fixture.tls_fixture()
+            contexts.assert_called_once_with(ssl.PROTOCOL_TLS_SERVER)
+            self.assertEqual(contexts.return_value.minimum_version, ssl.TLSVersion.TLSv1_2)
+            contexts.return_value.load_cert_chain.assert_called_once_with(fixture.temp / "ca.crt", fixture.temp / "ca.key")
 
     @unittest.skipUnless(os.name == "posix", "archive helper invokes host python3")
     def test_fixture_changes_are_confined_to_temporary_archives(self):
