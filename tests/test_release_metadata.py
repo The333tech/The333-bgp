@@ -14,7 +14,7 @@ APPROVED_ACTIONS = {
     "docker/setup-qemu-action", "docker/setup-buildx-action", "docker/login-action",
     "docker/build-push-action", "github/codeql-action/init", "github/codeql-action/analyze",
 }
-LOCAL_WORKFLOWS = {"./.github/workflows/ghcr-candidate.yml"}
+LOCAL_WORKFLOWS = {"./.github/workflows/ghcr-candidate.yml", "./.github/workflows/delivery.yml"}
 
 
 def workflow_action_pins(text: str) -> list[tuple[str, str]]:
@@ -129,7 +129,14 @@ class ReleaseMetadataTests(unittest.TestCase):
         release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         published_install = release.split("\n  published-install:\n", 1)[1]
 
-        self.assertIn("needs: release", published_install)
+        self.assertIn("needs: publish", published_install)
+        self.assertIn("ubuntu-24.04-arm", published_install)
+        gate = release.split("\n  delivery:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertIn("needs: release", gate)
+        self.assertIn("uses: ./.github/workflows/delivery.yml", gate)
+        self.assertIn("release-artifact: release-assets-${{ github.sha }}", gate)
+        publish = release.split("\n  publish:\n", 1)[1].split("\n  published-install:\n", 1)[0]
+        self.assertIn("needs: delivery", publish)
         self.assertIn('export THE333_VERSION="${GITHUB_REF_NAME#v}"', published_install)
         self.assertIn('cp ./install.sh "${RUNNER_TEMP}/the333-release-install.sh"', published_install)
         self.assertIn('bash "${RUNNER_TEMP}/the333-release-install.sh" --non-interactive', published_install)
