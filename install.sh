@@ -1452,8 +1452,11 @@ existing_install_flow() {
       ensure_env_defaults
       install_host_updater_service
       cd "${PROJECT_DIR}"
-      check_disk_policy "repair"
+      check_disk_policy "repair" copied
       prepare_runtime_images
+      if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+        check_disk_policy repair installed
+      fi
       start_runtime
       wait_for_services "$(awk -F= '$1 == "THE333_BIND_IP" {print $2; exit}' .env)"
       "${PROJECT_DIR}/scripts/the333bgp.sh" status
