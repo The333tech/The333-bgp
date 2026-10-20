@@ -404,6 +404,8 @@ check_update_storage_budget() {
     mapfile -t references <<< "${references_text}"
     [[ ${#references[@]} -eq 3 ]] || return 1
     arguments+=(--images "${references[@]}")
+  elif [[ "${phase}" == "mode" ]]; then
+    arguments+=(--images "${THE333_GOBGP_IMAGE}" "${THE333_BACKEND_IMAGE}" "${THE333_PORTAL_IMAGE}")
   fi
   python3 "${CONTROLLER_DIR}/scripts/update-storage.py" "${arguments[@]}" --docker-command "${DOCKER_CMD[@]}"
 }
@@ -942,7 +944,11 @@ set_image_mode() {
   load_env
   configure_compose_files
 
-  if ! check_update_disk_space; then
+  local -a disk_arguments=()
+  if [[ "${requested}" == "prebuilt" ]]; then
+    disk_arguments=("" mode "${PROJECT_DIR}")
+  fi
+  if ! check_update_disk_space "${disk_arguments[@]}"; then
     restore_image_mode_env "${backup_env}"
     fail "image mode preflight failed; runtime was not changed and .env was restored"
   fi

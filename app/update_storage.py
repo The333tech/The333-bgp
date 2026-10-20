@@ -267,19 +267,19 @@ def build_plan(project: Path, phase: str, command: list[str], release: Path | No
         return plan.report()
     if release is None or not release.is_dir():
         raise ValueError("verified release directory is required")
-    installing = phase in {"install", "copied", "installed"}
+    installing = phase in {"install", "copied", "installed", "mode"}
     snapshot = (0 if installing else
                 archive_footprint(backup) if phase == "activate" and backup is not None and backup.is_file()
                 else footprint(project, BACKUP_ITEMS))
-    activation = 0 if phase in {"copied", "installed"} else footprint(release)
+    activation = 0 if phase in {"copied", "installed", "mode"} else footprint(release)
     plan.add(project, "new release files", activation)
     plan.add(tmp, "rollback extraction", snapshot)
-    if phase not in {"activate", "install", "copied", "installed"}:
+    if phase not in {"activate", "install", "copied", "installed", "mode"}:
         # gzip can be larger than its input; footprint includes generous per-file overhead.
         plan.add(project / "backups", "mandatory backup", snapshot + MIB)
     elif phase == "activate" and (backup is None or not backup.is_file() or backup.is_symlink() or backup.stat().st_size == 0):
         raise ValueError("verified backup is required before activation")
-    if phase in {"images", "install", "copied"}:
+    if phase in {"images", "install", "copied", "mode"}:
         references = references or []
         architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine(), "")
         present, cached_chains = set(), set()
