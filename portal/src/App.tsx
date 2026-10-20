@@ -544,22 +544,22 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.93.1b";
+const PRODUCT_VERSION = "0.94b";
 const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_VERSIONS = [
   {
-    id: "0.93.1b",
-    version: "0.93.1b",
-    title: "v0.93.1b",
+    id: "0.94b",
+    version: "0.94b",
+    title: "v0.94b",
     channel: "beta",
     status: "текущая версия",
     date: "октябрь 2026",
     changelog: [
-      "Неудачное обновление выделяется красным; таймер останавливается на длительности операции.",
-      "Для известных ошибок показаны причина и дальнейшие действия без вывода сырых журналов.",
-      "При нехватке места указаны свободный объём, необходимый минимум и недостающий запас.",
-      "Для неизвестной ошибки указан файл подробного результата операции на VM.",
-      "Core остаётся 4.9.0-r2. При переходе с более ранней ревизии нужно 2 ГБ свободно и короткое окно BGP."
+      "В prebuilt-режиме место рассчитывается по недостающим слоям, данным и этапу операции вместо фиксированных 1–2 ГБ.",
+      "Обязательная полная резервная копия, место для восстановления и предыдущие образы сохраняются.",
+      "После загрузки образов и копирования файлов их объём не требуется повторно.",
+      "Отдельно проверяются диски проекта, Docker/containerd и временных файлов; установка Docker учитывает выбранные пакеты.",
+      "Core остаётся 4.9.0-r2. RouterOS, AWG-контейнер и VPN-профили не изменяются."
     ]
   }
 ];
@@ -2413,7 +2413,8 @@ ${moduleDataIssues.map((service) => `- ${service.title ?? service.id}: ${service
       help: diskTone === "ok" && disk ? undefined : `Дисковое пространство:
 Свободно: ${disk ? formatBytes(disk.free_bytes) : "нет данных"}
 Занято: ${formatPercent(disk?.used_percent)}
-Минимум для безопасного обновления: ${disk?.update_min_free_bytes ? formatBytes(disk.update_min_free_bytes) : "нет данных"}
+${disk?.update_budget_mode === "adaptive" ? "Базовый запас (без файлов релиза и отката)" : "Минимум для обновления со сборкой"}: ${disk?.update_min_free_bytes ? formatBytes(disk.update_min_free_bytes) : "нет данных"}
+${disk?.update_budget_mode === "adaptive" ? "Точный объём проверяет updater перед загрузкой образов и установкой." : ""}
 
 Что проверить:
 1. Старые Docker images и build cache.

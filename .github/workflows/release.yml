@@ -177,12 +177,15 @@ jobs:
             'ghcr.io/the333tech/${{ matrix.image }}' \
             '${{ steps.push.outputs.digest }}' \
             > 'dist/image-digests/${{ matrix.service }}.ref'
+          python3 scripts/measure-image-storage.py \
+            "$(cat 'dist/image-digests/${{ matrix.service }}.ref')" \
+            'dist/image-digests/${{ matrix.service }}.storage.json'
 
       - name: Upload image reference
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-image-${{ matrix.service }}
-          path: dist/image-digests/${{ matrix.service }}.ref
+          path: dist/image-digests/${{ matrix.service }}.*
           if-no-files-found: error
           retention-days: 7
 
@@ -242,6 +245,12 @@ jobs:
                   raise SystemExit(f"invalid immutable image reference for {name}")
               images[name] = reference
           matches[0]["images"] = images
+          storage = {"schema": 1, "platforms": {f"linux/{arch}": {} for arch in ("amd64", "arm64")}}
+          for name in repositories:
+              measured = json.loads(Path(f"dist/image-digests/{name}.storage.json").read_text())
+              for target, entries in storage["platforms"].items():
+                  entries[name] = measured[target]
+          Path("dist/release-tree/docker/image-storage.json").write_text(json.dumps(storage, indent=2) + "\n")
           source.write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
               encoding="utf-8",

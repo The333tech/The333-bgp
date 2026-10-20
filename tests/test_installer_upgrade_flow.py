@@ -89,6 +89,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
             ".dockerignore",
             ".gitignore",
             "install.sh",
+            "scripts/update-storage.py",
         ):
             self._copy_text(relative)
 
@@ -244,6 +245,23 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertIn("new-control update --manifest", log)
         self.assertIn("--channel beta --non-interactive", log)
         self.assertNotIn("old-control update", log)
+
+    def test_bootstrap_delegates_to_older_verified_release_without_changing_installation(self) -> None:
+        (self.source / "scripts" / "update-storage.py").unlink()
+        self._write(self.source / "install.sh", '#!/usr/bin/env bash\nprintf "%s|%s|%s\\n" "$THE333_PROJECT_DIR" "$THE333_VERSION" "$*"\n')
+        patched = self._patched_installer()
+        for action in ("install", "repair"):
+            with self.subTest(action=action):
+                result = subprocess.run([
+                    "bash", "-c", 'export THE333_INSTALL_TEST_HARNESS=true; source "$1"; '
+                    'NON_INTERACTIVE=true; DRY_RUN=true; INSTALL_VERSION=0.93.1b; '
+                    'delegate_older_release_installer "$2" "$3"; exit 99',
+                    "bash", str(patched), str(self.source), action,
+                ], env={**os.environ, "THE333_PROJECT_DIR": str(self.project)}, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"{self.project}|0.93.1b|--non-interactive --dry-run", result.stdout)
+                self.assertEqual("--action repair" in result.stdout, action == "repair")
+        self.assertEqual((self.project / "data/state.json").read_text(), '{"keep": true}\n')
 
     def test_update_controller_reports_manifest_download_failure_without_python_traceback(self) -> None:
         environment = self._environment_with_failing_curl()
@@ -596,6 +614,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
             event_log.read_text(encoding="utf-8").splitlines(),
             [
                 "disk-preflight",
+                "disk-preflight",
                 "backup",
                 "disk-preflight",
                 "copy",
@@ -656,7 +675,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
         self.assertIn("prebuilt image preparation failed before release activation", result.stderr)
         self.assertEqual(
             event_log.read_text(encoding="utf-8").splitlines(),
-            ["disk-preflight", "backup", "disk-preflight", "prestage-failed"],
+            ["disk-preflight", "disk-preflight", "prestage-failed"],
         )
         self.assertEqual((self.project / "VERSION").read_text(encoding="utf-8"), "0.1\n")
 

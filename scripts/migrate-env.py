@@ -193,7 +193,11 @@ def main() -> int:
     peer_mode = values.get("BGP_PEER_MODE") or detect_peer_mode(values.get("PEER_ADDRESS", ""))
     updater_token = values.get("HOST_UPDATER_TOKEN") or secrets.token_hex(32)
     update_min_free_bytes = values.get("UPDATE_MIN_FREE_BYTES", "").strip()
-    if not update_min_free_bytes or update_min_free_bytes == "2147483648":
+    legacy_storage_policy = values.get("UPDATE_STORAGE_POLICY", "") != "adaptive"
+    if image_mode == "prebuilt" and (not update_min_free_bytes or update_min_free_bytes == "0" or (
+            legacy_storage_policy and update_min_free_bytes in {"1073741824", "2147483648"})):
+        update_min_free_bytes = "0"
+    elif image_mode != "prebuilt" and (not update_min_free_bytes or update_min_free_bytes in {"0", "2147483648"}):
         update_min_free_bytes = "1073741824"
     elif not update_min_free_bytes.isdigit() or int(update_min_free_bytes) <= 0:
         raise SystemExit("UPDATE_MIN_FREE_BYTES must be a positive integer")
@@ -219,6 +223,7 @@ def main() -> int:
         "HOST_UPDATER_RESULT_DIR": str(project_dir / "data" / "host-updater-results"),
         "HOST_UPDATER_TOKEN": updater_token,
         "UPDATE_MIN_FREE_BYTES": update_min_free_bytes,
+        "UPDATE_STORAGE_POLICY": "adaptive",
         "UPDATE_BACKUP_RETENTION": "2",
         "AUTH_ALLOW_BASIC": "false",
         "SESSION_COOKIE_NAME": "the333_session",
@@ -256,6 +261,7 @@ def main() -> int:
         "THE333_PORTAL_IMAGE",
         "HOST_UPDATER_RESULT_DIR",
         "UPDATE_MIN_FREE_BYTES",
+        "UPDATE_STORAGE_POLICY",
     }
 
     updated: list[str] = []

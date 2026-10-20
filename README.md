@@ -4,10 +4,10 @@
 
 The333-BGP поднимает GoBGP speaker на Linux VM, собирает маршруты из источников и модулей сервисов, дедуплицирует/агрегирует их и публикует в MikroTik через BGP. Управление идёт через веб-портал: источники маршрутов, модули сервисов, Community-профили, диагностика, история, резервные копии, обновления и пошаговый помощник MikroTik.
 
-<p align="center"><kbd><a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.93.1b-8e44ad?style=flat-square"></a></kbd>&nbsp;<kbd><a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a></kbd>&nbsp;<kbd><a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a></kbd>&nbsp;<kbd><a href=".github/workflows/release.yml"><img alt="SBOM" src="https://img.shields.io/badge/SBOM-SPDX-546e7a?style=flat-square"></a></kbd><br><kbd><a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a></kbd>&nbsp;<kbd><a href="docs/MIKROTIK_AWG.md"><img alt="MikroTik" src="https://img.shields.io/badge/MikroTik-RouterOS%20v7-c88616?style=flat-square"></a></kbd>&nbsp;<kbd><a href="docker/backend.Dockerfile"><img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776ab?style=flat-square&logo=python&logoColor=white"></a></kbd>&nbsp;<kbd><a href="portal/package.json"><img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-3c873a?style=flat-square&logo=node.js&logoColor=white"></a></kbd><br><kbd><a href="https://github.com/osrg/gobgp/releases/tag/v4.9.0"><img alt="GoBGP" src="https://img.shields.io/badge/GoBGP-v4.9.0-00a6a6?style=flat-square"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml/badge.svg?branch=main"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml"><img alt="Release" src="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml/badge.svg"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml/badge.svg?branch=main"></a></kbd></p>
+<p align="center"><kbd><a href="VERSION"><img alt="Version" src="https://img.shields.io/badge/Version-v0.94b-8e44ad?style=flat-square"></a></kbd>&nbsp;<kbd><a href="update-manifest.json"><img alt="Channel" src="https://img.shields.io/badge/Channel-beta-7f52ff?style=flat-square"></a></kbd>&nbsp;<kbd><a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-f1c40f?style=flat-square"></a></kbd>&nbsp;<kbd><a href=".github/workflows/release.yml"><img alt="SBOM" src="https://img.shields.io/badge/SBOM-SPDX-546e7a?style=flat-square"></a></kbd><br><kbd><a href="docs/INSTALL.md"><img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white"></a></kbd>&nbsp;<kbd><a href="docs/MIKROTIK_AWG.md"><img alt="MikroTik" src="https://img.shields.io/badge/MikroTik-RouterOS%20v7-c88616?style=flat-square"></a></kbd>&nbsp;<kbd><a href="docker/backend.Dockerfile"><img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776ab?style=flat-square&logo=python&logoColor=white"></a></kbd>&nbsp;<kbd><a href="portal/package.json"><img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-3c873a?style=flat-square&logo=node.js&logoColor=white"></a></kbd><br><kbd><a href="https://github.com/osrg/gobgp/releases/tag/v4.9.0"><img alt="GoBGP" src="https://img.shields.io/badge/GoBGP-v4.9.0-00a6a6?style=flat-square"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/The333tech/The333-bgp/actions/workflows/ci.yml/badge.svg?branch=main"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml"><img alt="Release" src="https://github.com/The333tech/The333-bgp/actions/workflows/release.yml/badge.svg"></a></kbd>&nbsp;<kbd><a href="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/The333tech/The333-bgp/actions/workflows/codeql.yml/badge.svg?branch=main"></a></kbd></p>
 
 > [!NOTE]
-> **v0.93.1b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Рабочий стенд на отдельной VM в локальной сети публикует маршруты в MikroTik; установка сторонним пользователем пока не подтверждена. При переходе с ревизии GoBGP Core старее `4.9.0-r2` запланируй короткое окно обслуживания с временным разрывом BGP-сессии; при обновлении с `v0.93b` Core не меняется. RouterOS, AWG-контейнер и VPN-профили обновление The333-BGP не меняет.
+> **v0.94b (beta)** означает, что проект ещё находится в активной разработке перед stable-релизом. Рабочий стенд на отдельной VM в локальной сети публикует маршруты в MikroTik; установка сторонним пользователем пока не подтверждена. При переходе с ревизии GoBGP Core старее `4.9.0-r2` запланируй короткое окно обслуживания с временным разрывом BGP-сессии; при обновлении с `v0.93b` Core не меняется. RouterOS, AWG-контейнер и VPN-профили обновление The333-BGP не меняет.
 
 ## Требования
 
@@ -15,7 +15,7 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 - статический IPv4 для VM;
 - MikroTik с RouterOS v7;
 - минимум 1 ГБ RAM; рекомендуется 2+ ГБ;
-- для быстрой установки готовых образов: 2 ГБ свободного места при готовом Docker или 3 ГБ, если установщик должен поставить Docker; рекомендуется 4+ ГБ;
+- для готовых образов свободное место рассчитывается по недостающим слоям, данным и операции; общего обязательного порога 1–2 ГБ нет. Установка самого Docker учитывается отдельно;
 - для резервной сборки из исходников: 4 ГБ при готовом Docker или 5 ГБ вместе с установкой Docker; рекомендуется 6–8 ГБ;
 - доступ VM к Интернету для загрузки образов и списков маршрутов.
 
@@ -25,27 +25,22 @@ The333-BGP поднимает GoBGP speaker на Linux VM, собирает ма
 
 Основное место требуется Docker и процессу обновления:
 
-| Что занимает место | Ориентир по рабочему стенду до `v0.90b` |
+| Компонент | Измеренный ориентир для готовых образов |
 |---|---:|
-| Рабочие Docker images | около 1 ГБ |
-| Docker build cache | не требуется в prebuilt-режиме; около 0,5 ГБ при source-сборке |
-| Проект, данные и резервные копии | около 0,1 ГБ |
-| Обычный объём после установки | примерно 1,5–2 ГБ |
+| Загрузка всех трёх образов | около 90 МиБ, сжатые слои |
+| Сумма распакованных слоёв образов | около 230 МиБ, до вычета общих слоёв |
+| Исходный код и встроенные настройки | около 3 МиБ |
+| Пользовательские данные и архивы | зависят от списков, истории и количества копий |
 
 В быстром `prebuilt`-режиме GoBGP, backend и portal загружаются из GHCR по неизменяемым SHA-256 digest, поэтому builder layers на VM не создаются. Во время обновления Docker всё равно временно хранит старые и новые images, а The333-BGP сохраняет backup для rollback. Резервный `source`-режим дополнительно собирает все образы локально и требует больше места.
 
-Установщик учитывает этап и состояние VM:
+В `prebuilt`-режиме установщик и updater учитывают уже имеющиеся слои, распаковку новых образов, размер полной резервной копии и место для восстановления. После загрузки образов запас на их загрузку повторно не требуется. Смена версии GoBGP сама по себе не включает порог 2 ГБ.
 
-- **2 ГБ свободно** — жёсткий минимум prebuilt-установки с готовым Docker;
-- **3 ГБ свободно** — жёсткий минимум prebuilt-установки вместе с Docker;
-- **4 ГБ свободно** — жёсткий минимум source-установки с готовым Docker;
-- **5 ГБ свободно** — жёсткий минимум source-установки вместе с Docker;
-- **1 ГБ свободно** — минимум для обычного update, который переиспользует установленный routing-core;
-- **2 ГБ свободно** — минимум для update при смене GoBGP Core, в том числе при переходе с более ранней ревизии на `4.9.0-r2`; рекомендуется 4 ГБ;
-- **3 ГБ свободно** — минимум для repair с повторной сборкой;
-- **6–8 ГБ свободно** рекомендуется для спокойной эксплуатации, обновлений ОС, роста Docker cache, истории данных и нескольких циклов обновления без срочной очистки.
+Проверки выполняются по этапам, отдельно на дисках проекта, Docker/containerd и временных файлов. На каждом диске остаётся небольшой рабочий резерв; он не заменяет рассчитанный объём операции. Большие пользовательские данные или обновление базовых образов закономерно требуют больше места, чем небольшое исправление приложения. Точный расчёт и причина отказа выводятся в журнал, при нехватке места файлы рабочей версии не заменяются. **Резервное копирование и защита отката не отключаются.**
 
-Проверка выполняется повторно перед Docker build. Если каталог проекта и Docker Root Dir находятся на разных разделах, свободное место проверяется отдельно на каждом из них. Установщик не запускает глобальный `docker system prune`, поэтому не удаляет images и cache других проектов на той же VM.
+Для `source`-сборки сохраняется отдельный запас под компилятор и build cache: 4 ГБ для новой установки с готовым Docker, 5 ГБ с установкой Docker, 1–2 ГБ для обновления и 3 ГБ для repair. Это не требования быстрой установки готовых образов. Место под ОС, её обновления и другие сервисы в размер The333-BGP не входит.
+
+Установщик не запускает глобальный `docker system prune` и не удаляет образы или cache чужих проектов. Подробности проверки и перехода со старого updater: [инструкция установки](docs/INSTALL.md#6-проверки-перед-запуском).
 
 ## Быстрый старт
 

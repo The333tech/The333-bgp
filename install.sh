@@ -6,6 +6,7 @@ INSTALL_CHANNEL="${THE333_CHANNEL:-beta}"
 INSTALL_VERSION="${THE333_VERSION:-}"
 RELEASE_INDEX_URL="${PRODUCT_UPDATE_MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_SOURCE_DIR="${SCRIPT_DIR}"
 DRY_RUN="false"
 NON_INTERACTIVE="false"
 INSTALL_ACTION="${THE333_INSTALL_ACTION:-}"
@@ -21,12 +22,6 @@ MIN_FRESH_DOCKER_INSTALL_MB=5120
 RECOMMENDED_FRESH_DOCKER_INSTALL_MB=8192
 MIN_REPAIR_FREE_MB=3072
 RECOMMENDED_REPAIR_FREE_MB=5120
-MIN_FRESH_PREBUILT_DOCKER_READY_MB=2048
-RECOMMENDED_FRESH_PREBUILT_DOCKER_READY_MB=3072
-MIN_FRESH_PREBUILT_DOCKER_INSTALL_MB=3072
-RECOMMENDED_FRESH_PREBUILT_DOCKER_INSTALL_MB=4096
-MIN_PREBUILT_REPAIR_FREE_MB=1536
-RECOMMENDED_PREBUILT_REPAIR_FREE_MB=3072
 
 usage() {
   cat <<'USAGE'
@@ -529,6 +524,49 @@ check_disk_policy() {
 
   image_mode="$(runtime_image_mode)"
 
+  if [[ "${image_mode}" == "prebuilt" ]]; then
+    local phase="${2:-install}" version helper
+    helper="${INSTALL_SOURCE_DIR}/scripts/update-storage.py"
+    [[ -f "${helper}" ]] || fail "verified release has no storage planner"
+    if [[ "${mode}" == "fresh-docker-install" ]]; then
+      # This only admits repository setup. APT's actual selected packages are
+      # checked separately, then the real Docker data directories are discovered.
+      python3 "${helper}" setup --project "${PROJECT_DIR}" \
+        || fail "not enough free disk space for package setup"
+      return 0
+    fi
+    version="$(tr -d '[:space:]' < "${INSTALL_SOURCE_DIR}/VERSION")"
+    resolve_prebuilt_image_refs "${INSTALL_SOURCE_DIR}/update-manifest.json" "${version}"
+    if [[ "${mode}" == "repair" && -z "${THE333_GOBGP_IMAGE:-}${THE333_BACKEND_IMAGE:-}${THE333_PORTAL_IMAGE:-}" ]]; then
+      local references_text core_version
+      local -a repair_refs=()
+      core_version="$(awk -F= '$1 == "GOBGP_CORE_IMAGE_VERSION" {print $2; exit}' "${INSTALL_SOURCE_DIR}/.env.example")"
+      references_text="$(python3 "${INSTALL_SOURCE_DIR}/scripts/migrate-env.py" \
+        --env "${PROJECT_DIR}/.env" --project-dir "${INSTALL_SOURCE_DIR}" --version "${version}" \
+        --target-core-version "${core_version}" --list-prebuilt-images)" \
+        || fail "cannot resolve repair image references"
+      mapfile -t repair_refs <<< "${references_text}"
+      [[ "${#repair_refs[@]}" -eq 3 ]] || fail "incomplete repair image references"
+      RESOLVED_GOBGP_IMAGE="${repair_refs[0]}"
+      RESOLVED_BACKEND_IMAGE="${repair_refs[1]}"
+      RESOLVED_PORTAL_IMAGE="${repair_refs[2]}"
+    fi
+    local -a storage_arguments=("${phase}" --project "${PROJECT_DIR}" --release "${INSTALL_SOURCE_DIR}")
+    if [[ "${phase}" == "install" || "${phase}" == "images" || "${phase}" == "copied" ]]; then
+      storage_arguments+=(--images "${RESOLVED_GOBGP_IMAGE}" "${RESOLVED_BACKEND_IMAGE}" "${RESOLVED_PORTAL_IMAGE}")
+    fi
+    python3 "${helper}" "${storage_arguments[@]}" --docker-command "${DOCKER_CMD[@]}" \
+      || fail "not enough free disk space or storage cannot be verified; existing data were kept"
+    return 0
+  fi
+
+  if [[ "${mode}" == "repair" && "${2:-}" == "images" ]]; then
+    UPDATE_MIN_FREE_BYTES=0 python3 "${INSTALL_SOURCE_DIR}/scripts/update-storage.py" backup \
+      --project "${PROJECT_DIR}" --release "${INSTALL_SOURCE_DIR}" \
+      --build-reserve "$((MIN_REPAIR_FREE_MB * 1048576 - 134217728))" --docker-command "${DOCKER_CMD[@]}" \
+      || fail "not enough free disk space for repair backup and rollback"
+  fi
+
   case "${mode}" in
     fresh-docker-install)
       docker_path="/var/lib/docker"
@@ -551,24 +589,6 @@ check_disk_policy() {
       fail "unknown disk preflight mode: ${mode}"
       ;;
   esac
-
-  if [[ "${image_mode}" == "prebuilt" ]]; then
-    case "${mode}" in
-      fresh-docker-install)
-        docker_min_mb="${MIN_FRESH_PREBUILT_DOCKER_INSTALL_MB}"
-        docker_recommended_mb="${RECOMMENDED_FRESH_PREBUILT_DOCKER_INSTALL_MB}"
-        ;;
-      fresh-docker-ready)
-        docker_min_mb="${MIN_FRESH_PREBUILT_DOCKER_READY_MB}"
-        docker_recommended_mb="${RECOMMENDED_FRESH_PREBUILT_DOCKER_READY_MB}"
-        ;;
-      repair)
-        docker_min_mb="${MIN_PREBUILT_REPAIR_FREE_MB}"
-        docker_recommended_mb="${RECOMMENDED_PREBUILT_REPAIR_FREE_MB}"
-        ;;
-    esac
-    log "Prebuilt image mode is active; local build-cache reserve is not required."
-  fi
 
   project_stats="$(disk_stats_for_path "${PROJECT_DIR}")"
   docker_stats="$(disk_stats_for_path "${docker_path}")"
@@ -678,15 +698,26 @@ ensure_docker() {
   esac
 
   sudo_cmd apt-get update
-  sudo_cmd apt-get install -y ca-certificates curl gnupg
+  apt_install_checked ca-certificates curl gnupg
   sudo_cmd install -m 0755 -d /etc/apt/keyrings
   curl -fsSL "https://download.docker.com/linux/${docker_os}/gpg" | sudo_cmd gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   sudo_cmd chmod a+r /etc/apt/keyrings/docker.gpg
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${docker_os} ${VERSION_CODENAME} stable" | sudo_cmd tee /etc/apt/sources.list.d/docker.list >/dev/null
   sudo_cmd apt-get update
-  sudo_cmd apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  apt_install_checked docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   log "Docker installed successfully."
   configure_docker_access
+}
+
+apt_install_checked() {
+  local helper="${INSTALL_SOURCE_DIR}/scripts/check-apt-storage.py"
+  if [[ ! -f "${helper}" ]]; then
+    INSTALL_SOURCE_DIR="$(download_repo_if_needed)"
+    helper="${INSTALL_SOURCE_DIR}/scripts/check-apt-storage.py"
+  fi
+  [[ -f "${helper}" ]] || fail "verified release has no package storage planner"
+  sudo_cmd python3 "${helper}" "$@" || fail "APT storage preflight failed; package installation was not started"
+  sudo_cmd apt-get install -y --no-install-recommends "$@"
 }
 
 normalize_release_index() {
@@ -799,6 +830,12 @@ with tarfile.open(archive_path, mode="r:gz") as archive:
     if len(roots) != 1:
         raise SystemExit("release archive must contain one top-level directory")
 
+    required = sum(((member.size + 4095) // 4096 + 2) * 4096 for member, _parts in validated)
+    usage = shutil.disk_usage(destination)
+    reserve = min(128 * 1024**2, max(8 * 1024**2, usage.total // 20))
+    if usage.free < required + reserve:
+        raise SystemExit("not enough free disk space for release extraction; installed files were not changed")
+
     destination_root = destination.resolve()
     for member, parts in validated:
         if len(parts) == 1:
@@ -826,7 +863,7 @@ download_repo_if_needed() {
   fi
 
   need_cmd curl || fail "curl is required"
-  local tmp index_file index_size manifest version_json archive_url sha archive archive_size
+  local tmp index_file index_size manifest version_json archive_url sha archive archive_size archive_limit
   tmp="$(mktemp -d)"
   log "Reading release index: ${RELEASE_INDEX_URL}"
   index_file="${tmp}/release-index.json"
@@ -858,6 +895,15 @@ download_repo_if_needed() {
   [[ "${archive_url}" == https://* ]] || fail "release archive URL must use HTTPS"
   [[ "${sha}" =~ ^[A-Fa-f0-9]{64}$ ]] || fail "release asset has no valid SHA-256 digest"
   archive="${tmp}/the333.tar.gz"
+  archive_limit="$(python3 - "${tmp}" <<'PY'
+import shutil
+import sys
+usage = shutil.disk_usage(sys.argv[1])
+reserve = min(128 * 1024**2, max(8 * 1024**2, usage.total // 20))
+print(max(0, min(268435456, usage.free - reserve)))
+PY
+  )"
+  (( archive_limit > 0 )) || fail "not enough free disk space for release download"
   log "Downloading verified release archive: ${archive_url}"
   if ! curl \
     --fail \
@@ -865,7 +911,7 @@ download_repo_if_needed() {
     --location \
     --proto '=https' \
     --proto-redir '=https' \
-    --max-filesize 268435456 \
+    --max-filesize "${archive_limit}" \
     "${archive_url}" \
     --output "${archive}"; then
     rm -rf "${tmp}"
@@ -982,7 +1028,7 @@ write_env() {
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
   host_updater_token="${HOST_UPDATER_TOKEN:-$(make_token)}"
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.93.1b}"
+  product_version="${product_version:-0.94b}"
   image_mode="$(runtime_image_mode)"
   RESOLVED_GOBGP_IMAGE=""
   RESOLVED_BACKEND_IMAGE=""
@@ -1069,7 +1115,8 @@ PRODUCT_UPDATE_MANIFEST_URL=${update_url}
 PRODUCT_UPDATE_ENABLED=true
 PRODUCT_UPDATE_MODE=host-updater
 PRODUCT_UPDATE_TIMEOUT_SECONDS=1800
-UPDATE_MIN_FREE_BYTES=1073741824
+UPDATE_STORAGE_POLICY=adaptive
+UPDATE_MIN_FREE_BYTES=0
 HOST_UPDATER_SOCKET=/run/the333-bgp/updater.sock
 HOST_UPDATER_RUN_DIR=/run/the333-bgp
 HOST_UPDATER_RESULT_DIR=${PROJECT_DIR}/data/host-updater-results
@@ -1217,7 +1264,7 @@ ensure_env_defaults() {
 
   local product_version update_url backup_env
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.93.1b}"
+  product_version="${product_version:-0.94b}"
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-$(awk -F= '$1 == "PRODUCT_UPDATE_MANIFEST_URL" {print $2; exit}' "${PROJECT_DIR}/.env" | tr -d '[:space:]')}"
   update_url="${update_url:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
 
@@ -1305,6 +1352,8 @@ PY
 
 first_install() {
   local src="$1"
+  delegate_older_release_installer "${src}" install
+  INSTALL_SOURCE_DIR="${src}"
   local initial_disk_mode="fresh-docker-install"
   check_project_dir_safety
   check_basic_tools
@@ -1317,6 +1366,9 @@ first_install() {
   check_disk_policy "${initial_disk_mode}"
   show_firewall_notice
   ensure_docker
+  if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+    check_disk_policy fresh-docker-ready
+  fi
   log "Step 2/7: Checking required ports 179, 8088 and 8090."
   check_ports
 
@@ -1331,8 +1383,11 @@ first_install() {
   install_host_updater_service
 
   cd "${PROJECT_DIR}"
-  check_disk_policy "fresh-docker-ready"
+  check_disk_policy "fresh-docker-ready" copied
   prepare_runtime_images
+  if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+    check_disk_policy fresh-docker-ready installed
+  fi
   start_runtime
   wait_for_services "$(awk -F= '$1 == "THE333_BIND_IP" {print $2; exit}' .env)"
   "${PROJECT_DIR}/scripts/the333bgp.sh" status
@@ -1384,8 +1439,10 @@ existing_install_flow() {
     r|R|repair|REPAIR)
       local src
       check_memory
-      check_disk_policy "repair"
       src="$(download_repo_if_needed)"
+      delegate_older_release_installer "${src}" repair
+      INSTALL_SOURCE_DIR="${src}"
+      check_disk_policy "repair" images
       if [[ -x "${control}" ]]; then
         "${control}" backup || fallback_backup_existing_install
       else
@@ -1411,6 +1468,20 @@ existing_install_flow() {
       fail "unknown action: ${action}. Use update, repair, backup, status or quit"
       ;;
   esac
+}
+
+delegate_older_release_installer() {
+  local src="$1" action="$2"
+  if [[ "${src}" != "${SCRIPT_DIR}" && ! -f "${src}/scripts/update-storage.py" ]]; then
+    [[ -f "${src}/install.sh" && ! -L "${src}/install.sh" ]] || fail "verified release has no installer"
+    local -a arguments=()
+    [[ "${NON_INTERACTIVE}" != "true" ]] || arguments+=(--non-interactive)
+    [[ "${DRY_RUN}" != "true" ]] || arguments+=(--dry-run)
+    [[ "${action}" == "install" ]] || arguments+=(--action "${action}")
+    log "Using the verified release installer for compatibility with this published version."
+    exec env THE333_PROJECT_DIR="${PROJECT_DIR}" THE333_CHANNEL="${INSTALL_CHANNEL}" THE333_VERSION="${INSTALL_VERSION}" \
+      PRODUCT_UPDATE_MANIFEST_URL="${RELEASE_INDEX_URL}" bash "${src}/install.sh" "${arguments[@]}"
+  fi
 }
 
 main() {

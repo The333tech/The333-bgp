@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 PROJECT_DIR="${THE333_PROJECT_DIR:-/opt/the333-bgp}"
+CONTROLLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.portal.yml)
 VERSION_FILE="${PROJECT_DIR}/VERSION"
 BACKUP_DIR="${PROJECT_DIR}/backups"
@@ -297,11 +298,19 @@ check_update_storage_target() {
 
 check_update_disk_space() {
   local target_core_version="${1:-}"
+  if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+    validate_prebuilt_images
+    check_update_storage_budget "${2:-initial}" "${3:-}" "${4:-}"
+    return $?
+  fi
   local configured_min_bytes configured_recommended_bytes min_bytes recommended_bytes
-  local project_min_bytes project_recommended_bytes value_name value core_image image_mode
+  local project_min_bytes project_recommended_bytes value_name value core_image
   local docker_root project_stats docker_stats project_device docker_device
 
   configured_min_bytes="${UPDATE_MIN_FREE_BYTES:-${DEFAULT_MIN_UPDATE_FREE_BYTES}}"
+  if [[ "${configured_min_bytes}" == "0" ]]; then
+    configured_min_bytes="${DEFAULT_MIN_UPDATE_FREE_BYTES}"
+  fi
   configured_recommended_bytes="${UPDATE_RECOMMENDED_FREE_BYTES:-${DEFAULT_RECOMMENDED_UPDATE_FREE_BYTES}}"
   project_min_bytes="${UPDATE_MIN_PROJECT_FREE_BYTES:-${DEFAULT_MIN_PROJECT_UPDATE_FREE_BYTES}}"
   project_recommended_bytes="${UPDATE_RECOMMENDED_PROJECT_FREE_BYTES:-${DEFAULT_RECOMMENDED_PROJECT_UPDATE_FREE_BYTES}}"
@@ -325,7 +334,6 @@ check_update_disk_space() {
 
   min_bytes="${configured_min_bytes}"
   recommended_bytes="${configured_recommended_bytes}"
-  image_mode="$(runtime_image_mode)"
   core_image="${THE333_GOBGP_IMAGE:-the333-bgp-core:${GOBGP_CORE_IMAGE_VERSION:-4.9.0-r2}}"
   if [[ -n "${target_core_version}" && "${target_core_version}" != "${GOBGP_CORE_IMAGE_VERSION:-}" ]]; then
     if (( min_bytes < DEFAULT_MIN_CORE_UPDATE_FREE_BYTES )); then
@@ -336,10 +344,7 @@ check_update_disk_space() {
     fi
     log "Routing-core changes from ${GOBGP_CORE_IMAGE_VERSION:-unknown} to ${target_core_version}; full-update disk thresholds are active."
   fi
-  if [[ "${image_mode}" == "prebuilt" ]]; then
-    validate_prebuilt_images
-    log "Prebuilt image mode is active; local build-cache reserve is not required."
-  elif ! docker_cli image inspect "${core_image}" >/dev/null 2>&1; then
+  if ! docker_cli image inspect "${core_image}" >/dev/null 2>&1; then
     if (( min_bytes < DEFAULT_MIN_CORE_UPDATE_FREE_BYTES )); then
       min_bytes="${DEFAULT_MIN_CORE_UPDATE_FREE_BYTES}"
     fi
@@ -359,20 +364,48 @@ check_update_disk_space() {
       "project and Docker storage" \
       "${docker_root}" \
       "${min_bytes}" \
-      "${recommended_bytes}"
-    return $?
+      "${recommended_bytes}" || return 1
+  else
+    check_update_storage_target \
+      "project storage" "${PROJECT_DIR}" "${project_min_bytes}" "${project_recommended_bytes}" || return 1
+    check_update_storage_target \
+      "Docker storage" "${docker_root}" "${min_bytes}" "${recommended_bytes}" || return 1
   fi
+  if [[ -n "${3:-}" ]]; then
+    local phase="${2:-backup}"
+    [[ "${phase}" != "images" ]] || phase=backup
+    # Source builds retain their build-cache gate, but large snapshots and a
+    # separate temporary filesystem must satisfy the same real rollback budget.
+    local build_reserve=$((min_bytes > 134217728 ? min_bytes - 134217728 : 0))
+    UPDATE_MIN_FREE_BYTES=0 check_update_storage_budget "${phase}" "$3" "${4:-}" "${build_reserve}"
+  fi
+}
 
-  check_update_storage_target \
-    "project storage" \
-    "${PROJECT_DIR}" \
-    "${project_min_bytes}" \
-    "${project_recommended_bytes}" || return 1
-  check_update_storage_target \
-    "Docker storage" \
-    "${docker_root}" \
-    "${min_bytes}" \
-    "${recommended_bytes}"
+check_update_storage_budget() {
+  local phase="$1" release_dir="${2:-}" backup_archive="${3:-}" references_text target_core_version version
+  local -a arguments=("${phase}" --project "${PROJECT_DIR}") references=()
+  arguments+=(--build-reserve "${4:-0}")
+  configure_docker_access
+  if [[ -n "${THE333_UPDATE_OPERATION_FILE:-}" ]]; then
+    arguments+=(--operation-dir "${PROJECT_DIR}/runtime/operations")
+  fi
+  if [[ -n "${release_dir}" ]]; then
+    arguments+=(--release "${release_dir}")
+  fi
+  if [[ -n "${backup_archive}" ]]; then
+    arguments+=(--backup "${backup_archive}")
+  fi
+  if [[ "${phase}" == "images" ]]; then
+    target_core_version="$(awk -F= '$1 == "GOBGP_CORE_IMAGE_VERSION" {print $2; exit}' "${release_dir}/.env.example")"
+    version="$(tr -d '[:space:]' < "${release_dir}/VERSION")"
+    references_text="$(python3 "${PROJECT_DIR}/scripts/migrate-env.py" \
+      --env "${PROJECT_DIR}/.env" --project-dir "${release_dir}" --version "${version}" \
+      --target-core-version "${target_core_version}" --list-prebuilt-images)" || return 1
+    mapfile -t references <<< "${references_text}"
+    [[ ${#references[@]} -eq 3 ]] || return 1
+    arguments+=(--images "${references[@]}")
+  fi
+  python3 "${CONTROLLER_DIR}/scripts/update-storage.py" "${arguments[@]}" --docker-command "${DOCKER_CMD[@]}"
 }
 
 create_update_backup_archive() {
@@ -1119,20 +1152,44 @@ check_update() {
   printf '\n'
 }
 
+cleanup_release_directory() {
+  local path="$1" parent name
+  parent="$(cd "${TMPDIR:-/tmp}" && pwd)" || return 1
+  name="$(basename "${path}")"
+  if [[ "$(dirname "${path}")" == "${parent}" && "${name}" =~ ^the333-release\.[A-Za-z0-9]{8}$ ]]; then
+    rm -rf -- "${path}"
+  fi
+}
+
 download_release() {
   local version_json="$1"
   need_cmd python3
   need_cmd curl
 
-  local archive_url sha tmp archive archive_size
+  local archive_url sha tmp archive archive_size archive_limit=268435456
   archive_url="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("archive_url") or "").strip())')"
   sha="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("sha256") or "").strip())')"
   [[ -n "${archive_url}" ]] || fail_update release_invalid "selected version has no archive_url"
   [[ "${archive_url}" == https://* ]] || fail_update release_invalid "archive_url must use https"
   [[ "${sha}" =~ ^[A-Fa-f0-9]{64}$ ]] || fail_update release_invalid "selected version has no valid sha256; refusing update"
 
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/the333-release.XXXXXXXX")"
   archive="${tmp}/release.tar.gz"
+  if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+    archive_limit="$(python3 - "${tmp}" <<'PY'
+import shutil
+import sys
+usage = shutil.disk_usage(sys.argv[1])
+reserve = min(128 * 1024**2, max(8 * 1024**2, usage.total // 20))
+available = usage.free - reserve
+print(max(0, min(268435456, available)))
+PY
+    )"
+    if (( archive_limit <= 0 )); then
+      rm -rf "${tmp}"
+      fail_update disk_space "temporary filesystem has no download reserve"
+    fi
+  fi
   log "Downloading release archive..."
   if ! curl \
     --fail \
@@ -1140,7 +1197,7 @@ download_release() {
     --location \
     --proto '=https' \
     --proto-redir '=https' \
-    --max-filesize 268435456 \
+    --max-filesize "${archive_limit}" \
     "${archive_url}" \
     --output "${archive}"; then
     rm -rf "${tmp}"
@@ -1156,6 +1213,17 @@ download_release() {
   if ! printf '%s  %s\n' "${sha}" "${archive}" | sha256sum -c - >/dev/null; then
     rm -rf "${tmp}"
     fail_update release_integrity "release archive SHA-256 verification failed"
+  fi
+
+  if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+    local -a disk_arguments=(extract --project "${PROJECT_DIR}" --archive "${archive}")
+    if [[ -n "${THE333_UPDATE_OPERATION_FILE:-}" ]]; then
+      disk_arguments+=(--operation-dir "${PROJECT_DIR}/runtime/operations")
+    fi
+    if ! python3 "${CONTROLLER_DIR}/scripts/update-storage.py" "${disk_arguments[@]}"; then
+      rm -rf "${tmp}"
+      fail "disk preflight failed before release extraction; existing containers were not changed"
+    fi
   fi
 
   mkdir -p "${tmp}/src"
@@ -1480,44 +1548,41 @@ update_project() {
     || fail "disk preflight failed; free disk space and retry. Existing containers were not changed"
   check_release_tree_writable \
     || fail_update project_permissions "release-file preflight failed; use the portal host-updater or restore project ownership. Existing containers were not changed"
-  operation_stage backup
-  make_backup
-  backup_archive="${LAST_BACKUP_ARCHIVE}"
-  if [[ -f "${PROJECT_DIR}/scripts/storage-maintenance.py" ]]; then
-    storage_maintenance record --archive "${backup_archive}" --target-version "${selected_version}" \
-      || fail "rollback snapshot registration failed; existing containers and project files were not changed"
-    retention_registered="true"
-  fi
   operation_stage download
   release_dir="$(download_release "${version_json}")"
   release_tmp="$(dirname "${release_dir}")"
   local target_core_version
   target_core_version="$(awk -F= '$1 == "GOBGP_CORE_IMAGE_VERSION" {print $2; exit}' "${release_dir}/.env.example" 2>/dev/null || true)"
   if [[ ! "${target_core_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]]; then
-    if [[ "${release_tmp}" == /tmp/* ]]; then
-      rm -rf "${release_tmp}"
-    fi
+    cleanup_release_directory "${release_tmp}"
     fail_update release_invalid "release has no valid routing-core version; existing containers and project files were not changed"
   fi
-  if ! check_update_disk_space "${target_core_version}"; then
-    if [[ "${release_tmp}" == /tmp/* ]]; then
-      rm -rf "${release_tmp}"
-    fi
+  if ! check_update_disk_space "${target_core_version}" images "${release_dir}"; then
+    cleanup_release_directory "${release_tmp}"
     fail "disk-space recheck failed before release activation; existing containers and project files were not changed"
   fi
   if [[ "$(runtime_image_mode)" == "prebuilt" ]]; then
+    operation_stage preloading
     if ! prestage_prebuilt_release_images "${release_dir}" "${selected_version}" "${target_core_version}"; then
-      if [[ "${release_tmp}" == /tmp/* ]]; then
-        rm -rf "${release_tmp}"
-      fi
+      cleanup_release_directory "${release_tmp}"
       fail_update image_prepare "prebuilt image preparation failed before release activation; existing containers and project files were not changed"
     fi
-    if ! check_update_disk_space "${target_core_version}"; then
-      if [[ "${release_tmp}" == /tmp/* ]]; then
-        rm -rf "${release_tmp}"
-      fi
+    if ! check_update_disk_space "${target_core_version}" backup "${release_dir}"; then
+      cleanup_release_directory "${release_tmp}"
       fail "disk-space recheck failed after image preparation; existing containers and project files were not changed"
     fi
+  fi
+  operation_stage backup
+  make_backup
+  backup_archive="${LAST_BACKUP_ARCHIVE}"
+  if ! check_update_disk_space "${target_core_version}" activate "${release_dir}" "${backup_archive}"; then
+    cleanup_release_directory "${release_tmp}"
+    fail "disk-space recheck failed before release activation; backup and existing runtime were kept"
+  fi
+  if [[ -f "${PROJECT_DIR}/scripts/storage-maintenance.py" ]]; then
+    storage_maintenance record --archive "${backup_archive}" --target-version "${selected_version}" \
+      || fail "rollback snapshot registration failed; existing containers and project files were not changed"
+    retention_registered="true"
   fi
   update_rc=0
   failed_stage=""
@@ -1541,9 +1606,7 @@ update_project() {
     failed_stage="release file activation"
   fi
 
-  if [[ "${release_tmp}" == /tmp/* ]]; then
-    rm -rf "${release_tmp}" || true
-  fi
+  cleanup_release_directory "${release_tmp}" || true
 
   if (( update_rc == 0 )); then
     if [[ "${retention_registered}" == "true" ]]; then
@@ -1657,7 +1720,7 @@ main() {
       parse_common_args "$@"
       if [[ "${THE333_UPDATE_RUNNER_ACTIVE:-false}" != "true" && "${DRY_RUN}" != "true" ]]; then
         export THE333_PROJECT_DIR="${PROJECT_DIR}" PUID PGID
-        exec python3 "${PROJECT_DIR}/scripts/update-operation.py" "$@"
+        exec python3 "${CONTROLLER_DIR}/scripts/update-operation.py" "$@"
       fi
       update_project
       ;;

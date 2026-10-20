@@ -151,6 +151,24 @@ class ImageDeliveryTests(unittest.TestCase):
             self.assertEqual(changed_core.returncode, 0, msg=changed_core.stderr)
             self.assertEqual(changed_core.stdout.splitlines(), list(refs.values()))
 
+    def test_prebuilt_storage_migration_preserves_new_explicit_floors(self) -> None:
+        for policy, minimum, expected in (
+            ("", "1073741824", "0"), ("", "2147483648", "0"),
+            ("", "1610612736", "1610612736"),
+            ("adaptive", "1073741824", "1073741824"), ("adaptive", "2147483648", "2147483648"),
+        ):
+            with self.subTest(policy=policy, minimum=minimum), tempfile.TemporaryDirectory() as directory:
+                project = self._project(Path(directory), "prebuilt")
+                env = project / ".env"
+                env.write_text(env.read_text() + f"UPDATE_STORAGE_POLICY={policy}\nUPDATE_MIN_FREE_BYTES={minimum}\n")
+                (project / "update-manifest.json").write_text(json.dumps({
+                    "versions": [{"version": "1.1", "images": image_refs()}],
+                }))
+                result = self._run_migration(project, "1.1")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"UPDATE_MIN_FREE_BYTES={expected}\n", env.read_text())
+                self.assertIn("UPDATE_STORAGE_POLICY=adaptive\n", env.read_text())
+
     def test_prebuilt_image_preflight_rejects_untrusted_repository(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

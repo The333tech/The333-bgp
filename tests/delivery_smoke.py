@@ -134,6 +134,14 @@ def candidate_archive(directory, images, version, broken=False, base_archive=Non
     manifest = {"product": "The333-BGP", "latest": {"beta": version, "stable": None},
                 "versions": [{"version": version, "channel": "beta", "images": images}]}
     (tree / "update-manifest.json").write_text(json.dumps(manifest))
+    measurements = ROOT / "dist" / "image-digests"
+    if all((measurements / f"{name}.storage.json").is_file() for name in REPOSITORIES):
+        storage = {"schema": 1, "platforms": {f"linux/{arch}": {} for arch in ("amd64", "arm64")}}
+        for name in REPOSITORIES:
+            measured = json.loads((measurements / f"{name}.storage.json").read_text())
+            for target, entries in storage["platforms"].items():
+                entries[name] = measured[target]
+        (tree / "docker" / "image-storage.json").write_text(json.dumps(storage))
     if broken:
         # Valid Compose, but OCI cannot start this executable; exercise a real partial rollout.
         (tree / "docker-compose.portal.yml").write_text(json.dumps({"services": {"the333-portal": {
