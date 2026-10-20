@@ -173,6 +173,17 @@ class StorageBudgetTests(unittest.TestCase):
             report = build_plan(ROOT, "setup", ["docker"])
         self.assertTrue(report)
 
+    def test_repair_reads_operator_floor_from_env_file_without_sourcing_it(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            project = Path(directory)
+            (project / ".env").write_text("UPDATE_STORAGE_POLICY=adaptive\nUPDATE_MIN_FREE_BYTES=2147483648\n")
+            info = {"DockerRootDir": directory, "Driver": "overlay2", "DriverStatus": []}
+            with patch("app.update_storage.command_json", return_value=info):
+                report = build_plan(project, "initial", ["docker"])
+                self.assertEqual(report[0]["required_bytes"], 2048 * MIB)
+                with patch.dict(os.environ, {"UPDATE_MIN_FREE_BYTES": "0"}):
+                    self.assertEqual(build_plan(project, "initial", ["docker"])[0]["required_bytes"], RESERVE)
+
     def test_containerd_root_comes_from_active_process_not_an_unrelated_default(self):
         info = {"DriverStatus": [["driver-type", "io.containerd.snapshotter.v1"]]}
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"UPDATE_CONTAINERD_ROOT": ""}):

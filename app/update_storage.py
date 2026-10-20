@@ -185,11 +185,11 @@ def image_budget(metadata: dict | None, references: list[str], present: set[str]
     return total
 
 
-def containerd_root(info: dict, proc: Path = Path("/proc")) -> Path | None:
+def containerd_root(info: dict, proc: Path = Path("/proc"), override: str | None = None) -> Path | None:
     statuses = dict(info.get("DriverStatus") or [])
     if "containerd" not in statuses.get("driver-type", ""):
         return None
-    override = os.environ.get("UPDATE_CONTAINERD_ROOT", "").strip()
+    override = (os.environ.get("UPDATE_CONTAINERD_ROOT", "") if override is None else override).strip()
     if override:
         path = Path(override)
         if not path.is_absolute() or not path.is_dir():
@@ -232,9 +232,17 @@ def containerd_root(info: dict, proc: Path = Path("/proc")) -> Path | None:
 
 def build_plan(project: Path, phase: str, command: list[str], release: Path | None = None,
                references: list[str] | None = None, backup: Path | None = None, build_reserve: int = 0) -> list[dict]:
-    floor = configured_floor(os.environ.get("UPDATE_MIN_FREE_BYTES", "0"),
-                             policy=os.environ.get("UPDATE_STORAGE_POLICY", ""))
-    raw_project_floor = os.environ.get("UPDATE_MIN_PROJECT_FREE_BYTES", "0")
+    values = {}
+    env_path = project / ".env"
+    if env_path.is_file():
+        values = dict(line.split("=", 1) for line in env_path.read_text().splitlines()
+                      if "=" in line and not line.lstrip().startswith("#"))
+
+    def option(key: str, default: str = "") -> str:
+        return os.environ.get(key, values.get(key, default))
+
+    floor = configured_floor(option("UPDATE_MIN_FREE_BYTES", "0"), policy=option("UPDATE_STORAGE_POLICY"))
+    raw_project_floor = option("UPDATE_MIN_PROJECT_FREE_BYTES", "0")
     if not re.fullmatch(r"[0-9]{1,16}", raw_project_floor):
         raise ValueError("UPDATE_MIN_PROJECT_FREE_BYTES must be a non-negative integer")
     project_floor = int(raw_project_floor)
@@ -251,7 +259,7 @@ def build_plan(project: Path, phase: str, command: list[str], release: Path | No
         raise ValueError("Docker storage must be available on this host")
     plan.add(docker_root, "Docker", minimum=floor)
     plan.add(docker_root, "source build cache", build_reserve)
-    image_root = containerd_root(info) or docker_root
+    image_root = containerd_root(info, override=option("UPDATE_CONTAINERD_ROOT")) or docker_root
     plan.add(image_root, "image storage", minimum=floor)
     if build_reserve and existing_path(image_root).stat().st_dev != docker_root.stat().st_dev:
         plan.add(image_root, "source runtime images", min(build_reserve, LEGACY_IMAGE_BUDGET))
@@ -283,13 +291,8 @@ def build_plan(project: Path, phase: str, command: list[str], release: Path | No
             if inspected and inspected[0].get("Architecture") == architecture:
                 present.add(ref)
                 cached_chains.update(layer_chains(inspected[0]["RootFS"]["Layers"]))
-        values = {}
-        env_path = project / ".env"
-        if env_path.is_file():
-            values = dict(line.split("=", 1) for line in env_path.read_text().splitlines()
-                          if "=" in line and not line.lstrip().startswith("#"))
         for key in ("THE333_GOBGP_IMAGE", "THE333_BACKEND_IMAGE", "THE333_PORTAL_IMAGE"):
-            ref = os.environ.get(key, values.get(key, "")).strip()
+            ref = option(key).strip()
             if not ref or ref in present:
                 continue
             try:
