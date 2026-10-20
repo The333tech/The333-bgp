@@ -66,7 +66,7 @@ def prepare_runtime(project: Path, uid: int, gid: int) -> Path:
 
 def run_command(project: Path, arguments: list[str], request_id: str, channel: str,
                 version: str, environment: dict[str, str], timeout: int,
-                capture: bool = True) -> dict:
+                capture: bool = True, controller: Path | None = None) -> dict:
     directory = prepare_runtime(project, *runtime_identity(project))
     with (directory / "runner.lock").open("r+") as owner:
         try:
@@ -95,7 +95,7 @@ def run_command(project: Path, arguments: list[str], request_id: str, channel: s
                         write_state(directory, state)
                         return {**state, "ok": False}
                     time.sleep(0.1)
-            return _execute(project, arguments, environment, timeout, capture, directory, started)
+            return _execute(project, arguments, environment, timeout, capture, directory, started, controller)
 
 
 def recover_operation(project: Path, environment: dict[str, str]) -> dict:
@@ -137,15 +137,17 @@ def recover_operation(project: Path, environment: dict[str, str]) -> dict:
 
 
 def _execute(project: Path, arguments: list[str], environment: dict[str, str], timeout: int,
-             capture: bool, directory: Path, started: float) -> dict:
+             capture: bool, directory: Path, started: float, controller: Path | None = None) -> dict:
     env = {**environment, "THE333_UPDATE_OPERATION_FILE": str(directory / "operation.json"),
            "THE333_UPDATE_RUNNER_ACTIVE": "true"}
     timed_out = False
     returncode = 1
     with tempfile.TemporaryFile(mode="w+b") as output:
         try:
-            # The executable is fixed; request-controlled values are arguments only.
-            process = subprocess.Popen(["/bin/bash", str(project / "scripts" / "the333bgp.sh"),
+            # Host API always uses the installed executable. Only the release CLI
+            # can supply its own verified code tree; request data cannot set this.
+            executable = (controller or project) / "scripts" / "the333bgp.sh"
+            process = subprocess.Popen(["/bin/bash", str(executable),
                                         *arguments], cwd=project, env=env, start_new_session=True,
                                        stdout=output if capture else None,
                                        stderr=subprocess.STDOUT if capture else None)
@@ -183,7 +185,7 @@ def _execute(project: Path, arguments: list[str], environment: dict[str, str], t
         status = "rolled_back"
     elif timed_out or (returncode != 0 and state.get("mutated")):
         status = "recovery_required"
-    elif returncode != 0 and state.get("stage") in {"backup", "download"}:
+    elif returncode != 0 and state.get("stage") in {"preloading", "backup", "download"}:
         try:
             health = subprocess.run(["/bin/bash", str(project / "scripts" / "the333bgp.sh"), "status"],
                                     cwd=project, env=environment, capture_output=True,

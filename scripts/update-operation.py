@@ -35,7 +35,7 @@ elif sys.argv[1:] and not sys.argv[1].startswith("--"):
 else:
     result = run_command(project, ["update", *sys.argv[1:]], uuid.uuid4().hex, "", "",
                          dict(os.environ), int(os.environ.get("PRODUCT_UPDATE_TIMEOUT_SECONDS", "1800")),
-                         capture=False)
+                         capture=False, controller=Path(__file__).resolve().parent.parent)
     if not result.get("ok"):
         print("Обновление не завершено. Проверь состояние операции в портале и журнал updater.", file=sys.stderr)
     raise SystemExit(0 if result.get("ok") else 1)

@@ -21,6 +21,7 @@ type UpdateStatus = { operation: Operation | null; current_version: string; read
 const stages: Record<string, string> = {
   queued: "Ожидание запуска", preflight: "Проверка условий обновления", backup: "Создание резервной копии",
   download: "Загрузка и проверка релиза", activating: "Установка файлов", images: "Подготовка контейнеров",
+  preloading: "Загрузка образов контейнеров",
   restarting: "Запуск сервисов", readiness: "Проверка готовности и восстановление маршрутов",
   rollback: "Восстановление предыдущей версии", rolled_back: "Предыдущая версия восстановлена",
   writes_busy: "Другие операции ещё не завершились", state_unavailable: "Состояние операции требует проверки",

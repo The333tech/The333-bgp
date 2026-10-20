@@ -85,7 +85,7 @@ def public_failure(operation: dict) -> dict | None:
         required = (failure["required_bytes"] + unit - 1) // unit
         missing = (failure["required_bytes"] - failure["free_bytes"] + unit - 1) // unit
         message = f"Недостаточно места: свободно {free} МБ, требуется не менее {required} МБ."
-        action = f"Освободи ещё не менее {missing} МБ и оставь запас под резервную копию. Сохрани рабочие данные и резервные копии. Затем повтори обновление."
+        action = f"Освободи ещё не менее {missing} МБ. Сохрани рабочие данные и резервные копии. Затем повтори обновление."
     if operation.get("status") == "recovery_required":
         action = "Не запускай обновление повторно. Проверь VM и журнал операции; изменения заблокированы до проверки состояния сервисов."
     return {"code": failure["code"], "message": message, "action": action}

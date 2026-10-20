@@ -101,6 +101,22 @@ class UpdateCoordinationTests(unittest.TestCase):
         self.assertTrue(result["busy"])
         self.assertEqual(read_state(self.directory)["request_id"], "a" * 32)
 
+    def test_verified_release_cli_can_use_new_checks_without_replacing_live_scripts(self):
+        from app.update_runner import run_command
+        (self.root / "scripts").mkdir()
+        installed = self.root / "scripts" / "the333bgp.sh"
+        installed.write_text("#!/bin/bash\nexit 7\n")
+        controller = self.root / "verified-release"
+        (controller / "scripts").mkdir(parents=True)
+        (controller / "scripts" / "the333bgp.sh").write_text("#!/bin/bash\nexit 0\n")
+        environment = {**os.environ, "THE333_UPDATE_CONTROLLER": str(controller)}
+        rejected = run_command(self.root, ["update"], "4" * 32, "beta", "0.94b", environment, 10)
+        self.assertEqual(rejected["status"], "failed")
+        accepted = run_command(self.root, ["update"], "5" * 32, "beta", "0.94b", environment, 10,
+                               controller=controller)
+        self.assertEqual(accepted["status"], "succeeded")
+        self.assertEqual(installed.read_text(), "#!/bin/bash\nexit 7\n")
+
     def test_runner_outcomes_and_fixed_executable(self):
         from app.update_runner import run_command
         (self.root / "scripts").mkdir()

@@ -32,6 +32,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 
 from app.maintenance import ACTIVE_STATUSES, MaintenanceBusy, mutation_lease, read_state
 from app.update_failures import public_failure
+from app.update_storage import RESERVE as UPDATE_DISK_RESERVE, configured_floor, filesystem_reserve
 from app.route_policy import assess_route_change, normalize_exclusions, route_plan_sha256, subtract_exclusions
 from app.session_store import SessionStore, load_or_create_salt
 
@@ -177,7 +178,11 @@ HOST_UPDATER_RESULT_STALE_SECONDS = max(
     PRODUCT_UPDATE_TIMEOUT_SECONDS + 300,
     int(os.getenv("HOST_UPDATER_RESULT_STALE_SECONDS", "2100")),
 )
-UPDATE_MIN_FREE_BYTES = int(os.getenv("UPDATE_MIN_FREE_BYTES", str(1024 * 1024 * 1024)))
+UPDATE_STORAGE_ADAPTIVE = os.getenv("THE333_IMAGE_MODE", "source").strip().lower() == "prebuilt"
+UPDATE_MIN_FREE_BYTES = max(UPDATE_DISK_RESERVE, configured_floor(
+    os.getenv("UPDATE_MIN_FREE_BYTES", "1073741824"), "prebuilt" if UPDATE_STORAGE_ADAPTIVE else "source",
+    os.getenv("UPDATE_STORAGE_POLICY", ""),
+))
 
 PUBLIC_OPERATION_ERROR = "Операция не выполнена. Подробности смотри в логах backend."
 
@@ -568,7 +573,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.93.1b"
+    return "0.94b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
@@ -6394,10 +6399,13 @@ def read_server_resources():
     def read_disk_usage():
         target = "/data" if os.path.exists("/data") else "/"
         usage = shutil.disk_usage(target)
+        update_minimum = (max(configured_floor(os.getenv("UPDATE_MIN_FREE_BYTES", "0"),
+                                              policy=os.getenv("UPDATE_STORAGE_POLICY", "")), filesystem_reserve(usage.total))
+                          if UPDATE_STORAGE_ADAPTIVE else UPDATE_MIN_FREE_BYTES)
         percent = round((usage.used / usage.total * 100), 1) if usage.total else None
         free_percent = round((usage.free / usage.total * 100), 1) if usage.total else None
-        update_ready = usage.free >= UPDATE_MIN_FREE_BYTES
-        if usage.free < 512 * 1024 * 1024 or (percent is not None and percent >= 95):
+        update_ready = usage.free >= update_minimum
+        if usage.free < filesystem_reserve(usage.total) or (percent is not None and percent >= 95):
             pressure = "critical"
         elif not update_ready or (percent is not None and percent >= 90):
             pressure = "warning"
@@ -6413,7 +6421,8 @@ def read_server_resources():
             "free_percent": free_percent,
             "pressure": pressure,
             "update_ready": update_ready,
-            "update_min_free_bytes": UPDATE_MIN_FREE_BYTES,
+            "update_min_free_bytes": update_minimum,
+            "update_budget_mode": "adaptive" if UPDATE_STORAGE_ADAPTIVE else "source",
         }
 
     cpu_percent = None

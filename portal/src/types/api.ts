@@ -117,6 +117,7 @@ export type ServerResourcesResponse = {
     pressure?: "normal" | "warning" | "critical";
     update_ready?: boolean;
     update_min_free_bytes?: number;
+    update_budget_mode?: "adaptive" | "source";
   };
   runtime?: {
     ok: boolean;

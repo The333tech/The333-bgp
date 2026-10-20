@@ -123,7 +123,9 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.assertIn("--proto '=https'", download_path)
             self.assertIn("--proto-redir '=https'", download_path)
             self.assertIn("--max-filesize 2097152", download_path)
-            self.assertIn("--max-filesize 268435456", download_path)
+        self.assertIn('--max-filesize "${archive_limit}"', installer)
+        self.assertIn('archive_limit=268435456', controller)
+        self.assertIn('--max-filesize "${archive_limit}"', controller)
 
     def test_published_release_is_installed_from_archive(self) -> None:
         release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
