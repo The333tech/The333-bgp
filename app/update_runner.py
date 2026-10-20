@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.maintenance import ACTIVE_STATUSES, read_state, write_state
+from app.update_failures import safe_failure
 
 
 def timestamp() -> str:
@@ -172,6 +173,11 @@ def _execute(project: Path, arguments: list[str], environment: dict[str, str], t
         output.seek(max(0, output.tell() - 6000))
         tail = output.read().decode("utf-8", errors="replace")
     state = read_state(directory)
+    failure = safe_failure(state.get("failure"))
+    if timed_out:
+        failure = {"code": "update_timeout"}
+    if failure:
+        state["failure"] = failure
     status = "succeeded" if returncode == 0 else "failed"
     if state.get("stage") == "rolled_back":
         status = "rolled_back"

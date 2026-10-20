@@ -168,6 +168,26 @@ class UpdateCoordinationTests(unittest.TestCase):
             with mutation_lease(self.directory):
                 pass
 
+    @unittest.skipUnless(Path("/bin/bash").is_file(), "requires Bash on Linux host")
+    def test_controller_failure_is_durable_and_a_successful_retry_does_not_inherit_it(self):
+        from app.update_runner import run_command
+        scripts = self.root / "scripts"
+        scripts.mkdir()
+        controller = scripts / "the333bgp.sh"
+        helper = Path(__file__).resolve().parents[1] / "scripts" / "update-operation.py"
+        controller.write_text(
+            f'#!/bin/bash\npython3 "{helper}" failure disk_space 1702887424 2147483648\nexit 1\n'
+        )
+        environment = {**os.environ, "THE333_PROJECT_DIR": str(self.root)}
+        result = run_command(self.root, ["update"], "1" * 32, "beta", "0.94b", environment, 10)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure"]["code"], "disk_space")
+        self.assertEqual(read_state(self.directory)["failure"], result["failure"])
+        controller.write_text("#!/bin/bash\nexit 0\n")
+        result = run_command(self.root, ["update"], "2" * 32, "beta", "0.94b", environment, 10)
+        self.assertEqual(result["status"], "succeeded")
+        self.assertNotIn("failure", result)
+
     def test_api_blocks_direct_writes_and_reads_status_without_ready(self):
         import app.main as main
         from fastapi.testclient import TestClient
@@ -202,6 +222,56 @@ class UpdateCoordinationTests(unittest.TestCase):
                 self.assertTrue(payload["blocked"])
                 self.assertEqual(payload["operation"]["status"], "recovery_required")
                 client.close()
+        finally:
+            main.app.dependency_overrides.clear()
+
+    def test_update_status_exposes_only_allowlisted_failure_details(self):
+        import app.main as main
+        from fastapi.testclient import TestClient
+        main.app.dependency_overrides[main.require_auth] = lambda: "test"
+        try:
+            with patch.object(main, "MAINTENANCE_DIR", self.directory), \
+                 patch.object(main, "read_jobs_state", return_value={"jobs": []}):
+                client = TestClient(main.app)
+                try:
+                    for failure in ({"code": "disk_space", "free_bytes": 1624 * 1024**2,
+                                     "required_bytes": 2048 * 1024**2, "message": "secret-canary"},
+                                    {"code": "unknown-secret-canary"}, {"code": []}, None):
+                        with self.subTest(failure=failure):
+                            write_state(self.directory, {"status": "failed", "stage": "download",
+                                "failure": failure, "stdout_tail": "secret-canary", "error": "secret-canary"})
+                            response = client.get("/api/product/update/status")
+                            self.assertEqual(response.status_code, 200)
+                            self.assertNotIn("secret-canary", response.text)
+                            self.assertFalse(response.json()["blocked"])
+                            public = response.json()["operation"]
+                            if failure and failure["code"] == "disk_space":
+                                self.assertIn("1624 МБ", public["failure"]["message"])
+                            else:
+                                self.assertNotIn("failure", public)
+                finally:
+                    client.close()
+        finally:
+            main.app.dependency_overrides.clear()
+
+    def test_pre_registration_failure_keeps_job_completion_time(self):
+        import app.main as main
+        from fastapi.testclient import TestClient
+        job = {"id": "b" * 32, "kind": "product_update", "status": "failed",
+               "created_at": "2026-10-20T01:37:53Z", "finished_at": "2026-10-20T01:38:03Z",
+               "duration_seconds": 10.25, "payload": {"version": "0.85b"}}
+        main.app.dependency_overrides[main.require_auth] = lambda: "test"
+        try:
+            with patch.object(main, "MAINTENANCE_DIR", self.directory), \
+                 patch.object(main, "read_jobs_state", return_value={"jobs": [job]}):
+                client = TestClient(main.app)
+                try:
+                    operation = client.get("/api/product/update/status").json()["operation"]
+                    self.assertEqual(operation["finished_at"], job["finished_at"])
+                    self.assertEqual(operation["duration_seconds"], 10.25)
+                    self.assertEqual(operation["status"], "failed")
+                finally:
+                    client.close()
         finally:
             main.app.dependency_overrides.clear()
 
@@ -275,6 +345,7 @@ class UpdateCoordinationTests(unittest.TestCase):
             result = run_command(self.root, ["update"], "c" * 32, "beta", "0.85b", dict(os.environ), 1)
         self.assertTrue(result["timeout"])
         self.assertEqual(result["status"], "recovery_required")
+        self.assertEqual(result["failure"], {"code": "update_timeout"})
         time.sleep(2)
         self.assertFalse(escaped.exists())
         with self.assertRaises(MaintenanceBusy):
