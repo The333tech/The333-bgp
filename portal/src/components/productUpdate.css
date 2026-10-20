@@ -14,6 +14,17 @@
 }
 .product-update-dialog::backdrop { background: rgba(0, 0, 0, .72); }
 .product-update-dialog h2 { font-size: 20px; margin: 0; }
+.product-update-dialog--error { border-color: rgba(245, 131, 126, .6); }
+.product-update-dialog--error h2,
+.product-update-dialog--error .product-update-stage,
+.product-update-dialog--error .product-update-elapsed { color: #ffaaa5; }
+.product-update-dialog .product-update-error {
+  border: 1px solid rgba(245, 131, 126, .5);
+  background: rgba(156, 45, 39, .16);
+  color: #ffcbc7;
+}
+.product-update-error p { margin: 0; }
+.product-update-error p + p { margin-top: 8px; }
 .product-update-dialog p { line-height: 1.5; }
 .product-update-dialog code { overflow-wrap: anywhere; }
 .product-update-stage { display: flex; align-items: center; gap: 10px; min-height: 52px; margin-top: 16px; }

@@ -76,6 +76,7 @@ required_files=(
   "app/maintenance.py"
   "app/session_store.py"
   "app/update_runner.py"
+  "app/update_failures.py"
   "app/storage_retention.py"
   "scripts/host-updater.py"
   "scripts/update-operation.py"
@@ -136,6 +137,7 @@ source_required_files=(
   "tests/test_release_archive_and_env_migration.py"
   "tests/test_security_helpers.py"
   "tests/test_update_lifecycle.py"
+  "tests/test_update_failures.py"
   "tests/test_state_integrity.py"
 )
 

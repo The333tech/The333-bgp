@@ -73,6 +73,19 @@ fail() {
   exit 1
 }
 
+operation_failure() {
+  [[ -n "${THE333_UPDATE_OPERATION_FILE:-}" ]] || return 0
+  python3 "${PROJECT_DIR}/scripts/update-operation.py" failure "$@" \
+    || log "Warning: update failure details could not be recorded; inspect the operation log."
+}
+
+fail_update() {
+  local code="$1"
+  shift
+  operation_failure "${code}"
+  fail "$@"
+}
+
 require_tty() {
   [[ -r /dev/tty ]] || fail "interactive terminal is unavailable; use the documented non-interactive options"
 }
@@ -261,6 +274,7 @@ check_update_storage_target() {
   free_kb="${stats##* }"
   if [[ -z "${device}" || -z "${free_kb}" || ! "${free_kb}" =~ ^[0-9]+$ ]]; then
     log "ERROR: cannot determine free disk space for ${label} (${path})"
+    operation_failure disk_check
     return 1
   fi
 
@@ -270,6 +284,7 @@ check_update_storage_target() {
 
   if (( free_kb < min_kb )); then
     log "ERROR: not enough free disk space for ${label}: ${free_mb} MB available on ${device}, at least $(((min_bytes + 1048575) / 1048576)) MB required"
+    operation_failure disk_space "$((free_kb * 1024))" "${min_bytes}"
     return 1
   fi
 
@@ -418,7 +433,7 @@ make_backup() {
     && [[ "$(docker_cli inspect -f '{{.State.Running}}' the333-bgp-backend 2>/dev/null || true)" == "true" ]]; then
     log "Pausing backend briefly to create a consistent update backup; GoBGP remains online."
     docker_cli stop --time 30 the333-bgp-backend >/dev/null \
-      || fail "backend could not be paused for a consistent update backup"
+      || fail_update backup_failed "backend could not be paused for a consistent update backup"
     backend_was_running="true"
     trap 'resume_backend_after_interrupted_backup INT' INT
     trap 'resume_backend_after_interrupted_backup TERM' TERM
@@ -441,16 +456,16 @@ make_backup() {
 
   if (( restart_rc != 0 )); then
     rm -f "${archive}"
-    fail "backend did not recover after the backup snapshot; GoBGP was not restarted"
+    fail_update backup_failed "backend did not recover after the backup snapshot; GoBGP was not restarted"
   fi
   if (( backup_rc != 0 )); then
     rm -f "${archive}"
-    fail "consistent update backup failed; backend was restored and the update was not started"
+    fail_update backup_failed "consistent update backup failed; backend was restored and the update was not started"
   fi
 
   verify_update_backup_archive "${archive}" || {
     rm -f "${archive}"
-    fail "backup integrity check failed: ${archive}"
+    fail_update backup_failed "backup integrity check failed: ${archive}"
   }
 
   log "Backup ready: ${archive}"
@@ -979,19 +994,19 @@ fetch_manifest() {
     fallback_url="$(official_release_manifest_fallback_url "${MANIFEST_URL}" || true)"
     if [[ -z "${fallback_url}" ]]; then
       rm -f "${manifest_file}"
-      fail "update manifest download failed"
+      fail_update release_download "update manifest download failed"
     fi
     log "GitHub release index is unavailable; retrying the immutable v${TARGET_VERSION} release manifest."
     : > "${manifest_file}"
     if ! download_manifest_file "${fallback_url}" "${manifest_file}"; then
       rm -f "${manifest_file}"
-      fail "update manifest download failed from both the release index and the versioned release asset"
+      fail_update release_download "update manifest download failed from both the release index and the versioned release asset"
     fi
   fi
   manifest_size="$(wc -c < "${manifest_file}")"
   if (( manifest_size > 2097152 )); then
     rm -f "${manifest_file}"
-    fail "update manifest exceeds the 2 MB limit"
+    fail_update release_invalid "update manifest exceeds the 2 MB limit"
   fi
 
   if ! manifest_json="$(python3 -c '
@@ -1045,7 +1060,7 @@ if not versions:
 print(json.dumps({"product": "The333-BGP", "latest": latest, "versions": versions}, ensure_ascii=False))
 ' < "${manifest_file}")"; then
     rm -f "${manifest_file}"
-    fail "update manifest validation failed"
+    fail_update release_invalid "update manifest validation failed"
   fi
   rm -f "${manifest_file}"
   printf '%s\n' "${manifest_json}"
@@ -1112,9 +1127,9 @@ download_release() {
   local archive_url sha tmp archive archive_size
   archive_url="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("archive_url") or "").strip())')"
   sha="$(printf '%s' "${version_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("sha256") or "").strip())')"
-  [[ -n "${archive_url}" ]] || fail "selected version has no archive_url"
-  [[ "${archive_url}" == https://* ]] || fail "archive_url must use https"
-  [[ "${sha}" =~ ^[A-Fa-f0-9]{64}$ ]] || fail "selected version has no valid sha256; refusing update"
+  [[ -n "${archive_url}" ]] || fail_update release_invalid "selected version has no archive_url"
+  [[ "${archive_url}" == https://* ]] || fail_update release_invalid "archive_url must use https"
+  [[ "${sha}" =~ ^[A-Fa-f0-9]{64}$ ]] || fail_update release_invalid "selected version has no valid sha256; refusing update"
 
   tmp="$(mktemp -d)"
   archive="${tmp}/release.tar.gz"
@@ -1129,24 +1144,24 @@ download_release() {
     "${archive_url}" \
     --output "${archive}"; then
     rm -rf "${tmp}"
-    fail "release archive download failed"
+    fail_update release_download "release archive download failed"
   fi
   archive_size="$(wc -c < "${archive}")"
   if (( archive_size > 268435456 )); then
     rm -rf "${tmp}"
-    fail "release archive exceeds the 256 MB compressed-size limit"
+    fail_update release_invalid "release archive exceeds the 256 MB compressed-size limit"
   fi
 
   need_cmd sha256sum
   if ! printf '%s  %s\n' "${sha}" "${archive}" | sha256sum -c - >/dev/null; then
     rm -rf "${tmp}"
-    fail "release archive SHA-256 verification failed"
+    fail_update release_integrity "release archive SHA-256 verification failed"
   fi
 
   mkdir -p "${tmp}/src"
   if ! python3 "${PROJECT_DIR}/scripts/extract-release.py" "${archive}" "${tmp}/src"; then
     rm -rf "${tmp}"
-    fail "release archive extraction failed"
+    fail_update release_invalid "release archive extraction failed"
   fi
   printf '%s\n' "${tmp}/src"
 }
@@ -1464,7 +1479,7 @@ update_project() {
   check_update_disk_space \
     || fail "disk preflight failed; free disk space and retry. Existing containers were not changed"
   check_release_tree_writable \
-    || fail "release-file preflight failed; use the portal host-updater or restore project ownership. Existing containers were not changed"
+    || fail_update project_permissions "release-file preflight failed; use the portal host-updater or restore project ownership. Existing containers were not changed"
   operation_stage backup
   make_backup
   backup_archive="${LAST_BACKUP_ARCHIVE}"
@@ -1482,7 +1497,7 @@ update_project() {
     if [[ "${release_tmp}" == /tmp/* ]]; then
       rm -rf "${release_tmp}"
     fi
-    fail "release has no valid routing-core version; existing containers and project files were not changed"
+    fail_update release_invalid "release has no valid routing-core version; existing containers and project files were not changed"
   fi
   if ! check_update_disk_space "${target_core_version}"; then
     if [[ "${release_tmp}" == /tmp/* ]]; then
@@ -1495,7 +1510,7 @@ update_project() {
       if [[ "${release_tmp}" == /tmp/* ]]; then
         rm -rf "${release_tmp}"
       fi
-      fail "prebuilt image preparation failed before release activation; existing containers and project files were not changed"
+      fail_update image_prepare "prebuilt image preparation failed before release activation; existing containers and project files were not changed"
     fi
     if ! check_update_disk_space "${target_core_version}"; then
       if [[ "${release_tmp}" == /tmp/* ]]; then
@@ -1515,6 +1530,7 @@ update_project() {
       else
         update_rc=$?
         failed_stage="runtime build or readiness check"
+        operation_failure runtime_readiness
       fi
     else
       update_rc=$?

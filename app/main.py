@@ -31,6 +31,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from app.maintenance import ACTIVE_STATUSES, MaintenanceBusy, mutation_lease, read_state
+from app.update_failures import public_failure
 from app.route_policy import assess_route_change, normalize_exclusions, route_plan_sha256, subtract_exclusions
 from app.session_store import SessionStore, load_or_create_salt
 
@@ -567,7 +568,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.93b"
+    return "0.93.1b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
@@ -4136,10 +4137,15 @@ async def api_product_update_status(_: str = Depends(require_auth)) -> JSONRespo
         operation = {"request_id": latest_job["id"], "status": latest_job["status"],
                      "stage": "queued" if latest_job["status"] == "queued" else "preflight",
                      "version": (latest_job.get("payload") or {}).get("version"),
-                     "started_at": latest_job.get("created_at")}
+                     "started_at": latest_job.get("created_at"),
+                     "finished_at": latest_job.get("finished_at"),
+                     "duration_seconds": latest_job.get("duration_seconds")}
     allowed = {"request_id", "status", "stage", "version", "previous_version", "channel",
                "started_at", "updated_at", "finished_at", "duration_seconds", "timeout", "history"}
     public = {key: value for key, value in operation.items() if key in allowed}
+    failure = public_failure(operation)
+    if failure:
+        public["failure"] = failure
     current_version = read_product_version()
     ready = False
     if public.get("status") == "succeeded" and public.get("version") == current_version:

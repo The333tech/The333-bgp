@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { IconRefresh, IconX } from "@tabler/icons-react";
+import { IconAlertCircle, IconRefresh, IconX } from "@tabler/icons-react";
 import { ApiError, apiFetch, AuthState, login } from "../api/client";
 import "./productUpdate.css";
 
@@ -12,6 +12,9 @@ type Operation = {
   previous_version?: string;
   started_at?: string;
   updated_at?: string;
+  finished_at?: string;
+  duration_seconds?: number;
+  failure?: { code: string; message: string; action: string };
   history?: { stage: string; time: string }[];
 };
 type UpdateStatus = { operation: Operation | null; current_version: string; ready: boolean; blocked: boolean };
@@ -51,6 +54,8 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
   const plannedReload = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const operation = status?.operation;
+  const stopped = Boolean(operation && !["running", "queued"].includes(operation.status));
+  const failed = Boolean(operation && ["failed", "rolled_back", "recovery_required"].includes(operation.status));
   const running = Boolean(pending || status?.blocked || (visible && operation?.status === "succeeded" && !status?.ready));
   const locked = visible && running;
 
@@ -130,9 +135,10 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
   useEffect(() => {
     if (!visible || !auth) return;
     if (dialog.current && !dialog.current.open) dialog.current.showModal();
+    if (stopped) return;
     const timer = window.setInterval(() => setTick(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [visible, auth]);
+  }, [visible, auth, stopped]);
 
   useEffect(() => {
     if (!locked) return;
@@ -188,7 +194,11 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
     catch { setConnection("Не удалось войти. Проверь пароль и доступность сервера."); }
     finally { setLoginBusy(false); }
   };
-  const elapsed = operation?.started_at ? Math.max(0, Math.floor((tick - Date.parse(operation.started_at)) / 1000)) : 0;
+  const startedAt = Date.parse(operation?.started_at ?? "");
+  const endedAt = Date.parse(operation?.finished_at ?? operation?.updated_at ?? "");
+  const duration = stopped && typeof operation?.duration_seconds === "number" && Number.isFinite(operation.duration_seconds)
+    ? operation.duration_seconds : ((stopped && Number.isFinite(endedAt) ? endedAt : tick) - startedAt) / 1000;
+  const elapsed = Number.isFinite(duration) ? Math.max(0, Math.floor(duration)) : 0;
   const outcome = operation?.status === "succeeded" ? (status?.ready ? "Обновление завершено" : "Ожидаем готовности новой версии")
     : operation?.status === "rolled_back" ? "Обновление не установлено. Предыдущая версия восстановлена."
     : operation?.status === "recovery_required" ? "Требуется проверка сервера. Изменения заблокированы для сохранности данных."
@@ -196,7 +206,7 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
     : "Обновление The333-BGP";
 
   const view = visible && createPortal(
-    <dialog ref={dialog} className="product-update-dialog" aria-labelledby="product-update-title"
+    <dialog ref={dialog} className={`product-update-dialog${failed ? " product-update-dialog--error" : ""}`} aria-labelledby="product-update-title"
       onKeyDown={(event) => {
         if (event.key !== "Tab") return;
         const elements = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
@@ -216,16 +226,23 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
       <p className="panel-subtitle">{operation?.previous_version ? `v${operation.previous_version} → ` : ""}
         {operation?.version ? `v${operation.version}` : "Подготовка обновления"}</p>
       <div className="product-update-stage" role="status" aria-live="polite">
-        {running && <IconRefresh size={20} className="product-update-spinner" />}
+        {failed ? <IconAlertCircle size={20} aria-hidden="true" />
+          : running && <IconRefresh size={20} className="product-update-spinner" />}
         <strong>{stages[operation?.stage ?? "queued"] ?? "Проверка состояния"}</strong>
       </div>
-      {operation?.started_at && <p className="panel-subtitle">Прошло: {Math.floor(elapsed / 60)} мин {elapsed % 60} с</p>}
+      {operation?.started_at && <p className="panel-subtitle product-update-elapsed">
+        {stopped ? (failed ? "Остановлено через" : "Завершено за") : "Прошло"}: {Math.floor(elapsed / 60)} мин {elapsed % 60} с
+      </p>}
       {connection && <p className="action-status-box" role="status">{connection}</p>}
-      {failureMessage && <p className="action-status-box" role="alert">{failureMessage}</p>}
-      {!failureMessage && operation?.status === "failed" && <p className="action-status-box" role="alert">
-        {operation.stage === "preflight" || operation.stage === "writes_busy"
-          ? "Проверь свободное место, доступность релиза и права каталога проекта на VM. Рабочая версия не менялась."
-          : "Проверь журнал updater на VM. Если предыдущая версия восстановлена, портал покажет это отдельно."}
+      {failureMessage && <p className="action-status-box product-update-error" role="alert">{failureMessage}</p>}
+      {!failureMessage && failed && operation?.failure && <div className="action-status-box product-update-error" role="alert">
+        <p><strong>{operation.failure.message}</strong></p>
+        <p>{operation.failure.action}</p>
+      </div>}
+      {!failureMessage && failed && !operation?.failure && <p className="action-status-box product-update-error" role="alert">
+        {operation?.stage === "writes_busy"
+          ? "Другие операции ещё не завершились. Дождись их завершения перед новой попыткой обновления."
+          : "Причина ошибки не распознана. Проверь журнал операции в подробностях. Не запускай повторное обновление, если требуется восстановление сервера."}
       </p>}
       {needsLogin && <form onSubmit={signIn} className="product-update-login">
         <label htmlFor="update-password">Пароль портала</label>
@@ -233,7 +250,7 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
           onChange={(event) => setPassword(event.target.value)} required />
         <button className="primary-button" disabled={loginBusy} type="submit">Продолжить наблюдение</button>
       </form>}
-      {running && <p>Настройки временно недоступны. После успешной проверки портал перезагрузится автоматически.</p>}
+      {running && !failed && <p>Настройки временно недоступны. После успешной проверки портал перезагрузится автоматически.</p>}
       <details className="product-update-details">
         <summary>Подробности</summary>
         <ol>{operation?.history?.map((event, index) => <li key={`${index}-${event.stage}`}>
@@ -243,6 +260,10 @@ export function useProductUpdate(auth: AuthState | null, onSession: (auth: AuthS
         {operation?.updated_at && <p>Последнее подтверждение: {new Date(operation.updated_at).toLocaleString()}</p>}
         <p>При длительной недоступности проверь связь с VM. Для диагностики на сервере:
           <code> sudo journalctl -u the333-bgp-updater.service -n 100 --no-pager</code></p>
+        {operation?.request_id && /^[0-9a-f]{32}$/.test(operation.request_id) && <p>
+          Подробный результат операции в каталоге установки:
+          <code> data/host-updater-results/{operation.request_id}.json</code>
+        </p>}
       </details>
     </dialog>, document.body);
   return { start, locked, view };

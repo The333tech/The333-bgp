@@ -125,7 +125,93 @@ test("preflight rejection remains readable instead of disappearing at the next p
   server.reject = true;
   await start(page);
   await expect(page.getByRole("dialog")).toContainText("Недостаточно места");
+  await expect(page.getByRole("dialog")).toHaveClass(/product-update-dialog--error/);
   await expect(page.getByRole("button", { name: "Закрыть", exact: true })).toBeEnabled();
+  expect(server.posts).toBe(1);
+});
+
+test("failed update is red, explains disk space and stops its timer", async ({ page, context }, testInfo) => {
+  const server = await fixture(context);
+  await start(page);
+  await expect(page.getByRole("dialog")).toContainText("Создание резервной копии");
+  server.operation = { ...server.operation, status: "failed", stage: "download",
+    finished_at: new Date().toISOString(), duration_seconds: 10.694,
+    failure: { code: "disk_space", message: "Недостаточно места: свободно 1624 МБ, требуется не менее 2048 МБ.",
+      action: "Освободи ещё не менее 424 МБ на этом диске, сохранив рабочие данные и резервные копии. Затем повтори обновление." } };
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toHaveClass(/product-update-dialog--error/);
+  await expect(dialog.getByRole("alert")).toContainText("1624 МБ");
+  await expect(dialog.getByRole("alert")).toContainText("424 МБ");
+  await expect(dialog.getByRole("heading", { name: "Обновление не выполнено." })).toHaveCSS("color", "rgb(255, 170, 165)");
+  await expect(dialog.locator(".product-update-spinner")).toHaveCount(0);
+  await expect(dialog.locator(".product-update-elapsed")).toHaveText("Остановлено через: 0 мин 10 с");
+  await page.clock.install();
+  await page.clock.fastForward(15000);
+  await expect(dialog.locator(".product-update-elapsed")).toHaveText("Остановлено через: 0 мин 10 с");
+  await expect(dialog.getByRole("button", { name: "Закрыть", exact: true })).toBeEnabled();
+  expect(server.posts).toBe(1);
+  await page.screenshot({ path: testInfo.outputPath("update-failed-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const bounds = await dialog.boundingBox();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath("update-failed-mobile.png") });
+});
+
+test("unknown failure keeps diagnostics and uses the old server finish timestamp", async ({ page, context }) => {
+  const server = await fixture(context);
+  await start(page);
+  await expect(page.getByRole("dialog")).toContainText("Создание резервной копии");
+  server.operation = { ...server.operation, status: "failed", stage: "download",
+    started_at: "2026-10-20T01:37:53Z", updated_at: "2026-10-20T01:38:03Z" };
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toContainText("Причина ошибки не распознана");
+  await expect(dialog.locator(".product-update-elapsed")).toHaveText("Остановлено через: 0 мин 10 с");
+  await dialog.getByText("Подробности", { exact: true }).click();
+  await expect(dialog).toContainText(`data/host-updater-results/${server.operation.request_id}.json`);
+  await page.clock.install();
+  await page.clock.fastForward(15000);
+  await expect(dialog.locator(".product-update-elapsed")).toHaveText("Остановлено через: 0 мин 10 с");
+  await dialog.getByRole("button", { name: "Закрыть", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(server.posts).toBe(1);
+});
+
+test("recovery is red and has no running spinner or timer while writes remain locked", async ({ page, context }) => {
+  const server = await fixture(context);
+  await start(page);
+  await expect(page.getByRole("dialog")).toContainText("Создание резервной копии");
+  server.operation = { ...server.operation, status: "recovery_required", stage: "readiness", duration_seconds: 90,
+    failure: { code: "update_timeout", message: "Превышено допустимое время обновления.",
+      action: "Не запускай обновление повторно. Проверь VM и журнал операции." } };
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toHaveClass(/product-update-dialog--error/);
+  await expect(dialog.getByRole("alert")).toContainText("Не запускай обновление повторно");
+  await expect(dialog.locator(".product-update-spinner")).toHaveCount(0);
+  await expect(dialog.locator(".product-update-elapsed")).toHaveText("Остановлено через: 1 мин 30 с");
+  await expect(dialog.getByRole("button", { name: "Закрыть", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await page.clock.install();
+  await page.clock.fastForward(15000);
+  await expect(dialog.locator(".product-update-elapsed")).toHaveText("Остановлено через: 1 мин 30 с");
+  expect(server.posts).toBe(1);
+});
+
+test("a legacy job failure without an end timestamp freezes the displayed elapsed time", async ({ page, context }) => {
+  const server = await fixture(context);
+  await start(page);
+  await expect(page.getByRole("dialog")).toContainText("Создание резервной копии");
+  server.operation = { ...server.operation, stage: "preflight", started_at: new Date(Date.now() - 10000).toISOString() };
+  const elapsed = page.getByRole("dialog").locator(".product-update-elapsed");
+  await expect(elapsed).toHaveText(/Прошло: 0 мин 1[0-9] с/);
+  server.operation = { ...server.operation, status: "failed" };
+  await expect(elapsed).toHaveText(/Остановлено через: 0 мин 1[0-9] с/);
+  const frozen = await elapsed.innerText();
+  await page.clock.install();
+  await page.clock.fastForward(15000);
+  await expect(elapsed).toHaveText(frozen);
   expect(server.posts).toBe(1);
 });
 
