@@ -173,6 +173,27 @@ class StorageBudgetTests(unittest.TestCase):
             report = build_plan(ROOT, "setup", ["docker"])
         self.assertTrue(report)
 
+    def test_mode_switch_counts_images_but_not_unchanged_data_or_release_files(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            project = Path(directory)
+            (project / "docker").mkdir()
+            (project / "docker/image-storage.json").write_text(json.dumps(metadata()))
+            (project / "data").mkdir()
+            with (project / "data/large").open("wb") as handle:
+                handle.truncate(2 * 1024 * MIB)
+            info = {"DockerRootDir": directory, "Driver": "overlay2", "DriverStatus": []}
+            def inspect(_command, *args):
+                return info if args[0] == "info" else []
+            with patch("app.update_storage.command_json", side_effect=inspect), patch(
+                    "app.update_storage.platform.machine", return_value="x86_64"), patch(
+                    "app.update_storage.shutil.disk_usage", return_value=SimpleNamespace(total=8 * 1024 * MIB, free=324 * MIB)):
+                result = build_plan(project, "mode", ["docker"], project, REFS)[0]
+            self.assertEqual(result["required_bytes"], 324 * MIB)
+            self.assertTrue(result["ready"])
+            self.assertEqual(result["components"]["rollback extraction"], 0)
+            self.assertEqual(result["components"]["new release files"], 0)
+            self.assertNotIn("mandatory backup", result["components"])
+
     def test_repair_reads_operator_floor_from_env_file_without_sourcing_it(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
             project = Path(directory)

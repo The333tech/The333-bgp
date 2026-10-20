@@ -15,7 +15,7 @@ from app.update_failures import record_failure
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=("setup", "initial", "extract", "images", "backup", "activate", "install", "copied", "installed"))
+    parser.add_argument("phase", choices=("setup", "initial", "extract", "images", "backup", "activate", "install", "copied", "installed", "mode"))
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--release", type=Path)
     parser.add_argument("--backup", type=Path)

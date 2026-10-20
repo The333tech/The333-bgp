@@ -890,6 +890,28 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("not enough free disk space", result.stderr)
 
+    def test_image_mode_switch_checks_target_budget_and_restores_env_on_rejection(self) -> None:
+        patched = self._patched_update_controller()
+        arguments_file = self.root / "disk-arguments"
+        built = self.root / "unexpected-build"
+        refs = [f"ghcr.io/the333tech/the333-bgp-{role}@sha256:" + "a" * 64 for role in ("core", "backend", "portal")]
+        for requested in ("source", "prebuilt"):
+            with self.subTest(mode=requested):
+                original = "THE333_IMAGE_MODE=" + ("source" if requested == "prebuilt" else "prebuilt") + "\n"
+                (self.project / ".env").write_text(original)
+                result = subprocess.run([
+                    "bash", "-c", 'source "$1"; load_env; configure_compose_files() { :; }; '
+                    'check_update_disk_space() { printf "%s" "$*" > "$THE333_TEST_ARGUMENTS"; return 1; }; '
+                    'build_update_images() { touch "$THE333_TEST_BUILD"; }; shift; set_image_mode "$@"',
+                    "bash", str(patched), requested, *(refs if requested == "prebuilt" else []),
+                ], env={**os.environ, "THE333_UPDATE_TEST_HARNESS": "true", "THE333_PROJECT_DIR": str(self.project),
+                        "THE333_TEST_ARGUMENTS": str(arguments_file), "THE333_TEST_BUILD": str(built)}, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("image mode preflight failed", result.stderr)
+                self.assertEqual((self.project / ".env").read_text(), original)
+                self.assertEqual(arguments_file.read_text(), f" mode {self.project}" if requested == "prebuilt" else "")
+                self.assertFalse(built.exists())
+
     def test_installer_dry_run_never_installs_docker(self) -> None:
         patched = self._patched_installer()
         harness = self.root / "run-dry-run-docker-check.sh"

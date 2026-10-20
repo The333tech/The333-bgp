@@ -319,7 +319,7 @@ class ImageDeliveryTests(unittest.TestCase):
     def test_mode_switch_does_not_restart_runtime_after_preflight_failure(self) -> None:
         updater = (ROOT / "scripts" / "the333bgp.sh").read_text(encoding="utf-8")
         function = updater.split("set_image_mode() {", 1)[1].split("\n}\n", 1)[0]
-        preflight = function.split("if ! check_update_disk_space; then", 1)[1].split("fi", 1)[0]
+        preflight = function.split('if ! check_update_disk_space "${disk_arguments[@]}"; then', 1)[1].split("fi", 1)[0]
         preparation = function.split("if ! build_update_images strict; then", 1)[1].split("fi", 1)[0]
         self.assertIn('restore_image_mode_env "${backup_env}"', preflight)
         self.assertIn('restore_image_mode_env "${backup_env}"', preparation)
