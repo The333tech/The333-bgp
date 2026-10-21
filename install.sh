@@ -736,6 +736,12 @@ if isinstance(payload, dict):
 if not isinstance(payload, list):
     raise SystemExit("release index must be an object or GitHub releases array")
 
+def weight(value):
+    raw = str(value).lstrip("vV")
+    match = re.match(r"^(\d+(?:\.\d+)*)", raw)
+    numbers = [int(part) for part in match.group(1).split(".")] if match else []
+    return (*(numbers + [0, 0, 0])[:3], -1 if re.search(r"(?:b|-beta(?:\.|$))", raw, re.I) else 0)
+
 versions = []
 latest = {"stable": None, "beta": None}
 for release in payload[:20]:
@@ -761,11 +767,12 @@ for release in payload[:20]:
         "archive_url": archive_url,
         "sha256": sha256,
     })
-    if latest[channel] is None:
-        latest[channel] = version
-
 if not versions:
     raise SystemExit("GitHub releases index has no usable release assets")
+versions.sort(key=lambda item: weight(item["version"]), reverse=True)
+for item in versions:
+    if latest[item["channel"]] is None:
+        latest[item["channel"]] = item["version"]
 print(json.dumps({"product": "The333-BGP", "latest": latest, "versions": versions}, ensure_ascii=False))
 '
 }
@@ -1028,7 +1035,7 @@ write_env() {
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
   host_updater_token="${HOST_UPDATER_TOKEN:-$(make_token)}"
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.94b}"
+  product_version="${product_version:-0.94.1b}"
   image_mode="$(runtime_image_mode)"
   RESOLVED_GOBGP_IMAGE=""
   RESOLVED_BACKEND_IMAGE=""
@@ -1264,7 +1271,7 @@ ensure_env_defaults() {
 
   local product_version update_url backup_env
   product_version="$(tr -d '[:space:]' < "${PROJECT_DIR}/VERSION" 2>/dev/null || true)"
-  product_version="${product_version:-0.94b}"
+  product_version="${product_version:-0.94.1b}"
   update_url="${PRODUCT_UPDATE_MANIFEST_URL:-$(awk -F= '$1 == "PRODUCT_UPDATE_MANIFEST_URL" {print $2; exit}' "${PROJECT_DIR}/.env" | tr -d '[:space:]')}"
   update_url="${update_url:-https://api.github.com/repos/The333tech/The333-bgp/releases?per_page=20}"
 

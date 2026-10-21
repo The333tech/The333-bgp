@@ -52,6 +52,7 @@ import {
 import { MikroTikAssistant } from "./components/MikroTikAssistant";
 import { RoutePathDiagnostics } from "./components/RoutePathDiagnostics";
 import { useProductUpdate } from "./components/ProductUpdate";
+import { useProductUpdates, type ProductUpdatesResponse, type ProductUpdateVersion } from "./components/useProductUpdates";
 import {
   countProviderWarnings,
   countServiceErrors,
@@ -78,7 +79,6 @@ type PortalData = {
   services: ServicesResponse | null;
   serverResources: ServerResourcesResponse | null;
   runtimeSettings: RuntimeSettingsResponse | null;
-  productUpdates: ProductUpdatesResponse | null;
   jobs: JobsResponse | null;
 };
 
@@ -322,35 +322,6 @@ type CommunitiesResponse = {
   time?: string;
 };
 
-type ProductUpdateVersion = {
-  version: string;
-  title?: string;
-  channel?: "stable" | "beta" | string;
-  status?: string;
-  date?: string;
-  recommended?: boolean;
-  changelog?: string[];
-};
-
-type ProductUpdatesResponse = {
-  ok: boolean;
-  product?: string;
-  current_version?: string;
-  current_channel?: string;
-  manifest_url?: string | null;
-  update_enabled?: boolean;
-  update_mode?: string;
-  versions?: ProductUpdateVersion[];
-  latest?: {
-    stable?: string | null;
-    beta?: string | null;
-  };
-  manifest_unavailable?: boolean;
-  notice?: string;
-  error?: string;
-  time?: string;
-};
-
 type PortalJobStatus = "queued" | "running" | "cancel_requested" | "succeeded" | "failed" | "cancelled";
 
 type PortalJob = {
@@ -544,22 +515,21 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.94b";
-const PRODUCT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const PRODUCT_VERSION = "0.94.1b";
 const UPDATE_VERSIONS = [
   {
-    id: "0.94b",
-    version: "0.94b",
-    title: "v0.94b",
+    id: "0.94.1b",
+    version: "0.94.1b",
+    title: "v0.94.1b",
     channel: "beta",
     status: "текущая версия",
     date: "октябрь 2026",
     changelog: [
-      "В prebuilt-режиме место рассчитывается по недостающим слоям, данным и этапу операции вместо фиксированных 1–2 ГБ.",
-      "Обязательная полная резервная копия, место для восстановления и предыдущие образы сохраняются.",
-      "После загрузки образов и копирования файлов их объём не требуется повторно.",
-      "Отдельно проверяются диски проекта, Docker/containerd и временных файлов; установка Docker учитывает выбранные пакеты.",
-      "Core остаётся 4.9.0-r2. RouterOS, AWG-контейнер и VPN-профили не изменяются."
+      "Последняя версия выбирается по номеру релиза, независимо от порядка записей GitHub.",
+      "Плашка и страница обновлений используют общую проверку при входе, каждые 5 минут и при возвращении во вкладку.",
+      "Обычное обновление страницы получает актуальный HTML; Ctrl+F5 не требуется.",
+      "При недоступности проверки показана ошибка, повторная попытка выполняется автоматически.",
+      "Адаптивный расчёт места, обязательный бэкап и откат сохранены. Core остаётся 4.9.0-r2."
     ]
   }
 ];
@@ -7106,8 +7076,13 @@ function CommunitiesPage({ auth, onRefresh }: { auth: AuthState; onRefresh: () =
 }
 
 
-function UpdatesPage({ auth, onStart }: { auth: AuthState; onStart: (channel: string, version: string) => Promise<void> }) {
-  const [updates, setUpdates] = useState<ProductUpdatesResponse | null>(null);
+function UpdatesPage({ updates, checking, error, onRefresh, onStart }: {
+  updates: ProductUpdatesResponse | null;
+  checking: boolean;
+  error: string | null;
+  onRefresh: () => Promise<void>;
+  onStart: (channel: string, version: string) => Promise<void>;
+}) {
   const [selectedVersionId, setSelectedVersionId] = useState(PRODUCT_VERSION);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -7135,41 +7110,26 @@ function UpdatesPage({ auth, onStart }: { auth: AuthState; onStart: (channel: st
           ? "доступно обновление"
           : "актуальная версия";
 
-  const loadUpdates = useCallback(async () => {
-    setBusy(true);
-    setStatusText("Проверяю доступные обновления...");
-
-    try {
-      const payload = await apiFetch<ProductUpdatesResponse>("/api/product/updates", auth);
-      setUpdates(payload);
-      const available = currentUpdateVersions(payload.versions ?? [], payload.latest);
-      setSelectedVersionId((current) => {
-        if (available.some((version) => version.version === current)) return current;
-        return available.find((version) => version.channel === payload.current_channel)?.version
-          ?? available[0]?.version ?? PRODUCT_VERSION;
-      });
-      const hasNewer = available.some(
-        (version) => compareProductVersions(version.version, payload.current_version ?? PRODUCT_VERSION) > 0
-      );
-      setStatusText(
-        payload.manifest_unavailable
-          ? payload.notice ?? "Список обновлений временно недоступен."
-          : payload.ok
-          ? hasNewer
-            ? "Найдена новая версия. Выбери её в списке для просмотра changelog или обновления."
-            : "Установлена актуальная доступная версия. Обновление не требуется."
-          : `Список обновлений недоступен: ${payload.error ?? "ошибка"}`
-      );
-    } catch (error) {
-      setStatusText(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }, [auth]);
-
   useEffect(() => {
-    void loadUpdates();
-  }, [loadUpdates]);
+    if (!updates) return;
+    const available = currentUpdateVersions(updates.versions ?? [], updates.latest);
+    setSelectedVersionId((current) => {
+      if (available.some((version) => version.version === current)) return current;
+      return available.find((version) => version.channel === updates.current_channel)?.version
+        ?? available[0]?.version ?? PRODUCT_VERSION;
+    });
+    setStatusText(null);
+  }, [updates]);
+
+  const updateMessage = checking ? "Проверяю доступные обновления..." : error ?? statusText ?? (
+    updates?.manifest_unavailable
+      ? updates.notice ?? "Список обновлений временно недоступен."
+      : updates?.ok
+        ? availableUpdate
+          ? "Найдена новая версия. Выбери её в списке для просмотра changelog или обновления."
+          : "Установлена актуальная доступная версия. Обновление не требуется."
+        : updates ? `Список обновлений недоступен: ${updates.error ?? "ошибка"}` : null
+  );
 
   const startProductUpdate = async () => {
     if (!selectedVersion) return;
@@ -7210,7 +7170,7 @@ function UpdatesPage({ auth, onStart }: { auth: AuthState; onStart: (channel: st
         </div>
       </section>
 
-      {statusText && <div className="action-status-box">{busy ? "⏳ " : "ℹ️ "}{statusText}</div>}
+      {updateMessage && <div className="action-status-box">{busy || checking ? "⏳ " : "ℹ️ "}{updateMessage}</div>}
 
       <div className="updates-grid">
         <section className="panel-card compact-panel">
@@ -7247,10 +7207,10 @@ function UpdatesPage({ auth, onStart }: { auth: AuthState; onStart: (channel: st
           </div>
 
           <div className="timezone-actions updates-actions">
-            <button className="ghost-button" type="button" disabled={busy} onClick={loadUpdates}>
+            <button className="ghost-button" type="button" disabled={busy || checking} onClick={() => void onRefresh()}>
               Проверить обновления
             </button>
-            <button className="primary-button" type="button" disabled={busy || !updateEnabled || !selectedVersion || !selectedIsNewer} onClick={startProductUpdate}>
+            <button className="primary-button" type="button" disabled={busy || checking || !manifestAvailable || !updateEnabled || !selectedVersion || !selectedIsNewer} onClick={startProductUpdate}>
               {selectedIsNewer
                 ? "Обновить выбранную версию"
                 : selectedVersion?.version === currentVersion
@@ -7405,6 +7365,7 @@ function AppShell({
   publicationLocked,
   onPublicationChanged,
   data,
+  productUpdates,
   children,
   portalTimeLabel,
   timeZone,
@@ -7419,6 +7380,7 @@ function AppShell({
   publicationLocked: boolean;
   onPublicationChanged: () => void;
   data: PortalData;
+  productUpdates: ProductUpdatesResponse | null;
   children: React.ReactNode;
   portalTimeLabel: string;
   timeZone: string;
@@ -7436,14 +7398,14 @@ function AppShell({
     : window.location.hostname;
   const portalEndpoint = window.location.host || `${serviceHost}:8090`;
   const backendEndpoint = `${serviceHost}:8088`;
-  const updateNotice = productUpdateNotice(data.productUpdates);
+  const updateNotice = productUpdateNotice(productUpdates);
   const currentProductVersion = formatProductVersion(
-    data.productUpdates?.current_version ?? PRODUCT_VERSION,
-    data.productUpdates?.current_channel ?? "beta"
+    productUpdates?.current_version ?? PRODUCT_VERSION,
+    productUpdates?.current_channel ?? "beta"
   );
   const updateNoticeLabel = updateNotice
     ? `+NEW ${formatProductVersion(updateNotice.version, updateNotice.channel)}`
-    : data.productUpdates?.manifest_url && !data.productUpdates?.manifest_unavailable
+    : productUpdates?.manifest_url && !productUpdates?.manifest_unavailable
       ? "актуально"
       : "проверка недоступна";
   const routeAutoUpdate = data.runtimeSettings?.route_auto_update;
@@ -7681,6 +7643,7 @@ function AppShell({
 export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null);
   const productUpdate = useProductUpdate(auth, setAuth);
+  const availableUpdates = useProductUpdates(auth, productUpdate.locked);
   const updateLocked = useRef(false);
   updateLocked.current = productUpdate.locked;
   const [authReady, setAuthReady] = useState(false);
@@ -7693,7 +7656,6 @@ export default function App() {
     services: null,
     serverResources: null,
     runtimeSettings: null,
-    productUpdates: null,
     jobs: null
   });
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -7703,8 +7665,6 @@ export default function App() {
   const [routeAutoUpdateOpen, setRouteAutoUpdateOpen] = useState(false);
   const [backupModalOpen, setBackupModalOpen] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
-  const productUpdatesRef = useRef<ProductUpdatesResponse | null>(null);
-  const productUpdateCheckedAtRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -7740,21 +7700,7 @@ export default function App() {
         apiFetch<JobsResponse>("/api/jobs?limit=30", auth)
       ]);
 
-      let productUpdates = productUpdatesRef.current;
-      const now = Date.now();
-
-      if (!productUpdates || now - productUpdateCheckedAtRef.current > PRODUCT_UPDATE_CHECK_INTERVAL_MS) {
-        try {
-          productUpdates = await apiFetch<ProductUpdatesResponse>("/api/product/updates", auth);
-          productUpdatesRef.current = productUpdates;
-        } catch {
-          productUpdates = productUpdatesRef.current;
-        } finally {
-          productUpdateCheckedAtRef.current = now;
-        }
-      }
-
-      setData({ ready, diagnostics, sources, history, services, serverResources, runtimeSettings, productUpdates, jobs });
+      setData({ ready, diagnostics, sources, history, services, serverResources, runtimeSettings, jobs });
       setLoginError(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -7949,11 +7895,13 @@ export default function App() {
     if (activePage === "history") return <HistoryPage data={data} />;
     if (activePage === "updates") {
       if (!auth) return null;
-      return <UpdatesPage auth={auth} onStart={productUpdate.start} />;
+      return <UpdatesPage updates={availableUpdates.updates} checking={availableUpdates.checking}
+        error={availableUpdates.error} onRefresh={availableUpdates.refresh} onStart={productUpdate.start} />;
     }
 
     return null;
-  }, [activePage, actionText, auth, data, loadData, productUpdate.start]);
+  }, [activePage, actionText, auth, data, loadData, productUpdate.start,
+    availableUpdates.updates, availableUpdates.checking, availableUpdates.error, availableUpdates.refresh]);
 
   if (!authReady) {
     return <div className="app" aria-busy="true" />;
@@ -7974,6 +7922,7 @@ export default function App() {
         publicationLocked={productUpdate.locked}
         onPublicationChanged={() => void loadData()}
         data={data}
+        productUpdates={availableUpdates.updates}
         portalTimeLabel={portalTimeLabel}
         timeZone={timeZone}
         onOpenTimeSettings={() => setTimeSettingsOpen(true)}

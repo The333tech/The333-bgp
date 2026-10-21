@@ -101,7 +101,8 @@ class PublishedImageScanTests(unittest.TestCase):
         self.assertIn("schedule:", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("--exclude-drafts", workflow)
-        self.assertIn("--limit 1", workflow)
+        self.assertIn("--limit 100", workflow)
+        self.assertIn("release-image-matrix.py --latest-tag", workflow)
         self.assertIn("--pattern update-manifest.json", workflow)
         self.assertIn("python3 scripts/release-image-matrix.py", workflow)
         self.assertIn("GRYPE_PLATFORM: ${{ matrix.platform }}", workflow)
@@ -118,6 +119,28 @@ class PublishedImageScanTests(unittest.TestCase):
         self.assertNotIn("contents: write", workflow)
         self.assertNotIn("packages: write", workflow)
         self.assertNotIn("continue-on-error", workflow)
+
+    def test_latest_scan_tag_does_not_depend_on_github_order(self) -> None:
+        releases = [{"tagName": tag} for tag in ("v0.93.1b", "v0.94b", "v0.9b", "v0.94.1b")]
+        self.assertEqual(MODULE["latest_release_tag"](releases), "v0.94.1b")
+        self.assertEqual(MODULE["latest_release_tag"](releases + [{"tagName": "v0.94.1"}]), "v0.94.1")
+        self.assertEqual(MODULE["latest_release_tag"](releases + [
+            {"tagName": "v9.9b", "isDraft": True}, {"tagName": "${{ secrets.TOKEN }}"},
+        ]), "v0.94.1b")
+        for invalid in (None, [], [{"tagName": "latest"}]):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                MODULE["latest_release_tag"](invalid)
+
+    def test_latest_tag_cli_reads_bounded_json_from_stdin(self) -> None:
+        for payload, expected in ((b'[{"tagName":"v0.93.1b"},{"tagName":"v0.94.1b"}]', "v0.94.1b"),
+                                  (b"[]", None), (b"not JSON", None),
+                                  (b" " * (MODULE["MAX_MANIFEST_BYTES"] + 1), None)):
+            result = subprocess.run([sys.executable, str(SCRIPT), "--latest-tag"], input=payload,
+                                    capture_output=True, check=False)
+            with self.subTest(expected=expected, size=len(payload)):
+                self.assertEqual(result.returncode == 0, expected is not None)
+                self.assertEqual(result.stdout.decode().strip(), expected or "")
+                self.assertNotIn(b"Traceback", result.stderr)
 
 
 if __name__ == "__main__":

@@ -272,6 +272,12 @@ class DeliverySmoke:
             image = json.loads(run("docker", "image", "inspect", item["Image"], capture=True))[0]
             require(image["Architecture"] == ("arm64" if platform.machine() == "aarch64" else "amd64"), "wrong image architecture")
             require(item["State"]["Health"]["Status"] == "healthy", f"unhealthy: {name}")
+        if (target / "portal/src/components/useProductUpdates.ts").is_file():
+            for path in ("/", "/index.html"):
+                with urllib.request.urlopen("http://127.0.0.1:8090" + path, timeout=10) as response:
+                    require("no-cache" in response.headers.get("Cache-Control", ""), "portal HTML can become stale")
+                    require(response.headers.get("X-Frame-Options") == "DENY", "HTML cache policy lost security headers")
+                    require(bool(response.headers.get("Content-Security-Policy")), "HTML cache policy lost CSP")
         return Api(self.password)
 
     def index(self, archive, version, corrupt=False):

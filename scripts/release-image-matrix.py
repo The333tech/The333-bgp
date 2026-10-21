@@ -49,12 +49,37 @@ def image_matrix(manifest: Any, version: str) -> dict[str, list[dict[str, str]]]
     return {"include": rows}
 
 
+def latest_release_tag(releases: Any) -> str:
+    if not isinstance(releases, list):
+        raise ValueError("release list must be an array")
+    candidates = []
+    for release in releases:
+        if not isinstance(release, dict) or release.get("isDraft"):
+            continue
+        tag = str(release.get("tagName") or "")
+        match = re.fullmatch(r"v(\d+)\.(\d+)(?:\.(\d+))?(b)?", tag)
+        if match:
+            candidates.append(((int(match[1]), int(match[2]), int(match[3] or 0), -1 if match[4] else 0), tag))
+    if not candidates:
+        raise ValueError("no supported published release tag found")
+    return max(candidates)[1]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("version")
+    parser.add_argument("manifest", type=Path, nargs="?")
+    parser.add_argument("version", nargs="?")
+    parser.add_argument("--latest-tag", action="store_true")
     args = parser.parse_args()
+    if not args.latest_tag and (args.manifest is None or args.version is None):
+        parser.error("manifest and version are required")
     try:
+        if args.latest_tag:
+            raw = sys.stdin.buffer.read(MAX_MANIFEST_BYTES + 1)
+            if len(raw) > MAX_MANIFEST_BYTES:
+                raise ValueError("release list exceeds size limit")
+            print(latest_release_tag(json.loads(raw)))
+            return 0
         with args.manifest.open("rb") as source:
             raw = source.read(MAX_MANIFEST_BYTES + 1)
         if len(raw) > MAX_MANIFEST_BYTES:

@@ -2,7 +2,8 @@ import { test, expect, BrowserContext, Page } from "playwright/test";
 
 async function fixture(context: BrowserContext) {
   const session = { csrf_token: "test", expires_at: "2099-01-01T00:00:00Z" };
-  const server = { operation: null as any, posts: 0, offline: false, expired: false, ready: false, reject: false, omitLatest: false };
+  const server = { operation: null as any, posts: 0, offline: false, expired: false, ready: false, reject: false,
+    omitLatest: false, latestBeta: "0.85b", updateChecks: 0, manifestOffline: false, manifestInvalid: false };
   await context.route("**/backend/**", async (route) => {
     const path = new URL(route.request().url()).pathname.replace("/backend", "");
     if (path === "/auth/session") return route.fulfill({ json: session });
@@ -14,17 +15,22 @@ async function fixture(context: BrowserContext) {
         current_version: server.ready ? "0.85b" : "0.84.1b",
         blocked: ["running", "queued", "recovery_required"].includes(server.operation?.status) } });
     }
-    if (path === "/api/product/updates") return route.fulfill({ json: {
-      ok: true, current_version: "0.84.1b", current_channel: "beta", update_enabled: true,
+    if (path === "/api/product/updates") {
+      server.updateChecks += 1;
+      if (server.manifestOffline) return route.fulfill({ status: 503, body: "Unavailable" });
+      return route.fulfill({ json: {
+      ok: !server.manifestInvalid, current_version: "0.84.1b", current_channel: "beta", update_enabled: true,
       manifest_url: "https://example.com/manifest.json",
-      latest: server.omitLatest ? undefined : { stable: "0.84", beta: "0.85b" },
+      latest: server.omitLatest ? undefined : { stable: "0.84", beta: server.latestBeta },
       versions: [
+        ...(server.latestBeta === "0.85b" ? [] : [{ version: server.latestBeta, channel: "beta", title: `v${server.latestBeta}` }]),
         { version: "0.85b", channel: "beta", title: "v0.85b", changelog: ["Обновление"], status: "доступна" },
         { version: "0.84.1b", channel: "beta", title: "v0.84.1b", status: "доступна" },
         { version: "0.84", channel: "stable", title: "v0.84", status: "доступна" },
         { version: "0.83", channel: "stable", title: "v0.83", status: "доступна" },
       ],
     } });
+    }
     if (path === "/api/product/update/job") {
       server.posts += 1;
       if (server.reject) return route.fulfill({ status: 409, json: { detail: "Недостаточно места для безопасного обновления." } });
@@ -66,6 +72,86 @@ test("update picker falls back to newest versions when latest metadata is missin
   await expect(choices).toHaveCount(2);
   await expect(choices).toContainText(["v0.84", "v0.85b"]);
   await expect(page.getByRole("radio", { name: /v0\.85b/ })).toBeChecked();
+});
+
+test("manual check and ordinary reload refresh the footer even when dashboard APIs fail", async ({ page, context }) => {
+  const server = await fixture(context);
+  await page.goto("/");
+  const footer = page.locator(".sidebar-update-button");
+  await expect(footer).toContainText("+NEW v0.85b");
+  expect(server.updateChecks).toBe(1);
+  await footer.click();
+  server.latestBeta = "0.86b";
+  await page.getByRole("button", { name: "Проверить обновления", exact: true }).click();
+  await expect(page.getByRole("radio", { name: /v0\.86b/ })).toBeChecked();
+  await expect(footer).toContainText("+NEW v0.86b");
+  expect(server.updateChecks).toBe(2);
+  server.latestBeta = "0.87b";
+  await page.reload();
+  await expect(footer).toContainText("+NEW v0.87b");
+  expect(server.updateChecks).toBe(3);
+});
+
+test("footer and open update picker refresh periodically without a page reload", async ({ page, context }) => {
+  const server = await fixture(context);
+  await page.clock.install();
+  await page.goto("/");
+  const footer = page.locator(".sidebar-update-button");
+  await expect(footer).toContainText("+NEW v0.85b");
+  await footer.click();
+  server.latestBeta = "0.86b";
+  await page.clock.fastForward(5 * 60_000);
+  await expect(footer).toContainText("+NEW v0.86b");
+  await expect(page.getByRole("radio", { name: /v0\.86b/ })).toBeChecked();
+  expect(server.updateChecks).toBe(2);
+});
+
+test("returning to the portal checks once and throttles repeated focus events", async ({ page, context }) => {
+  const server = await fixture(context);
+  await page.clock.install();
+  await page.goto("/");
+  const footer = page.locator(".sidebar-update-button");
+  await expect(footer).toContainText("+NEW v0.85b");
+  server.latestBeta = "0.86b";
+  await page.clock.fastForward(61_000);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(footer).toContainText("+NEW v0.86b");
+  await page.evaluate(() => {
+    for (let i = 0; i < 5; i++) window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("online"));
+  });
+  expect(server.updateChecks).toBe(2);
+});
+
+test("failed release check is not shown as current and recovers automatically", async ({ page, context }) => {
+  const server = await fixture(context);
+  await page.clock.install();
+  await page.goto("/");
+  const footer = page.locator(".sidebar-update-button");
+  await expect(footer).toContainText("+NEW v0.85b");
+  await footer.click();
+  server.manifestOffline = true;
+  await page.getByRole("button", { name: "Проверить обновления", exact: true }).click();
+  await expect(footer).toContainText("проверка недоступна");
+  await expect(page.getByRole("button", { name: "Обновить выбранную версию" })).toBeDisabled();
+  await expect(page.locator(".action-status-box")).toContainText("Повторная попытка выполняется автоматически");
+  server.manifestOffline = false;
+  server.latestBeta = "0.86b";
+  await page.clock.fastForward(61_000);
+  await expect(footer).toContainText("+NEW v0.86b");
+  await expect(page.getByRole("button", { name: "Обновить выбранную версию" })).toBeEnabled();
+});
+
+test("a successful HTTP response with a failed manifest never claims the footer is current", async ({ page, context }) => {
+  const server = await fixture(context);
+  await page.goto("/");
+  const footer = page.locator(".sidebar-update-button");
+  await expect(footer).toContainText("+NEW v0.85b");
+  await footer.click();
+  server.manifestInvalid = true;
+  await page.getByRole("button", { name: "Проверить обновления", exact: true }).click();
+  await expect(footer).toContainText("проверка недоступна");
+  await expect(page.getByRole("button", { name: "Обновить выбранную версию" })).toBeDisabled();
 });
 
 test("update owns progress, survives reconnect and reloads exactly once", async ({ page, context }, testInfo) => {

@@ -35,7 +35,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')"
+          tag="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts --limit 100 --json tagName \
+            | python3 scripts/release-image-matrix.py --latest-tag)"
           [[ "${tag}" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?b?$ ]] || { echo "No supported published release tag found" >&2; exit 1; }
           mkdir -p "${RUNNER_TEMP}/published-release"
           gh release download "${tag}" --repo "${GITHUB_REPOSITORY}" \

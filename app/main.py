@@ -573,7 +573,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.94b"
+    return "0.94.1b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
@@ -669,17 +669,20 @@ def update_manifest_from_github_releases(releases: list[Any]) -> dict[str, Any]:
                 "channel": channel,
                 "status": "доступна",
                 "date": str(release.get("published_at") or release.get("created_at") or "")[:10],
-                "recommended": latest[channel] is None,
+                "recommended": False,
                 "archive_url": archive_url,
                 "sha256": sha256,
                 "changelog": body_lines[:20],
             }
         )
-        if latest[channel] is None:
-            latest[channel] = version
-
     if not versions:
         raise ValueError("GitHub releases index has no usable release assets")
+    versions.sort(key=lambda item: product_version_weight(item["version"]), reverse=True)
+    for item in versions:
+        channel = item["channel"]
+        if latest[channel] is None:
+            latest[channel] = item["version"]
+            item["recommended"] = True
     return {
         "ok": True,
         "product": APP_NAME,
@@ -688,18 +691,38 @@ def update_manifest_from_github_releases(releases: list[Any]) -> dict[str, Any]:
     }
 
 
+UPDATE_MANIFEST_CACHE_LOCK = threading.Lock()
+UPDATE_MANIFEST_CACHE: tuple[str, float, dict[str, Any]] | None = None
+
+
 async def load_update_manifest() -> dict[str, Any]:
+    return await asyncio.to_thread(load_update_manifest_cached)
+
+
+def load_update_manifest_cached() -> dict[str, Any]:
+    global UPDATE_MANIFEST_CACHE
+    with UPDATE_MANIFEST_CACHE_LOCK:
+        cached = UPDATE_MANIFEST_CACHE
+        if cached and cached[0] == PRODUCT_UPDATE_MANIFEST_URL and time.monotonic() < cached[1]:
+            return copy.deepcopy(cached[2])
+        manifest = load_update_manifest_fresh()
+        ttl = 15 if manifest.get("manifest_unavailable") else 60
+        UPDATE_MANIFEST_CACHE = (PRODUCT_UPDATE_MANIFEST_URL, time.monotonic() + ttl, copy.deepcopy(manifest))
+        return manifest
+
+
+def load_update_manifest_fresh() -> dict[str, Any]:
     fallback = bundled_update_manifest()
 
     if not PRODUCT_UPDATE_MANIFEST_URL:
         return fallback
 
     try:
-        manifest, _ = await asyncio.to_thread(
-            fetch_remote_json,
+        manifest, _ = fetch_remote_json(
             PRODUCT_UPDATE_MANIFEST_URL,
             timeout_seconds=12.0,
             max_bytes=2 * 1024 * 1024,
+            use_cache=False,
         )
 
         if isinstance(manifest, list):
@@ -4038,7 +4061,7 @@ async def api_product_updates(_: str = Depends(require_auth)) -> JSONResponse:
     manifest["update_enabled"] = PRODUCT_UPDATE_ENABLED
     manifest["update_mode"] = PRODUCT_UPDATE_MODE
     manifest["time"] = now_iso()
-    return JSONResponse(manifest, status_code=200)
+    return JSONResponse(manifest, status_code=200, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/product/update/job")

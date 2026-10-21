@@ -95,6 +95,7 @@ required_files=(
   "portal/scripts/test-service-status.mjs"
   "portal/scripts/test-route-path.mjs"
   "portal/src/App.tsx"
+  "portal/src/components/useProductUpdates.ts"
   "portal/src/components/MikroTikAssistant.tsx"
   "portal/src/components/mikrotikAssistantLogic.ts"
   "portal/src/components/serviceStatusLogic.ts"
@@ -143,6 +144,7 @@ source_required_files=(
   "tests/test_update_lifecycle.py"
   "tests/test_update_failures.py"
   "tests/test_update_storage.py"
+  "tests/test_update_discovery.py"
   "tests/test_state_integrity.py"
 )
 
