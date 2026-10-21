@@ -18,8 +18,8 @@ import threading
 import time
 import uuid
 import zipfile
-from collections.abc import AsyncIterator, Coroutine
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Coroutine, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -30,6 +30,7 @@ import httpx2 as httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
+from app import dns_resolver
 from app.maintenance import ACTIVE_STATUSES, MaintenanceBusy, mutation_lease, read_state
 from app.update_failures import public_failure
 from app.update_storage import RESERVE as UPDATE_DISK_RESERVE, configured_floor, filesystem_reserve
@@ -159,6 +160,15 @@ SERVICE_GEOSITE_MAX_INCLUDES_PER_PROVIDER = int(os.getenv("SERVICE_GEOSITE_MAX_I
 SERVICE_DNS_RESOLVE_DELAY_SECONDS = float(os.getenv("SERVICE_DNS_RESOLVE_DELAY_SECONDS", "0.10"))
 SERVICE_DNS_RESOLVE_RETRIES = int(os.getenv("SERVICE_DNS_RESOLVE_RETRIES", "3"))
 SERVICE_DNS_RESOLVE_RETRY_DELAY_SECONDS = float(os.getenv("SERVICE_DNS_RESOLVE_RETRY_DELAY_SECONDS", "0.50"))
+SERVICE_DNS_QUERY_TIMEOUT_SECONDS = dns_resolver.positive_seconds(
+    os.getenv("SERVICE_DNS_QUERY_TIMEOUT_SECONDS", "5"), "SERVICE_DNS_QUERY_TIMEOUT_SECONDS",
+)
+SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS = dns_resolver.positive_seconds(
+    os.getenv("SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS", "60"), "SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS",
+)
+SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS = dns_resolver.positive_seconds(
+    os.getenv("SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS", "180"), "SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS",
+)
 SERVICE_GEOIP_MAX_PREFIXES_PER_PROVIDER = int(os.getenv("SERVICE_GEOIP_MAX_PREFIXES_PER_PROVIDER", "500"))
 SERVICE_GEOIP_HTTP_TIMEOUT_SECONDS = int(os.getenv("SERVICE_GEOIP_HTTP_TIMEOUT_SECONDS", "20"))
 
@@ -262,6 +272,12 @@ AUTH_SESSIONS: dict[str, dict[str, Any]] = {}
 MAINTENANCE_DIR = Path(os.environ["MAINTENANCE_DIR"]) if os.getenv("MAINTENANCE_DIR") else None
 AUTH_SESSION_FILE = Path(os.environ["AUTH_SESSION_FILE"]) if os.getenv("AUTH_SESSION_FILE") else None
 REMOTE_FETCH_CACHE_DIR = DATA_DIR / "remote_fetch_cache"
+
+
+@contextmanager
+def service_dns_collection() -> Iterator[None]:
+    with dns_resolver.collection_budget(SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS):
+        yield
 
 
 @app.middleware("http")
@@ -2201,6 +2217,7 @@ def collect_prefixes_for_source_names(source_names: list[str]) -> tuple[set[ipad
     return collected, stats
 
 
+@service_dns_collection()
 def collect_prefixes_for_service_ids(service_ids: list[str]) -> tuple[set[ipaddress.IPv4Network], list[dict[str, Any]]]:
     if not service_ids:
         return set(), []
@@ -2298,6 +2315,7 @@ def collapse_networks_by_communities(
     return prefixes, route_communities
 
 
+@service_dns_collection()
 def build_community_route_plan(
     base_prefixes: list[str] | None = None,
     service_prefixes: list[str] | None = None,
@@ -4255,6 +4273,7 @@ def read_route_exclusions_state() -> dict[str, Any]:
     return {"version": 1, "active": active, "pending": pending}
 
 
+@service_dns_collection()
 def collect_route_policy_candidate(exclusions: list[str]) -> tuple[dict[str, list[str]], dict[str, Any]]:
     base_prefixes, source_meta = collect_static_prefixes()
     service_prefixes, service_meta = collect_service_prefixes_for_update()
@@ -4422,6 +4441,7 @@ def validate_community_profile_health(plan: dict[str, Any]) -> None:
         raise RuntimeError(f"community profile route collection incomplete: {failed[:10]}")
 
 
+@service_dns_collection()
 def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", allow_large: bool = False) -> dict[str, Any]:
     if publication_is_paused():
         raise PublicationPaused("Публикация маршрутов приостановлена. Возобновите её явно.")
@@ -4952,6 +4972,9 @@ def build_diagnostics_payload() -> dict[str, Any]:
             "SERVICE_DNS_RESOLVE_DELAY_SECONDS": SERVICE_DNS_RESOLVE_DELAY_SECONDS,
             "SERVICE_DNS_RESOLVE_RETRIES": SERVICE_DNS_RESOLVE_RETRIES,
             "SERVICE_DNS_RESOLVE_RETRY_DELAY_SECONDS": SERVICE_DNS_RESOLVE_RETRY_DELAY_SECONDS,
+            "SERVICE_DNS_QUERY_TIMEOUT_SECONDS": SERVICE_DNS_QUERY_TIMEOUT_SECONDS,
+            "SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS": SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS,
+            "SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS": SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS,
             "SERVICE_GEOIP_MAX_PREFIXES_PER_PROVIDER": SERVICE_GEOIP_MAX_PREFIXES_PER_PROVIDER,
             "SERVICE_GEOIP_HTTP_TIMEOUT_SECONDS": SERVICE_GEOIP_HTTP_TIMEOUT_SECONDS,
         },
@@ -8488,23 +8511,8 @@ def parse_iso_ts(value: str | None) -> float | None:
         return None
 
 
-def dns_resolve_ipv4(
-    domain: str,
-    cache: dict[str, Any] | None = None,
-) -> tuple[set[ipaddress.IPv4Network], dict[str, Any]]:
-    import socket
-
-    if cache is None:
-        with SERVICE_DNS_CACHE_LOCK:
-            owned_cache = read_service_dns_cache()
-            result = dns_resolve_ipv4(domain, owned_cache)
-            write_service_dns_cache(owned_cache)
-            return result
-
+def lookup_service_dns(domain: str, deadline: float) -> tuple[set[str], dict[str, Any]]:
     domain = domain.strip().lower()
-    now_ts = time.time()
-    now_value = now_iso()
-
     stat = {
         "domain": domain,
         "ips": [],
@@ -8518,44 +8526,38 @@ def dns_resolve_ipv4(
         "resolve_attempts": 0,
         "resolve_errors": [],
         "resolve_status": "unavailable",
-        "checked_at": now_value,
+        "checked_at": None,
         "last_success_at": None,
         "cache_oldest_at": None,
         "error": None,
         "warning": None,
     }
 
-    domain_cache = cache["domains"].get(domain, {})
-
-    if not isinstance(domain_cache, dict):
-        domain_cache = {}
-
-    cached_ips = domain_cache.get("ips", {})
-    if not isinstance(cached_ips, dict):
-        cached_ips = {}
-
     current_ips: set[str] = set()
-    resolve_ok = False
-
     max_attempts = max(1, SERVICE_DNS_RESOLVE_RETRIES)
+    query_deadline = min(deadline, time.monotonic() + SERVICE_DNS_QUERY_TIMEOUT_SECONDS)
 
     for attempt in range(1, max_attempts + 1):
-        stat["resolve_attempts"] = attempt
-
         try:
-            results = socket.getaddrinfo(domain, None, socket.AF_INET, socket.SOCK_STREAM)
-            resolved_ips = {item[4][0] for item in results}
+            timeout = dns_resolver.remaining(query_deadline)
+            stat["resolve_attempts"] = attempt
+            resolved_ips = set(dns_resolver.resolve_ipv4(domain, timeout))
+            dns_resolver.remaining(query_deadline)
             current_ips = {
                 ip
                 for ip in resolved_ips
                 if parse_prefix(f"{ip}/32") is not None
             }
             stat["ignored"] += len(resolved_ips - current_ips)
-            resolve_ok = True
             stat["resolve_status"] = "resolved"
             stat["current_ips"] = sorted(current_ips)
             break
 
+        except TimeoutError:
+            stat["resolve_status"] = "budget_exceeded" if time.monotonic() >= deadline else "timeout"
+            stat["warning"] = "Превышено время ожидания DNS."
+            stat["resolve_errors"].append(stat["warning"])
+            break
         except Exception as e:
             stat["resolve_status"] = (
                 "not_found" if isinstance(e, socket.gaierror) and e.errno == socket.EAI_NONAME
@@ -8573,10 +8575,42 @@ def dns_resolve_ipv4(
             stat["resolve_errors"].append(error_text)
 
             if attempt < max_attempts:
-                time.sleep(SERVICE_DNS_RESOLVE_RETRY_DELAY_SECONDS)
+                try:
+                    dns_resolver.bounded_sleep(SERVICE_DNS_RESOLVE_RETRY_DELAY_SECONDS, query_deadline)
+                except TimeoutError:
+                    stat["resolve_status"] = "budget_exceeded" if time.monotonic() >= deadline else "timeout"
+                    stat["warning"] = "Превышено время ожидания DNS."
+                    break
                 continue
 
             stat["warning"] = error_text
+
+    stat["checked_at"] = now_iso()
+    return current_ips, stat
+
+
+def apply_service_dns_lookup(
+    cache: dict[str, Any],
+    current_ips: set[str],
+    lookup_stat: dict[str, Any],
+) -> tuple[set[ipaddress.IPv4Network], dict[str, Any]]:
+    stat = copy.deepcopy(lookup_stat)
+    domain = stat["domain"]
+    now_ts = time.time()
+    now_value = stat["checked_at"]
+    domain_cache = copy.deepcopy(cache["domains"].get(domain, {}))
+    if not isinstance(domain_cache, dict):
+        domain_cache = {}
+    superseded = (parse_iso_ts(domain_cache.get("last_resolve_at")) or 0) > (parse_iso_ts(now_value) or 0)
+    if superseded:
+        current_ips = set()
+        stat["current_ips"] = []
+        stat["resolve_status"] = "superseded"
+        stat["warning"] = "Использован более свежий сохранённый результат DNS."
+    resolve_ok = stat["resolve_status"] == "resolved"
+    cached_ips = domain_cache.get("ips", {})
+    if not isinstance(cached_ips, dict):
+        cached_ips = {}
 
     # Update current DNS answers immediately.
     if resolve_ok:
@@ -8644,7 +8678,8 @@ def dns_resolve_ipv4(
     domain_cache["last_resolve_ok"] = resolve_ok
     domain_cache["last_error"] = stat["error"]
     domain_cache["last_warning"] = stat["warning"]
-    cache["domains"][domain] = domain_cache
+    if not superseded:
+        cache["domains"][domain] = domain_cache
 
     networks: set[ipaddress.IPv4Network] = set()
 
@@ -8673,6 +8708,69 @@ def dns_resolve_ipv4(
     stat["cache_oldest_at"] = min(valid_cached_times, key=parse_iso_ts) if valid_cached_times else None
 
     return networks, stat
+
+
+def dns_resolve_ipv4(
+    domain: str,
+    cache: dict[str, Any] | None = None,
+) -> tuple[set[ipaddress.IPv4Network], dict[str, Any]]:
+    current_ips, stat = lookup_service_dns(domain, dns_resolver.provider_deadline(SERVICE_DNS_QUERY_TIMEOUT_SECONDS))
+    if cache is not None:
+        return apply_service_dns_lookup(cache, current_ips, stat)
+    with SERVICE_DNS_CACHE_LOCK:
+        owned_cache = read_service_dns_cache()
+        result = apply_service_dns_lookup(owned_cache, current_ips, stat)
+        write_service_dns_cache(owned_cache)
+        return result
+
+
+def collect_service_dns_domains(
+    domains: list[str], stat: dict[str, Any], *, delay_seconds: float = 0,
+) -> set[ipaddress.IPv4Network]:
+    started = time.monotonic()
+    deadline = dns_resolver.provider_deadline(SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS)
+    pending: list[tuple[set[str], dict[str, Any]]] = []
+    selected = [str(domain).strip().lower() for domain in domains if str(domain).strip()]
+    stat["ignored"] += len(domains) - len(selected)
+    stat["dns_query_timeout_seconds"] = SERVICE_DNS_QUERY_TIMEOUT_SECONDS
+    stat["dns_provider_timeout_seconds"] = SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS
+    stat["dns_budget_exceeded"] = False
+    for domain in selected:
+        try:
+            dns_resolver.remaining(deadline)
+            if delay_seconds > 0:
+                dns_resolver.bounded_sleep(delay_seconds, deadline)
+            result = lookup_service_dns(domain, deadline)
+            pending.append(result)
+            if result[1]["resolve_status"] == "budget_exceeded":
+                raise dns_resolver.DnsBudgetExceeded()
+        except dns_resolver.DnsBudgetExceeded:
+            stat["dns_budget_exceeded"] = True
+            stat["error"] = "Исчерпан бюджет времени DNS-сбора. Применение неполного набора маршрутов заблокировано."
+            break
+
+    collected: set[ipaddress.IPv4Network] = set()
+    # Network waits happen outside the cache lock. Apply observations to the
+    # latest cache atomically so parallel providers do not overwrite each other.
+    if pending:
+        with SERVICE_DNS_CACHE_LOCK:
+            cache = read_service_dns_cache()
+            for current_ips, lookup_stat in pending:
+                prefixes, domain_stat = apply_service_dns_lookup(cache, current_ips, lookup_stat)
+                collected.update(prefixes)
+                stat["domain_stats"].append(domain_stat)
+            write_service_dns_cache(cache)
+    failed_without_cache = any(
+        item.get("resolve_status") in {"timeout", "budget_exceeded", "temporary_failure", "unavailable", "superseded"}
+        and not item.get("ips")
+        for item in stat["domain_stats"]
+    )
+    if failed_without_cache and not stat.get("error"):
+        stat["error"] = "DNS-сбор не завершён, пригодного кеша нет. Применение неполного набора маршрутов заблокировано."
+    stat["dns_checked_domain_count"] = len(pending)
+    stat["dns_skipped_domain_count"] = len(selected) - len(pending)
+    stat["dns_duration_seconds"] = round(time.monotonic() - started, 3)
+    return collected
 
 
 def normalize_geosite_domain(value: str) -> str | None:
@@ -8978,18 +9076,7 @@ def collect_geosite_plain_provider(provider: dict[str, Any]) -> tuple[set[ipaddr
     stat["selected_domain_count"] = len(selected_domains)
     stat["truncated"] = len(domains) > len(selected_domains)
 
-    collected: set[ipaddress.IPv4Network] = set()
-
-    with SERVICE_DNS_CACHE_LOCK:
-        dns_cache = read_service_dns_cache()
-        for domain in selected_domains:
-            if SERVICE_DNS_RESOLVE_DELAY_SECONDS > 0:
-                time.sleep(SERVICE_DNS_RESOLVE_DELAY_SECONDS)
-
-            domain_prefixes, domain_stat = dns_resolve_ipv4(domain, dns_cache)
-            collected.update(domain_prefixes)
-            stat["domain_stats"].append(domain_stat)
-        write_service_dns_cache(dns_cache)
+    collected = collect_service_dns_domains(selected_domains, stat, delay_seconds=SERVICE_DNS_RESOLVE_DELAY_SECONDS)
 
     stat["accepted"] = len(collected)
     stat["ignored"] = int(stat["ignored_lines"])
@@ -9011,6 +9098,7 @@ def collect_geosite_plain_provider(provider: dict[str, Any]) -> tuple[set[ipaddr
     return collected, stat
 
 
+@service_dns_collection()
 def resolve_service_by_id(service_id: str) -> dict[str, Any]:
     catalog = read_service_catalog()
 
@@ -9398,18 +9486,7 @@ def collect_service_provider(provider: dict[str, Any]) -> tuple[set[ipaddress.IP
             stat["error"] = "domains must be a list"
             return collected, stat
 
-        with SERVICE_DNS_CACHE_LOCK:
-            dns_cache = read_service_dns_cache()
-            for item in domains:
-                domain = str(item).strip().lower()
-                if not domain:
-                    stat["ignored"] += 1
-                    continue
-
-                domain_prefixes, domain_stat = dns_resolve_ipv4(domain, dns_cache)
-                collected.update(domain_prefixes)
-                stat["domain_stats"].append(domain_stat)
-            write_service_dns_cache(dns_cache)
+        collected = collect_service_dns_domains(domains, stat)
 
         stat["accepted"] = len(collected)
         stat["ignored"] += sum(int(item.get("ignored", 0)) for item in stat["domain_stats"])
@@ -9438,6 +9515,7 @@ def collect_service_provider(provider: dict[str, Any]) -> tuple[set[ipaddress.IP
     return collected, stat
 
 
+@service_dns_collection()
 def build_service_routes(enabled_only: bool = True) -> dict[str, Any]:
     catalog = read_service_catalog()
     state = read_service_state()
@@ -9526,7 +9604,7 @@ def build_service_routes(enabled_only: bool = True) -> dict[str, Any]:
     write_json_atomic(SERVICE_CACHE_FILE, result)
     write_prefixes_file(SERVICE_ROUTES_FILE, prefixes)
 
-    if prefixes:
+    if prefixes and not any(item.get("error") for item in service_stats):
         write_prefixes_file(SERVICE_LAST_GOOD_ROUTES_FILE, prefixes)
 
     return result
@@ -9992,6 +10070,7 @@ def network_is_covered_by_any(
     return False
 
 
+@service_dns_collection()
 def build_service_apply_preview() -> dict[str, Any]:
     base_prefixes, base_meta = collect_static_prefixes()
     service_result = build_service_routes(enabled_only=True)

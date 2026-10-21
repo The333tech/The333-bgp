@@ -60,7 +60,7 @@ class GeositeCompletenessTests(unittest.TestCase):
             patch.object(main, "read_service_dns_cache", return_value={"domains": {}}),
             patch.object(main, "write_service_dns_cache"),
             patch.object(main, "SERVICE_DNS_RESOLVE_DELAY_SECONDS", 0),
-            patch.object(main, "dns_resolve_ipv4", return_value=({ipaddress.ip_network("8.8.8.8/32")}, {"domain": "first.example"})) as dns,
+            patch.object(main.dns_resolver, "resolve_ipv4", return_value=["8.8.8.8"]) as dns,
         ):
             routes, stat = main.collect_geosite_plain_provider({"max_domains": 1})
         self.assertEqual(routes, {ipaddress.ip_network("8.8.8.8/32")})
