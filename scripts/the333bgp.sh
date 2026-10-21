@@ -1063,6 +1063,12 @@ if isinstance(payload, dict):
 if not isinstance(payload, list):
     raise SystemExit("update index must be an object or GitHub releases array")
 
+def weight(value):
+    raw = str(value).lstrip("vV")
+    match = re.match(r"^(\d+(?:\.\d+)*)", raw)
+    numbers = [int(part) for part in match.group(1).split(".")] if match else []
+    return (*(numbers + [0, 0, 0])[:3], -1 if re.search(r"(?:b|-beta(?:\.|$))", raw, re.I) else 0)
+
 versions = []
 latest = {"stable": None, "beta": None}
 for release in payload[:20]:
@@ -1087,15 +1093,17 @@ for release in payload[:20]:
         "title": str(release.get("name") or f"v{version}"),
         "channel": channel,
         "date": str(release.get("published_at") or release.get("created_at") or "")[:10],
-        "recommended": latest[channel] is None,
+        "recommended": False,
         "archive_url": archive_url,
         "sha256": sha256,
     })
-    if latest[channel] is None:
-        latest[channel] = version
-
 if not versions:
     raise SystemExit("GitHub releases index has no usable release assets")
+versions.sort(key=lambda item: weight(item["version"]), reverse=True)
+for item in versions:
+    if latest[item["channel"]] is None:
+        latest[item["channel"]] = item["version"]
+        item["recommended"] = True
 print(json.dumps({"product": "The333-BGP", "latest": latest, "versions": versions}, ensure_ascii=False))
 ' < "${manifest_file}")"; then
     rm -f "${manifest_file}"
