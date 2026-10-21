@@ -553,7 +553,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 CHANNEL=beta
 
                 fetch_manifest() { printf '%s\n' '{"versions":[]}'; }
-                select_version_json() { printf '%s\n' '{"version":"9.9b"}'; }
+                select_version_json() { cat >/dev/null; printf '%s\n' '{"version":"9.9b"}'; }
                 version_is_newer() { return 0; }
                 check_update_disk_space() { printf 'disk-preflight\n' >> "${event_log}"; }
                 make_backup() {
@@ -651,7 +651,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 CHANNEL=beta
 
                 fetch_manifest() { printf '%s\n' '{"versions":[]}'; }
-                select_version_json() { printf '%s\n' '{"version":"9.9b"}'; }
+                select_version_json() { cat >/dev/null; printf '%s\n' '{"version":"9.9b"}'; }
                 version_is_newer() { return 0; }
                 runtime_image_mode() { printf 'prebuilt\n'; }
                 check_update_disk_space() { printf 'disk-preflight\n' >> "${event_log}"; }
@@ -753,7 +753,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
                 CHANNEL=beta
 
                 fetch_manifest() { printf '%s\n' '{"versions":[]}'; }
-                select_version_json() { printf '%s\n' '{"version":"9.9b"}'; }
+                select_version_json() { cat >/dev/null; printf '%s\n' '{"version":"9.9b"}'; }
                 version_is_newer() { return 0; }
                 check_update_disk_space() { printf 'disk-preflight\n' >> "${event_log}"; }
                 make_backup() { printf 'backup\n' >> "${event_log}"; }
@@ -1212,7 +1212,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
             scenario="$5"
             NON_INTERACTIVE=true
             fetch_manifest() { printf '{}\n'; }
-            select_version_json() { printf '{"version":"9.9b"}\n'; }
+            select_version_json() { cat >/dev/null; printf '{"version":"9.9b"}\n'; }
             version_is_newer() { return 0; }
             check_update_disk_space() { return 0; }
             check_release_tree_writable() { return 0; }
@@ -1239,6 +1239,7 @@ class InstallerUpgradeFlowTests(unittest.TestCase):
             log = self.root / f"retention-{scenario}.log"
             result = subprocess.run(["bash", str(harness), str(patched), str(self.project), str(log), str(release), scenario],
                                     capture_output=True, text=True, check=False)
+            self.assertTrue(log.exists(), msg=f"returncode: {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
             events = log.read_text().splitlines()
             if scenario in {"success", "cleanup-fail"}:
                 self.assertEqual(result.returncode, 0, msg=result.stderr)
