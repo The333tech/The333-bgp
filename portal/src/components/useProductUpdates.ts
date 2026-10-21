@@ -64,7 +64,7 @@ export function useProductUpdates(auth: AuthState | null, locked: boolean) {
         .then((payload) => {
           if (!active) return;
           failed = !payload.ok || Boolean(payload.manifest_unavailable);
-          setUpdates(payload);
+          setUpdates(failed ? { ...payload, manifest_unavailable: true } : payload);
           setError(null);
         })
         .catch(() => {

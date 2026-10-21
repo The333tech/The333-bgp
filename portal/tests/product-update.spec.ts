@@ -3,7 +3,7 @@ import { test, expect, BrowserContext, Page } from "playwright/test";
 async function fixture(context: BrowserContext) {
   const session = { csrf_token: "test", expires_at: "2099-01-01T00:00:00Z" };
   const server = { operation: null as any, posts: 0, offline: false, expired: false, ready: false, reject: false,
-    omitLatest: false, latestBeta: "0.85b", updateChecks: 0, manifestOffline: false };
+    omitLatest: false, latestBeta: "0.85b", updateChecks: 0, manifestOffline: false, manifestInvalid: false };
   await context.route("**/backend/**", async (route) => {
     const path = new URL(route.request().url()).pathname.replace("/backend", "");
     if (path === "/auth/session") return route.fulfill({ json: session });
@@ -19,7 +19,7 @@ async function fixture(context: BrowserContext) {
       server.updateChecks += 1;
       if (server.manifestOffline) return route.fulfill({ status: 503, body: "Unavailable" });
       return route.fulfill({ json: {
-      ok: true, current_version: "0.84.1b", current_channel: "beta", update_enabled: true,
+      ok: !server.manifestInvalid, current_version: "0.84.1b", current_channel: "beta", update_enabled: true,
       manifest_url: "https://example.com/manifest.json",
       latest: server.omitLatest ? undefined : { stable: "0.84", beta: server.latestBeta },
       versions: [
@@ -140,6 +140,18 @@ test("failed release check is not shown as current and recovers automatically", 
   await page.clock.fastForward(61_000);
   await expect(footer).toContainText("+NEW v0.86b");
   await expect(page.getByRole("button", { name: "Обновить выбранную версию" })).toBeEnabled();
+});
+
+test("a successful HTTP response with a failed manifest never claims the footer is current", async ({ page, context }) => {
+  const server = await fixture(context);
+  await page.goto("/");
+  const footer = page.locator(".sidebar-update-button");
+  await expect(footer).toContainText("+NEW v0.85b");
+  await footer.click();
+  server.manifestInvalid = true;
+  await page.getByRole("button", { name: "Проверить обновления", exact: true }).click();
+  await expect(footer).toContainText("проверка недоступна");
+  await expect(page.getByRole("button", { name: "Обновить выбранную версию" })).toBeDisabled();
 });
 
 test("update owns progress, survives reconnect and reloads exactly once", async ({ page, context }, testInfo) => {
