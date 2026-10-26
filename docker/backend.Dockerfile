@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS gobgp-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS gobgp-builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -16,7 +16,7 @@ RUN apk add --no-cache ca-certificates git
 COPY docker/build-gobgp.sh /usr/local/bin/build-gobgp
 RUN /bin/sh /usr/local/bin/build-gobgp
 
-FROM python:3.14.8-alpine3.24@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+FROM python:3.14.9-alpine3.24@sha256:dbeb11d16bb95c3a7e3c25c842cb9f20cbc8c18f8be0461a4a0dcc861ad386a0
 
 ARG PRODUCT_VERSION=dev
 ARG VCS_REF=unknown
