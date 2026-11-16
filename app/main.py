@@ -20,6 +20,7 @@ import uuid
 import zipfile
 from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -267,6 +268,7 @@ RUNTIME_SETTINGS_LOCK = threading.RLock()
 ROUTE_PROBE_LOCK = threading.Lock()
 ROUTE_PROBE_LAST_AT = 0.0
 RUNNING_JOB_IDS: set[str] = set()
+ROUTE_JOB_ID: ContextVar[str | None] = ContextVar("route_job_id", default=None)
 AUTH_FAILURES: dict[str, dict[str, float | int]] = {}
 AUTH_SESSIONS: dict[str, dict[str, Any]] = {}
 MAINTENANCE_DIR = Path(os.environ["MAINTENANCE_DIR"]) if os.getenv("MAINTENANCE_DIR") else None
@@ -1263,53 +1265,93 @@ def publication_is_paused() -> bool:
     return read_publication_control()["mode"] != "publishing"
 
 
-def write_publication_control(mode: str, confirmed: bool) -> dict[str, Any]:
+def write_publication_control(mode: str, confirmed: bool, resume_peers: list[str] | None = None) -> dict[str, Any]:
     value = {"mode": mode, "confirmed": confirmed, "updated_at": now_iso()}
+    if resume_peers is not None:
+        value["resume_peers"] = resume_peers
     write_json_atomic(PUBLICATION_CONTROL_FILE, value)
     return value
 
 
-def gobgp_peer_admin_state() -> str:
-    try:
-        result = run_cmd(gobgp_cli_args(["-j", "neighbor", PEER_ADDRESS]), timeout=20)
-    except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
+def gobgp_peer_inventory() -> dict[str, int]:
+    result = run_cmd(gobgp_cli_args(["-j", "neighbor"]), timeout=10)
     if result.returncode != 0:
-        return "unknown"
-    try:
-        peer = json.loads(result.stdout)
-        if not isinstance(peer, dict):
-            return "unknown"
-        state = peer.get("state", {})
-        if not isinstance(state, dict) or state.get("neighbor_address") != PEER_ADDRESS:
-            return "unknown"
-        admin = state.get("admin_state")
-        if admin == 2:
-            return "down"
-        if admin == 1:
-            return "up"
-    except (ValueError, TypeError):
-        pass
-    return "unknown"
+        raise RuntimeError("GoBGP peer inventory unavailable")
+    entries = json.loads(result.stdout)
+    if not isinstance(entries, list):
+        raise ValueError("Invalid GoBGP peer inventory")
+    inventory: dict[str, int] = {}
+    for peer in entries:
+        state = peer["state"]
+        raw = state["neighbor_address"]
+        admin = state.get("admin_state", 0)
+        if not isinstance(raw, str) or type(admin) is not int or admin not in (0, 1, 2, 3):
+            raise ValueError("Invalid GoBGP peer state")
+        address = str(ipaddress.ip_address(raw))
+        if address in inventory:
+            raise ValueError("Duplicate GoBGP peer")
+        inventory[address] = admin
+    return inventory
 
 
-def ensure_gobgp_neighbor_disabled() -> None:
-    if gobgp_peer_admin_state() == "down":
+def ensure_gobgp_peers_disabled(inventory: dict[str, int] | None = None) -> None:
+    peers = gobgp_peer_inventory() if inventory is None else inventory
+    pending = [address for address, admin in peers.items() if admin != 2]
+    if not pending:
         return
-    result = run_cmd(gobgp_cli_args(["neighbor", PEER_ADDRESS, "disable"]), timeout=20)
-    if result.returncode != 0 or gobgp_peer_admin_state() != "down":
-        raise RuntimeError("GoBGP did not confirm that the configured peer is disabled")
+    # Try all peers even when one command fails; rely on the final inventory
+    # rather than a command's exit code to confirm the pause.
+    for address in pending:
+        try:
+            run_cmd(gobgp_cli_args(["neighbor", address, "disable"]), timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    if any(admin != 2 for admin in gobgp_peer_inventory().values()):
+        raise RuntimeError("GoBGP did not confirm that all peers are disabled")
+
+
+def reassert_publication_pause() -> None:
+    with ROUTE_MUTATION_LOCK:
+        state = read_publication_control()
+        if (state["mode"] in {"paused", "unconfirmed"} and state.get("updated_at")
+                and "resume_peers" not in state):
+            pause_publication()
+        elif state["mode"] != "publishing":
+            ensure_gobgp_peers_disabled()
+
+
+def publication_resume_peers(state: dict[str, Any], inventory: dict[str, int]) -> list[str] | None:
+    peers = state.get("resume_peers")
+    if peers is None and state["mode"] == "paused" and state.get("confirmed"):
+        # Old state files only paused the configured peer.
+        address = str(ipaddress.ip_address(PEER_ADDRESS))
+        return [address] if address in inventory else []
+    if peers is None:
+        return None
+    if not isinstance(peers, list) or any(not isinstance(address, str) for address in peers):
+        raise ValueError("Invalid saved BGP peer list")
+    return sorted({str(ipaddress.ip_address(address)) for address in peers})
 
 
 def pause_publication() -> dict[str, Any]:
     with ROUTE_MUTATION_LOCK:
-        write_publication_control("pausing", False)
+        previous = read_publication_control()
+        resume_peers = None
         try:
-            ensure_gobgp_neighbor_disabled()
+            inventory = gobgp_peer_inventory()
+            saved = publication_resume_peers(previous, inventory)
+            # Legacy pauses have no snapshot; include the original peer and
+            # any peers still enabled when upgrading the pause to global.
+            if previous["mode"] == "publishing" or saved is None or "resume_peers" not in previous:
+                resume_peers = sorted(set(saved or ()) | {address for address, admin in inventory.items() if admin == 1})
+            else:
+                resume_peers = saved
+            write_publication_control("pausing", False, resume_peers)
+            ensure_gobgp_peers_disabled(inventory)
         except Exception:
-            write_publication_control("unconfirmed", False)
+            write_publication_control("unconfirmed", False, resume_peers if resume_peers is not None else previous.get("resume_peers"))
             raise
-        return write_publication_control("paused", True)
+        return write_publication_control("paused", True, resume_peers)
 
 
 def resume_publication() -> dict[str, Any]:
@@ -1317,35 +1359,55 @@ def resume_publication() -> dict[str, Any]:
         state = read_publication_control()
         if state["mode"] == "publishing":
             return state
-        if state["mode"] != "paused" or gobgp_peer_admin_state() != "down":
+        if state["mode"] != "paused":
             raise RuntimeError("Остановка BGP не подтверждена; повторите остановку перед возобновлением")
+        inventory = gobgp_peer_inventory()
+        if any(admin != 2 for admin in inventory.values()):
+            raise RuntimeError("Остановка BGP не подтверждена; повторите остановку перед возобновлением")
+        resume_peers = publication_resume_peers(state, inventory) or []
+        if not set(resume_peers).issubset(inventory):
+            raise RuntimeError("GoBGP peer inventory changed during the pause")
+        if not resume_peers:
+            return write_publication_control("publishing", True)
         prefixes, communities = read_last_good_snapshot()
         if len(prefixes) < MIN_PREFIXES_TO_APPLY:
             raise RuntimeError("Нет проверенного последнего набора маршрутов для возобновления")
-        write_publication_control("resuming", False)
+        write_publication_control("resuming", False, resume_peers)
         try:
             _apply_prefixes_locked(prefixes, route_communities=communities, allow_while_paused=True)
-            result = run_cmd(gobgp_cli_args(["neighbor", PEER_ADDRESS, "enable"]), timeout=20)
-            if result.returncode != 0 or gobgp_peer_admin_state() != "up":
-                raise RuntimeError("GoBGP did not confirm that the configured peer is enabled")
+            for address in resume_peers:
+                result = run_cmd(gobgp_cli_args(["neighbor", address, "enable"]), timeout=5)
+                if result.returncode != 0:
+                    raise RuntimeError("GoBGP peer enable failed")
+            current = gobgp_peer_inventory()
+            expected = {address: 1 if address in resume_peers else 2 for address in inventory}
+            if current != expected:
+                raise RuntimeError("GoBGP did not confirm the expected peer states")
             return write_publication_control("publishing", True)
         except Exception:
             try:
-                ensure_gobgp_neighbor_disabled()
-                write_publication_control("paused", True)
+                ensure_gobgp_peers_disabled()
+                write_publication_control("paused", True, resume_peers)
             except Exception:
-                write_publication_control("unconfirmed", False)
+                write_publication_control("unconfirmed", False, resume_peers)
             raise
 
 
 def publication_status() -> dict[str, Any]:
     state = read_publication_control()
-    peer_state = gobgp_peer_admin_state()
+    try:
+        inventory = gobgp_peer_inventory()
+        states = set(inventory.values())
+        peer_state = "down" if states <= {2} else "up" if 1 in states else "unknown"
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError, KeyError, TypeError):
+        inventory = None
+        peer_state = "unknown"
     return {
         "mode": state["mode"],
         "confirmed": state["mode"] == "paused" and peer_state == "down",
         "peer_admin_state": peer_state,
         "peer_address": PEER_ADDRESS,
+        "peer_count": len(inventory) if inventory is not None else None,
         "updated_at": state.get("updated_at"),
     }
 
@@ -1361,7 +1423,7 @@ async def api_publication_pause(_: str = Depends(require_auth)) -> JSONResponse:
         await asyncio.to_thread(pause_publication)
     except Exception as exc:
         log_exception("BGP publication pause failed", exc)
-        return JSONResponse({"detail": "Не удалось подтвердить остановку BGP. Проверьте состояние пира на MikroTik.",
+        return JSONResponse({"detail": "Не удалось подтвердить остановку всех BGP-пиров. Проверьте состояние GoBGP и роутеров.",
                              "publication": publication_status()}, status_code=503)
     return JSONResponse(publication_status())
 
@@ -3284,6 +3346,7 @@ async def run_background_job(job_id: str, kind: str, target: Any) -> None:
     if not claim_queued_job(job_id):
         return
 
+    token = ROUTE_JOB_ID.set(job_id if kind == "route_update" else None)
     try:
         if kind == "product_update":
             result = await asyncio.to_thread(target)
@@ -3317,6 +3380,7 @@ async def run_background_job(job_id: str, kind: str, target: Any) -> None:
             },
         )
     finally:
+        ROUTE_JOB_ID.reset(token)
         RUNNING_JOB_IDS.discard(job_id)
 
 
@@ -3938,7 +4002,7 @@ def _restore_system_backup_locked(backup_name: str, apply_routes: bool = True) -
         )
 
         if publication_is_paused():
-            ensure_gobgp_neighbor_disabled()
+            reassert_publication_pause()
 
         run_data_migrations()
         ensure_sources_file()
@@ -4441,6 +4505,15 @@ def validate_community_profile_health(plan: dict[str, Any]) -> None:
         raise RuntimeError(f"community profile route collection incomplete: {failed[:10]}")
 
 
+def record_route_job_stage(stage: str) -> None:
+    job_id = ROUTE_JOB_ID.get()
+    if job_id is not None:
+        try:
+            update_job_record(job_id, {"stage": stage, "progress_percent": None})
+        except (OSError, RuntimeError):
+            LOGGER.warning("Unable to record route job stage")
+
+
 @service_dns_collection()
 def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", allow_large: bool = False) -> dict[str, Any]:
     if publication_is_paused():
@@ -4450,10 +4523,13 @@ def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", 
         raise RoutePolicyReviewRequired("exclusions_incomplete")
     started = time.time()
 
+    record_route_job_stage("Сбор основных списков маршрутов")
     prefixes, meta = collect_static_prefixes()
 
+    record_route_job_stage("Сбор маршрутов модулей")
     service_prefixes, service_meta = collect_service_prefixes_for_update()
     collection_health = validate_route_collection_health(meta, service_meta)
+    record_route_job_stage("Расчёт и проверка набора маршрутов")
     community_plan = build_community_route_plan(prefixes, service_prefixes)
     validate_community_profile_health(community_plan)
     route_communities, exclusion_stats = subtract_exclusions(
@@ -4500,6 +4576,7 @@ def _update_now_locked(force_reannounce: bool = False, trigger: str = "manual", 
         safety.setdefault("warnings", [])
         safety["warnings"].append(f"large update allowed: {len(prefixes)} > MAX_PREFIXES={MAX_PREFIXES}")
 
+    record_route_job_stage("Применение и проверка маршрутов в GoBGP")
     apply_result = apply_prefixes(
         prefixes,
         force_reannounce=force_reannounce,
@@ -4642,7 +4719,7 @@ async def automatic_backup_loop() -> None:
 async def startup_update_once() -> None:
     if publication_is_paused():
         try:
-            await asyncio.to_thread(ensure_gobgp_neighbor_disabled)
+            await asyncio.to_thread(reassert_publication_pause)
         except Exception as exc:
             log_exception("startup publication pause could not be confirmed", exc)
         return
@@ -4685,7 +4762,7 @@ async def startup_update_once() -> None:
 
 def restore_after_gobgp_recovery() -> dict[str, Any]:
     if publication_is_paused():
-        ensure_gobgp_neighbor_disabled()
+        reassert_publication_pause()
         return {"ok": True, "mode": "publication_paused", "time": now_iso()}
     result = apply_last_good(False, "gobgp_recovery")
     return {
@@ -4710,7 +4787,7 @@ async def gobgp_recovery_loop() -> None:
             continue
         if publication_is_paused():
             try:
-                await asyncio.to_thread(ensure_gobgp_neighbor_disabled)
+                await asyncio.to_thread(reassert_publication_pause)
                 recovery_pending = False
             except Exception as exc:
                 log_exception("publication pause reassertion failed", exc)

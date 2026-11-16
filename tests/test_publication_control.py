@@ -21,28 +21,29 @@ class PublicationControlTests(unittest.TestCase):
         self.path_patch.start()
         self.addCleanup(self.path_patch.stop)
 
-    def test_pause_disables_only_configured_peer_and_survives_repeated_call(self):
-        state = {"admin": "up"}
+    def test_pause_disables_all_live_peers_and_survives_repeated_call(self):
+        state = {"192.0.2.1": 1, "2001:db8::10": 1, "192.0.2.3": 2}
         commands = []
 
         def cli(args, timeout=20):
             commands.append(args)
             if args[-1] == "disable":
-                state["admin"] = "down"
+                state[args[-2]] = 2
             return subprocess.CompletedProcess(args, 0, "", "")
 
         with patch.object(main, "run_cmd", side_effect=cli), patch.object(
-            main, "gobgp_peer_admin_state", side_effect=lambda: state["admin"]
+            main, "gobgp_peer_inventory", side_effect=lambda: dict(state)
         ):
             first = main.pause_publication()
             self.assertEqual(first["mode"], "paused")
             self.assertEqual(main.read_publication_control()["mode"], "paused")
             main.pause_publication()
-        self.assertEqual(sum(args[-1] == "disable" for args in commands), 1)
-        self.assertTrue(any(args[-2:] == [main.PEER_ADDRESS, "disable"] for args in commands))
+        self.assertEqual([args[-2] for args in commands if args[-1] == "disable"], ["192.0.2.1", "2001:db8::10"])
+        self.assertEqual(first["resume_peers"], ["192.0.2.1", "2001:db8::10"])
+        self.assertEqual(main.read_publication_control()["resume_peers"], first["resume_peers"])
 
     def test_pause_failure_never_reports_confirmed(self):
-        with patch.object(main, "gobgp_peer_admin_state", return_value="unknown"), patch.object(
+        with patch.object(main, "gobgp_peer_inventory", return_value={"192.0.2.1": 1}), patch.object(
             main, "run_cmd", return_value=subprocess.CompletedProcess([], 1, "", "offline")
         ):
             with self.assertRaises(RuntimeError):
@@ -50,6 +51,40 @@ class PublicationControlTests(unittest.TestCase):
         state = main.read_publication_control()
         self.assertEqual(state["mode"], "unconfirmed")
         self.assertFalse(state["confirmed"])
+
+    def test_partial_failure_still_attempts_all_peers_and_retry_preserves_original_snapshot(self):
+        state = {"192.0.2.1": 1, "192.0.2.2": 1, "192.0.2.3": 2}
+        commands = []
+        fail_first = True
+
+        def cli(args, timeout=20):
+            target = args[-2]
+            commands.append(target)
+            if target == "192.0.2.1" and fail_first:
+                raise subprocess.TimeoutExpired(args, timeout)
+            state[target] = 2
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with patch.object(main, "gobgp_peer_inventory", side_effect=lambda: dict(state)), patch.object(main, "run_cmd", side_effect=cli):
+            with self.assertRaises(RuntimeError):
+                main.pause_publication()
+            self.assertEqual(commands, ["192.0.2.1", "192.0.2.2"])
+            fail_first = False
+            self.assertEqual(main.pause_publication()["resume_peers"], ["192.0.2.1", "192.0.2.2"])
+
+    def test_retry_after_unavailable_inventory_records_peers_before_disabling(self):
+        address = "192.0.2.1"
+        with patch.object(main, "gobgp_peer_inventory", side_effect=[RuntimeError("offline"), {address: 1}, {address: 2}]), patch.object(main, "run_cmd"):
+            with self.assertRaises(RuntimeError):
+                main.pause_publication()
+            main.reassert_publication_pause()
+        self.assertEqual(main.read_publication_control()["resume_peers"], [address])
+
+    def test_empty_snapshot_can_resume_without_routes_or_enabling_manual_down_peers(self):
+        main.write_publication_control("paused", True, [])
+        with patch.object(main, "gobgp_peer_inventory", return_value={"192.0.2.1": 2}), patch.object(main, "read_last_good_snapshot") as snapshot:
+            self.assertEqual(main.resume_publication()["mode"], "publishing")
+            snapshot.assert_not_called()
 
     def test_pause_blocks_normal_apply_and_auto_restore(self):
         main.write_publication_control("paused", True)
@@ -61,7 +96,7 @@ class PublicationControlTests(unittest.TestCase):
             with self.assertRaises(main.PublicationPaused):
                 main.update_now()
             collect.assert_not_called()
-        with patch.object(main, "ensure_gobgp_neighbor_disabled") as disable, patch.object(main, "apply_last_good") as restore:
+        with patch.object(main, "reassert_publication_pause") as disable, patch.object(main, "apply_last_good") as restore:
             result = main.restore_after_gobgp_recovery()
         self.assertEqual(result["mode"], "publication_paused")
         disable.assert_called_once()
@@ -69,15 +104,15 @@ class PublicationControlTests(unittest.TestCase):
 
     def test_startup_reasserts_pause_without_restoring_routes(self):
         main.write_publication_control("paused", True)
-        with patch.object(main, "ensure_gobgp_neighbor_disabled") as disable, patch.object(main, "apply_last_good") as restore:
+        with patch.object(main, "reassert_publication_pause") as disable, patch.object(main, "apply_last_good") as restore:
             asyncio.run(main.startup_update_once())
         disable.assert_called_once()
         restore.assert_not_called()
 
     def test_resume_restores_last_good_before_enabling_peer(self):
-        main.write_publication_control("paused", True)
+        main.write_publication_control("paused", True, ["192.0.2.1", "192.0.2.2"])
         operations = []
-        state = {"admin": "down"}
+        state = {"192.0.2.1": 2, "192.0.2.2": 2, "192.0.2.3": 2}
 
         def apply(prefixes, **kwargs):
             operations.append("apply")
@@ -86,18 +121,19 @@ class PublicationControlTests(unittest.TestCase):
             self.assertEqual(main.read_publication_control()["mode"], "resuming")
 
         def cli(args, timeout=20):
-            operations.append(args[-1])
-            state["admin"] = "up"
+            operations.append(args[-2])
+            state[args[-2]] = 1
             return subprocess.CompletedProcess(args, 0, "", "")
 
         with (
             patch.object(main, "read_last_good_snapshot", return_value=(["8.8.8.8/32"], {})),
             patch.object(main, "_apply_prefixes_locked", side_effect=apply),
             patch.object(main, "run_cmd", side_effect=cli),
-            patch.object(main, "gobgp_peer_admin_state", side_effect=lambda: state["admin"]),
+            patch.object(main, "gobgp_peer_inventory", side_effect=lambda: dict(state)),
         ):
             result = main.resume_publication()
-        self.assertEqual(operations, ["apply", "enable"])
+        self.assertEqual(operations, ["apply", "192.0.2.1", "192.0.2.2"])
+        self.assertEqual(state["192.0.2.3"], 2)
         self.assertEqual(result["mode"], "publishing")
 
     def test_failed_resume_disables_peer_again(self):
@@ -105,8 +141,8 @@ class PublicationControlTests(unittest.TestCase):
         with (
             patch.object(main, "read_last_good_snapshot", return_value=(["8.8.8.8/32"], {})),
             patch.object(main, "_apply_prefixes_locked", side_effect=RuntimeError("RIB failed")),
-            patch.object(main, "ensure_gobgp_neighbor_disabled") as disable,
-            patch.object(main, "gobgp_peer_admin_state", return_value="down"),
+            patch.object(main, "ensure_gobgp_peers_disabled") as disable,
+            patch.object(main, "gobgp_peer_inventory", return_value={main.PEER_ADDRESS: 2}),
         ):
             with self.assertRaisesRegex(RuntimeError, "RIB failed"):
                 main.resume_publication()
@@ -132,7 +168,7 @@ class PublicationControlTests(unittest.TestCase):
             patch.object(main, "ensure_sources_file"),
             patch.object(main, "ensure_community_profiles_file"),
             patch.object(main, "ensure_service_state_file"),
-            patch.object(main, "ensure_gobgp_neighbor_disabled") as disable,
+            patch.object(main, "reassert_publication_pause") as disable,
             patch.object(main, "update_now") as update,
             patch.object(main, "SYSTEM_RESTORE_STAGING_DIR", Path(self.directory.name) / "staging"),
         ):
@@ -151,16 +187,20 @@ class PublicationControlTests(unittest.TestCase):
                 main.ensure_gobgp_neighbor_enabled()
             cli.assert_not_called()
 
-    def test_peer_state_requires_exact_address_and_known_enum(self):
+    def test_inventory_distinguishes_empty_from_unavailable_and_rejects_invalid_address(self):
         def result(address, admin):
-            return subprocess.CompletedProcess([], 0, json.dumps({"state": {"neighbor_address": address, "admin_state": admin}}), "")
+            return subprocess.CompletedProcess([], 0, json.dumps([{"state": {"neighbor_address": address, "admin_state": admin}}]), "")
 
         with patch.object(main, "run_cmd", return_value=result(main.PEER_ADDRESS, 2)):
-            self.assertEqual(main.gobgp_peer_admin_state(), "down")
-        with patch.object(main, "run_cmd", return_value=result("192.0.2.99", 2)):
-            self.assertEqual(main.gobgp_peer_admin_state(), "unknown")
-        with patch.object(main, "run_cmd", return_value=result(main.PEER_ADDRESS, 1)):
-            self.assertEqual(main.gobgp_peer_admin_state(), "up")
+            self.assertEqual(main.gobgp_peer_inventory(), {main.PEER_ADDRESS: 2})
+        with patch.object(main, "run_cmd", return_value=result("invalid", 2)):
+            with self.assertRaises(ValueError):
+                main.gobgp_peer_inventory()
+        with patch.object(main, "run_cmd", return_value=subprocess.CompletedProcess([], 0, "[]", "")):
+            self.assertEqual(main.pause_publication()["resume_peers"], [])
+            self.assertTrue(main.publication_status()["confirmed"])
+        with patch.object(main, "run_cmd", return_value=subprocess.CompletedProcess([], 1, "", "")):
+            self.assertFalse(main.publication_status()["confirmed"])
 
     def test_readiness_identifies_confirmed_and_unconfirmed_pause(self):
         main.write_publication_control("paused", True)
@@ -171,7 +211,7 @@ class PublicationControlTests(unittest.TestCase):
             patch.object(main, "read_lines", return_value=["8.8.8.8/32"]),
             patch.object(main, "gobgp_ready", return_value=True),
             patch.object(main, "gobgp_rib_count", return_value=0),
-            patch.object(main, "gobgp_peer_admin_state", return_value="down"),
+            patch.object(main, "gobgp_peer_inventory", return_value={"192.0.2.1": 2, "192.0.2.2": 2}),
         ):
             payload, status = main.build_readiness_payload()
         self.assertEqual(status, 200)
@@ -182,7 +222,7 @@ class PublicationControlTests(unittest.TestCase):
             patch.object(main, "read_lines", return_value=["8.8.8.8/32"]),
             patch.object(main, "gobgp_ready", return_value=True),
             patch.object(main, "gobgp_rib_count", return_value=0),
-            patch.object(main, "gobgp_peer_admin_state", return_value="up"),
+            patch.object(main, "gobgp_peer_inventory", return_value={"192.0.2.1": 2, "192.0.2.2": 1}),
         ):
             payload, status = main.build_readiness_payload()
         self.assertEqual(status, 503)
@@ -191,7 +231,7 @@ class PublicationControlTests(unittest.TestCase):
     def test_api_requires_login_and_csrf_and_reports_actual_status(self):
         client = TestClient(main.app)
         try:
-            with patch.object(main, "gobgp_peer_admin_state", return_value="down"):
+            with patch.object(main, "gobgp_peer_inventory", return_value={main.PEER_ADDRESS: 2}):
                 self.assertEqual(client.get("/api/routes/publication").status_code, 401)
                 login = client.post("/auth/login", json={"password": "unit-test-password"})
                 self.assertEqual(login.status_code, 200)

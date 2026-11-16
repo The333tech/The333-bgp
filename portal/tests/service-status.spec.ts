@@ -73,6 +73,79 @@ async function installFixture(context: BrowserContext, options: { unavailable?: 
   return { mutations, failPreview: () => { previewFails = true; } };
 }
 
+test("route preview shows activity without inventing progress and stops on failure", async ({ page, context }, testInfo) => {
+  await installFixture(context);
+  let finish!: () => void;
+  const pending = new Promise<void>((resolve) => { finish = resolve; });
+  await context.route("**/backend/api/services/apply-preview", async (route) => {
+    await pending;
+    await route.fulfill({ status: 503, json: { detail: "Расчёт недоступен" } });
+  });
+  await page.clock.install();
+  await page.goto("/");
+  await page.locator(".nav-item").filter({ hasText: "Модули сервисов" }).click();
+  await page.getByRole("button", { name: /^Предпросмотр маршрутов модулей/ }).click();
+  const bar = page.getByRole("progressbar", { name: "Предпросмотр маршрутов модулей" });
+  await expect(bar).toBeVisible();
+  expect(await bar.getAttribute("aria-valuenow")).toBeNull();
+  await expect(bar.locator("span")).toHaveCSS("animation-name", "route-task-progress-slide");
+  await page.clock.fastForward(31_000);
+  await expect(page.getByText(/Ожидаем результат расчёта/)).toBeVisible();
+  await page.locator(".service-jobs-panel").screenshot({ path: testInfo.outputPath("route-preview-progress-desktop.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(bar).toBeVisible();
+  const panel = page.locator(".service-jobs-panel");
+  const apply = page.getByRole("button", { name: /^Применить маршруты модулей/ });
+  const panelBounds = (await panel.boundingBox())!;
+  const applyBounds = (await apply.boundingBox())!;
+  expect(applyBounds.x + applyBounds.width).toBeLessThanOrEqual(panelBounds.x + panelBounds.width);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.locator(".service-jobs-panel").screenshot({ path: testInfo.outputPath("route-preview-progress-mobile.png"), animations: "disabled" });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(bar.locator("span")).toHaveCSS("animation-name", "none");
+  finish();
+  await expect(bar).toHaveCount(0);
+  await expect(page.locator(".service-job-row.bad")).toContainText("Не удалось получить предпросмотр");
+});
+
+test("route application shows server stages, connection loss and completion", async ({ page, context }) => {
+  await installFixture(context);
+  let connectionLost = false;
+  let showJob = false;
+  let status = "running";
+  let stage = "Сбор маршрутов модулей";
+  const origin = new Date().toISOString();
+  const currentJob = () => ({
+    id: "apply-job", key: "route_update:manual", kind: "route_update", title: "Применение маршрутов",
+    started_at: origin, status, stage,
+  });
+  await context.route("**/backend/api/jobs?*", (route) => connectionLost
+    ? route.fulfill({ status: 503 })
+    : route.fulfill({ json: { ok: true, jobs: showJob ? [currentJob()] : [] } }));
+  await context.route("**/backend/api/update/job", (route) => {
+    showJob = true;
+    return route.fulfill({ json: { ok: true, job: currentJob() } });
+  });
+  await page.goto("/");
+  await page.locator(".nav-item").filter({ hasText: "Модули сервисов" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: /^Применить маршруты модулей/ }).click();
+  const bar = page.getByRole("progressbar", { name: "Применение маршрутов" });
+  const row = page.locator(".service-jobs-panel .service-job-row");
+  await expect(bar).toBeVisible();
+  await expect(row).toContainText(stage);
+  connectionLost = true;
+  await expect(row).toContainText("Нет связи с сервером");
+  connectionLost = false;
+  stage = "Применение и проверка маршрутов в GoBGP";
+  await expect(row).toContainText(stage);
+  await expect(row).not.toContainText("Нет связи с сервером");
+  status = "succeeded";
+  stage = "Готово";
+  await expect(bar).toHaveCount(0);
+  await expect(row).toContainText("Готово");
+});
+
 test("module scope and data status remain independent on dashboard and catalog", async ({ page, context }, testInfo) => {
   const fixture = await installFixture(context);
   await page.goto("/");

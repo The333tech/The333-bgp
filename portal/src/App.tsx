@@ -331,7 +331,7 @@ type PortalJob = {
   title?: string;
   status?: PortalJobStatus;
   stage?: string;
-  progress_percent?: number;
+  progress_percent?: number | null;
   created_at?: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -4616,6 +4616,31 @@ function jobTone(status?: PortalJobStatus): "ok" | "warn" | "bad" {
   return "ok";
 }
 
+function RouteTaskProgress({ job, pollingFailed }: { job: PortalJob; pollingFailed: boolean }) {
+  const started = Date.parse(job.started_at ?? job.created_at ?? "");
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const elapsed = Number.isFinite(started) ? Math.max(0, Math.floor((now - started) / 1000)) : 0;
+  const preview = job.kind === "service_apply_preview";
+  return (
+    <div className="route-task-progress">
+      <div className="service-job-progress is-indeterminate" role="progressbar" aria-label={job.title ?? "Обработка маршрутов"}>
+        <span />
+      </div>
+      <div className="route-task-progress-note" role="status">
+        {!preview && pollingFailed
+          ? "Нет связи с сервером. Статус уточняется, повторно запускать задачу не нужно."
+          : elapsed >= 30
+            ? `${preview ? "Ожидаем результат расчёта" : "Сервер сообщает: задача выполняется"} · ${formatHistoryDuration(elapsed)}`
+            : preview ? "Ожидаем ответ сервера" : "Задача выполняется на сервере"}
+      </div>
+    </div>
+  );
+}
+
 function jobSummaryText(job: PortalJob): string {
   const summary = job.result_summary ?? {};
 
@@ -5069,6 +5094,9 @@ function ServicesPage({
   const [serviceDetailsId, setServiceDetailsId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<PortalJob[]>([]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [previewStartedAt, setPreviewStartedAt] = useState<string | null>(null);
+  const [applyPreviewError, setApplyPreviewError] = useState<string | null>(null);
+  const [jobPollingFailed, setJobPollingFailed] = useState(false);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [candidateNotice, setCandidateNotice] = useState<ServiceNotice | null>(null);
   const [catalogNotice, setCatalogNotice] = useState<ServiceNotice | null>(null);
@@ -5092,8 +5120,15 @@ function ServicesPage({
   }, [auth]);
 
   const loadJobs = useCallback(async () => {
-    const payload = await apiFetch<JobsResponse>("/api/jobs?limit=8", auth);
-    setJobs(payload.jobs ?? []);
+    try {
+      const payload = await apiFetch<JobsResponse>("/api/jobs?limit=8", auth, { signal: AbortSignal.timeout(8_000) });
+      if (!payload.ok) throw new Error("Не удалось получить состояние задач.");
+      setJobs(payload.jobs ?? []);
+      setJobPollingFailed(false);
+    } catch (error) {
+      setJobPollingFailed(true);
+      throw error;
+    }
   }, [auth]);
 
   const loadCandidates = useCallback(async () => {
@@ -5111,8 +5146,12 @@ function ServicesPage({
   useEffect(() => {
     if (activeModuleJobCount <= 0) return;
 
+    let pending = false;
     const timer = window.setInterval(() => {
-      void Promise.allSettled([loadJobs(), loadServices(), loadCandidates(), onRefresh()]);
+      if (pending) return;
+      pending = true;
+      void loadJobs().catch(() => {}).finally(() => { pending = false; });
+      void Promise.allSettled([loadServices(), loadCandidates(), onRefresh()]);
     }, 2200);
 
     return () => window.clearInterval(timer);
@@ -5512,12 +5551,16 @@ function ServicesPage({
   };
 
   const loadApplyPreview = async () => {
+    setApplyPreview(null);
+    setApplyPreviewError(null);
+    setPreviewStartedAt(new Date().toISOString());
     try {
       setBusyAction("apply-preview");
       setActionStatus("Считаю предпросмотр применения для всех включённых модулей сервисов...");
       setTaskCenterNotice(makeNotice("warn", "Считаю предпросмотр применения для всех включённых модулей сервисов..."));
 
       const payload = await apiFetch<ServiceApplyPreviewResponse>("/api/services/apply-preview", auth);
+      if (!payload.ok) throw new Error("Сервер не завершил расчёт предпросмотра.");
       setApplyPreview(payload);
 
       const addCount = payload.diff_vs_current_advertised?.add_count ?? 0;
@@ -5526,8 +5569,11 @@ function ServicesPage({
       setActionStatus(`Предпросмотр применения готов: добавить ${addCount}, удалить ${deleteCount}.`);
       setTaskCenterNotice(makeNotice("ok", `Предпросмотр применения готов: добавить ${addCount}, удалить ${deleteCount}.`));
     } catch (error) {
-      setActionStatus(error instanceof Error ? error.message : String(error));
-      setTaskCenterNotice(makeNotice("bad", error instanceof Error ? error.message : String(error)));
+      const message = error instanceof ApiError && error.status < 500
+        ? error.message : "Не удалось получить предпросмотр. Проверьте связь с сервером и повторите расчёт.";
+      setApplyPreviewError(message);
+      setActionStatus(message);
+      setTaskCenterNotice(makeNotice("bad", message));
     } finally {
       setBusyAction(null);
     }
@@ -5557,7 +5603,8 @@ function ServicesPage({
         method: "POST"
       });
 
-      await Promise.all([loadJobs(), loadServices(), onRefresh()]);
+      setJobs((current) => [payload.job, ...current.filter((job) => job.id !== payload.job.id)]);
+      await Promise.allSettled([loadJobs(), loadServices(), onRefresh()]);
 
       setActionStatus(
         payload.deduplicated
@@ -5586,18 +5633,18 @@ function ServicesPage({
   const diagnosticsTone = cacheErrors > 0 ? "bad" : cacheWarnings > 0 ? "warn" : "ok";
   const activeApplyJob = getActiveJobByKey("route_update:manual");
   const previewTaskJob: PortalJob | null =
-    busyAction === "apply-preview" || applyPreview
+    previewStartedAt && (busyAction === "apply-preview" || applyPreview || applyPreviewError)
       ? {
           id: "local-service-apply-preview",
           kind: "service_apply_preview",
           key: "service_apply_preview",
           title: "Предпросмотр маршрутов модулей",
-          status: busyAction === "apply-preview" ? "running" : "succeeded",
-          stage: busyAction === "apply-preview" ? "считаю маршруты" : "готово",
-          progress_percent: busyAction === "apply-preview" ? 62 : 100,
-          created_at: services?.time ?? new Date().toISOString(),
-          started_at: services?.time ?? null,
-          finished_at: busyAction === "apply-preview" ? null : services?.time ?? null,
+          status: busyAction === "apply-preview" ? "running" : applyPreviewError ? "failed" : "succeeded",
+          stage: busyAction === "apply-preview" ? "Расчёт предпросмотра" : applyPreviewError ? "Ошибка" : "Готово",
+          progress_percent: applyPreview ? 100 : undefined,
+          created_at: previewStartedAt,
+          started_at: previewStartedAt,
+          error: applyPreviewError,
           duration_seconds: null,
           result_summary: {
             final_count: applyPreview?.final?.count ?? "—",
@@ -5673,13 +5720,13 @@ function ServicesPage({
             </div>
 
             <span className={`pill ${activeModuleJobCount > 0 ? "warn" : "ok"}`}>
-              {activeModuleJobCount > 0 ? `в работе: ${activeModuleJobCount}` : "нет задач"}
+              {activeModuleJobCount > 0 || busyAction === "apply-preview" ? `в работе: ${activeModuleJobCount + Number(busyAction === "apply-preview")}` : "нет задач"}
             </span>
 
             <div className="source-actions-toolbar">
               <HelpButton
                 className="ghost-button"
-                disabled={busyAction === "apply-preview"}
+                disabled={busyAction === "apply-preview" || busyAction === "apply-update" || Boolean(activeApplyJob)}
                 onClick={loadApplyPreview}
                 helpLabel="Что делает предпросмотр применения модулей сервисов"
                 helpText={SERVICE_PREVIEW_HELP}
@@ -5689,7 +5736,7 @@ function ServicesPage({
 
               <HelpButton
                 className="primary-button"
-                disabled={busyAction === "apply-update" || Boolean(activeApplyJob)}
+                disabled={busyAction === "apply-preview" || busyAction === "apply-update" || Boolean(activeApplyJob)}
                 onClick={applyUpdate}
                 helpLabel="Что делает применение маршрутов модулей сервисов"
                 helpText={SERVICE_APPLY_HELP}
@@ -5709,6 +5756,8 @@ function ServicesPage({
             {latestJobs.map((job) => {
               const tone = jobTone(job.status);
               const progress = Math.max(0, Math.min(100, Number(job.progress_percent ?? 0)));
+              const routeTask = job.kind === "service_apply_preview" || job.kind === "route_update";
+              const activeRouteTask = routeTask && job.status === "running";
 
               return (
                 <div className={`service-job-row ${tone}`} key={job.id}>
@@ -5717,13 +5766,14 @@ function ServicesPage({
                     <span>{job.stage ?? jobStatusLabel(job.status)} · {job.started_at ? formatDate(job.started_at) : formatDate(job.created_at)}</span>
                   </div>
 
-                  <div className="service-job-progress" aria-label={`Прогресс ${progress}%`}>
-                    <span style={{ width: `${progress}%` }} />
-                  </div>
+                  {activeRouteTask ? <RouteTaskProgress job={job} pollingFailed={jobPollingFailed} /> :
+                    <div className="service-job-progress" aria-hidden="true">
+                      <span style={{ width: `${routeTask && job.status === "failed" ? 0 : progress}%` }} />
+                    </div>}
 
                   <div className="service-job-meta">
                     <span className={`pill tiny ${tone}`}>{jobStatusLabel(job.status)}</span>
-                    <span>{jobSummaryText(job)}</span>
+                    {!jobIsActive(job) && job.status !== "failed" && <span>{jobSummaryText(job)}</span>}
                     {job.duration_seconds !== null && job.duration_seconds !== undefined && (
                       <span>{formatHistoryDuration(job.duration_seconds)}</span>
                     )}
@@ -7316,7 +7366,7 @@ function PublicationControl({ auth, locked, onChanged }: {
       setOpen(false);
       onChanged();
     } catch (err) {
-      let message = "Не удалось подтвердить изменение BGP. Проверьте состояние пира.";
+      let message = "Не удалось подтвердить изменение BGP. Проверьте состояние пиров.";
       if (err instanceof ApiError) {
         try {
           const detail: unknown = JSON.parse(err.body).detail;
@@ -7333,11 +7383,11 @@ function PublicationControl({ auth, locked, onChanged }: {
   return <>
     <button className={`publication-button ${paused ? "paused" : ""}`} type="button"
       disabled={locked || busy || !status} onClick={() => { setError(null); setOpen(true); }}
-      title="Управлять публикацией маршрутов через настроенный BGP-пир">
+      title="Управлять публикацией маршрутов через все BGP-пиры GoBGP">
       <IconPower size={18} stroke={2} />
       <span>{!status ? "BGP: проверка состояния" : uncertain ? "Повторить остановку BGP" : paused ? "BGP: публикация остановлена" : "Экстренная пауза BGP"}</span>
     </button>
-    {uncertain && <p className="publication-hint" role="alert">Остановка не подтверждена. Проверьте BGP-пир на MikroTik.</p>}
+    {uncertain && <p className="publication-hint" role="alert">Остановка всех пиров не подтверждена. Проверьте GoBGP и роутеры.</p>}
     {open && createPortal(<dialog ref={dialog} className="product-update-dialog publication-dialog"
       aria-labelledby="publication-title" onCancel={(event) => { if (busy) event.preventDefault(); else setOpen(false); }}>
       <div className="panel-title">
@@ -7345,9 +7395,9 @@ function PublicationControl({ auth, locked, onChanged }: {
         <button className="icon-button" type="button" title="Закрыть" aria-label="Закрыть" disabled={busy}
           onClick={() => setOpen(false)}><IconX size={20} /></button>
       </div>
-      <p>{uncertain ? "Предыдущая остановка не была подтверждена. Повторная команда отключит настроенный пир; после неё проверьте маршруты на MikroTik." : paused
-        ? "Последний удачный набор будет проверен в GoBGP до включения пира. Возобновление не подтверждает доступность VPN."
-        : `GoBGP отключит пир ${status?.peer_address ?? "—"}. Полученные MikroTik маршруты должны уйти после обработки отключения сессии. Другие правила роутера не меняются.`}</p>
+      <p>{uncertain ? "Предыдущая остановка не была подтверждена. Повторная команда отключит все BGP-пиры этого экземпляра GoBGP." : paused
+        ? "GoBGP проверит последний удачный набор маршрутов и включит только пиры, которые работали до паузы. Это не подтверждает доступность VPN."
+        : "GoBGP отключит все свои BGP-пиры. После обработки отключения сессий роутеры перестанут получать маршруты от этого экземпляра. Другие правила роутеров не меняются."}</p>
       {error && <p className="action-status-box bad" role="alert">{error}</p>}
       <div className="publication-dialog-actions">
         <button className="ghost-button" type="button" disabled={busy} onClick={() => setOpen(false)}>Отмена</button>
