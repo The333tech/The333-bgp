@@ -8,7 +8,7 @@ RUN npm ci
 COPY . .
 RUN npm test && npm run build
 
-FROM nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
+FROM nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a
 
 ARG PRODUCT_VERSION=dev
 ARG VCS_REF=unknown
