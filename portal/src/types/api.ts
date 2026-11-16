@@ -16,6 +16,7 @@ export type PublicationStatus = {
   mode: "publishing" | "pausing" | "paused" | "resuming" | "unconfirmed";
   confirmed: boolean;
   peer_admin_state: "up" | "down" | "unknown";
+  peer_count?: number | null;
   peer_address: string;
   updated_at: string | null;
 };

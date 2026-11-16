@@ -16,7 +16,7 @@ RUN apk add --no-cache ca-certificates git
 COPY docker/build-gobgp.sh /usr/local/bin/build-gobgp
 RUN /bin/sh /usr/local/bin/build-gobgp
 
-FROM python:3.14.8-alpine3.24@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+FROM python:3.13.18-alpine3.24@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
 
 ARG PRODUCT_VERSION=dev
 ARG VCS_REF=unknown

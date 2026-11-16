@@ -3839,18 +3839,31 @@ body,
 }
 
 .service-jobs-panel .source-actions-toolbar {
-  display: flex !important;
-  flex-wrap: nowrap !important;
-  gap: 10px !important;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 10px;
+  min-width: 0;
 }
 
-.service-jobs-panel .source-actions-toolbar .action-with-info {
-  flex: 0 1 auto;
+.service-jobs-panel .source-actions-title {
+  grid-template-columns: minmax(0, 1fr) !important;
 }
 
-.service-jobs-panel .source-actions-toolbar .ghost-button,
-.service-jobs-panel .source-actions-toolbar .primary-button {
-  white-space: nowrap;
+.service-jobs-panel .source-actions-toolbar .help-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.service-jobs-panel .source-actions-toolbar .help-button-label,
+.service-jobs-panel .service-job-main strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 681px) {
+  .service-jobs-panel .service-job-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr) minmax(0, 0.85fr);
+  }
 }
 
 .service-jobs-panel,
@@ -3998,6 +4011,30 @@ body,
   border-radius: inherit;
   background: linear-gradient(90deg, rgba(200, 134, 22, 0.82), rgba(61, 220, 132, 0.72));
   transition: width 180ms ease;
+}
+
+.route-task-progress {
+  min-width: 0;
+}
+
+.route-task-progress-note {
+  margin-top: 5px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.service-job-progress.is-indeterminate span {
+  width: 42%;
+  animation: route-task-progress-slide 2s ease-in-out infinite alternate;
+}
+
+@keyframes route-task-progress-slide {
+  to { transform: translateX(138%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .service-job-progress.is-indeterminate span { animation: none; }
 }
 
 .service-job-meta {

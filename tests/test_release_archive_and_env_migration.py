@@ -65,6 +65,9 @@ class EnvMigrationTests(unittest.TestCase):
                         "UPDATE_MIN_FREE_BYTES=2147483648",
                         "CUSTOM_SETTING=old-value",
                         "CUSTOM_SETTING=keep-me",
+                        "SERVICE_DNS_QUERY_TIMEOUT_SECONDS=7.5",
+                        "SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS=90",
+                        "SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS=240",
                     ]
                 )
                 + "\n",
@@ -103,6 +106,13 @@ class EnvMigrationTests(unittest.TestCase):
             self.assertIn("CUSTOM_SETTING=keep-me", migrated)
             self.assertNotIn("CUSTOM_SETTING=old-value", migrated)
             self.assertEqual(migrated.count("CUSTOM_SETTING="), 1)
+            for key, value in (
+                ("SERVICE_DNS_QUERY_TIMEOUT_SECONDS", "7.5"),
+                ("SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS", "90"),
+                ("SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS", "240"),
+            ):
+                self.assertIn(f"{key}={value}\n", migrated)
+                self.assertEqual(migrated.count(f"{key}="), 1)
             self.assertIn("HOST_UPDATER_TOKEN=existing-token", migrated)
             self.assertIn(
                 f"HOST_UPDATER_RESULT_DIR={project / 'data' / 'host-updater-results'}",
@@ -154,6 +164,9 @@ class EnvMigrationTests(unittest.TestCase):
             self.assertIn("THE333_BIND_IP=192.168.1.10", migrated)
             self.assertIn("BGP_TTL_SECURITY_ENABLED=false", migrated)
             self.assertIn("BGP_DOCKER_BRIDGE_HOPS=1", migrated)
+            self.assertIn("SERVICE_DNS_QUERY_TIMEOUT_SECONDS=5\n", migrated)
+            self.assertIn("SERVICE_DNS_PROVIDER_TIMEOUT_SECONDS=60\n", migrated)
+            self.assertIn("SERVICE_DNS_COLLECTION_TIMEOUT_SECONDS=180\n", migrated)
             self.assertIn("GOBGP_CORE_IMAGE_VERSION=4.9.0-r2", migrated)
             self.assertIn("UPDATE_MIN_FREE_BYTES=1073741824", migrated)
 

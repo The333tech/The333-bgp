@@ -87,6 +87,22 @@ test("DNS grace exposes old data even if another address resolved today", () => 
   assert.equal(providerDataTime(provider).incomplete, false);
 });
 
+test("DNS deadline failures remain visible even with partial routes", () => {
+  const provider = remote({ error: "DNS budget exhausted", dns_budget_exceeded: true,
+    dns_checked_domain_count: 1, dns_skipped_domain_count: 2, warnings_count: 1,
+    domain_stats: [{ resolve_status: "budget_exceeded", warning: "DNS timeout", cache_hit: false }] });
+  assert.equal(providerDataStatus(provider).kind, "error");
+  assert.notEqual(serviceDataStatus(runtime(provider)).tone, "ok");
+});
+
+test("a DNS timeout with usable grace is cached, not freshly checked", () => {
+  const provider = remote({ type: "dns_domains", warnings_count: 1,
+    domain_stats: [{ resolve_status: "timeout", warning: "DNS timeout", cache_hit: true,
+      stale_ips: ["8.8.8.8"], last_success_at: old, cache_oldest_at: old }] });
+  assert.equal(providerDataStatus(provider).kind, "cached");
+  assert.equal(providerDataTime(provider).oldest, old);
+});
+
 test("unknown source dates are not replaced by the calculation time", () => {
   const provider = remote({ source: { source_url: "https://example.com/list" } });
   assert.equal(providerDataTime(provider).oldest, null);

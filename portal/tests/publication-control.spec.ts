@@ -33,14 +33,15 @@ test("publication pause is confirmed, persists across reload, and resumes explic
   await page.screenshot({ path: testInfo.outputPath("publication-mobile.png") });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: "Экстренная пауза BGP" }).click();
-  await expect(page.getByRole("dialog")).toContainText("Другие правила роутера не меняются");
+  await expect(page.getByRole("dialog")).toContainText("GoBGP отключит все свои BGP-пиры");
+  await expect(page.getByRole("dialog")).not.toContainText("192.0.2.1");
   expect(posts).toBe(0);
   await page.getByRole("dialog").getByRole("button", { name: "Остановить BGP" }).click();
   await expect(page.getByRole("button", { name: "BGP: публикация остановлена" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("button", { name: "BGP: публикация остановлена" })).toBeVisible();
   await page.getByRole("button", { name: "BGP: публикация остановлена" }).click();
-  await expect(page.getByRole("dialog")).toContainText("Возобновление не подтверждает доступность VPN");
+  await expect(page.getByRole("dialog")).toContainText("только пиры, которые работали до паузы");
   await page.getByRole("dialog").getByRole("button", { name: "Возобновить" }).click();
   await expect(page.getByRole("button", { name: "Экстренная пауза BGP" })).toBeVisible();
   expect(posts).toBe(2);
@@ -61,7 +62,7 @@ test("unconfirmed pause can be retried without offering resume", async ({ page, 
     return route.fulfill({ status: 503, body: "Not ready" });
   });
   await page.goto("/");
-  await expect(page.getByRole("alert")).toContainText("Остановка не подтверждена");
+  await expect(page.getByRole("alert")).toContainText("Остановка всех пиров не подтверждена");
   await page.getByRole("button", { name: "Повторить остановку BGP" }).click();
   await expect(page.getByRole("dialog")).toContainText("Повторить остановку BGP?");
   await page.getByRole("dialog").getByRole("button", { name: "Остановить BGP" }).click();

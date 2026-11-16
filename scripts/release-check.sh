@@ -73,6 +73,7 @@ required_files=(
   "requirements.txt"
   "requirements.in"
   "app/main.py"
+  "app/dns_resolver.py"
   "app/maintenance.py"
   "app/session_store.py"
   "app/update_runner.py"
@@ -135,6 +136,8 @@ source_required_files=(
   "tests/test_release_metadata.py"
   "tests/test_published_image_scan.py"
   "tests/test_service_metadata.py"
+  "tests/test_dns_cache.py"
+  "tests/test_dns_budget.py"
   "tests/test_storage_retention.py"
   "tests/storage_docker_smoke.py"
   "tests/test_remote_fetch_security.py"
@@ -206,7 +209,7 @@ case "${placeholder_scan_status}" in
   *) fail "release tree search failed (exit ${placeholder_scan_status})" ;;
 esac
 
-"${PYTHON_BIN}" -m py_compile app/main.py app/storage_retention.py scripts/storage-maintenance.py scripts/host-updater.py scripts/extract-release.py scripts/migrate-env.py
+"${PYTHON_BIN}" -m py_compile app/main.py app/dns_resolver.py app/storage_retention.py scripts/storage-maintenance.py scripts/host-updater.py scripts/extract-release.py scripts/migrate-env.py
 bash -n install.sh
 bash -n docker/gobgp-entrypoint.sh
 bash -n docker/backend-entrypoint.sh

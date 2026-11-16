@@ -16,13 +16,12 @@ class DnsCacheTests(unittest.TestCase):
 
     def resolve(self, seconds, answers=None, error=None):
         now = self.epoch + seconds
-        results = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in (answers or [])]
         with (
             patch.object(main.time, "time", return_value=now),
             patch.object(main, "now_iso", return_value=datetime.fromtimestamp(now, timezone.utc).isoformat()),
             patch.object(main, "SERVICE_DNS_CACHE_GRACE_SECONDS", 60),
             patch.object(main, "SERVICE_DNS_RESOLVE_RETRIES", 1),
-            patch.object(socket, "getaddrinfo", return_value=results, side_effect=error),
+            patch.object(main.dns_resolver, "resolve_ipv4", return_value=answers or [], side_effect=error),
         ):
             networks, stat = main.dns_resolve_ipv4("example.com", self.cache)
         return {str(net) for net in networks}, stat
@@ -95,6 +94,14 @@ class DnsCacheTests(unittest.TestCase):
         routes, stat = self.resolve(0, ["192.168.1.1", "8.8.8.8"])
         self.assertEqual(routes, {"8.8.8.8/32"})
         self.assertEqual(stat["ignored"], 1)
+
+    def test_timeout_uses_cache_without_renewing_lease(self):
+        self.resolve(0, ["8.8.8.8"])
+        routes, stat = self.resolve(30, error=TimeoutError())
+        self.assertEqual(routes, {"8.8.8.8/32"})
+        self.assertEqual(stat["resolve_status"], "timeout")
+        self.assertEqual(stat["last_success_at"], datetime.fromtimestamp(self.epoch, timezone.utc).isoformat())
+        self.assertEqual(self.resolve(61, error=TimeoutError())[0], set())
 
 
 if __name__ == "__main__":
