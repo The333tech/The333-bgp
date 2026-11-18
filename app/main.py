@@ -591,7 +591,7 @@ def read_product_version() -> str:
     except Exception:
         pass
 
-    return "0.94.2b"
+    return "0.94.3b"
 
 
 def product_version_weight(value: str) -> tuple[int, int, int, int]:
@@ -8603,6 +8603,8 @@ def lookup_service_dns(domain: str, deadline: float) -> tuple[set[str], dict[str
         "resolve_attempts": 0,
         "resolve_errors": [],
         "resolve_status": "unavailable",
+        "resolve_error_code": None,
+        "note": None,
         "checked_at": None,
         "last_success_at": None,
         "cache_oldest_at": None,
@@ -8636,9 +8638,16 @@ def lookup_service_dns(domain: str, deadline: float) -> tuple[set[str], dict[str
             stat["resolve_errors"].append(stat["warning"])
             break
         except Exception as e:
+            if isinstance(e, socket.gaierror):
+                stat["resolve_error_code"] = e.errno
+                if e.errno in {socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}:
+                    no_address = e.errno == getattr(socket, "EAI_NODATA", None)
+                    stat["resolve_status"] = "no_ipv4" if no_address else "not_found"
+                    stat["note"] = ("У домена нет IPv4-адресов; префикс не добавлен." if no_address
+                                    else "DNS не вернул адрес для этого имени; префикс не добавлен.")
+                    break
             stat["resolve_status"] = (
-                "not_found" if isinstance(e, socket.gaierror) and e.errno == socket.EAI_NONAME
-                else "temporary_failure" if isinstance(e, socket.gaierror) and e.errno == socket.EAI_AGAIN
+                "temporary_failure" if isinstance(e, socket.gaierror) and e.errno == socket.EAI_AGAIN
                 else "unavailable"
             )
             LOGGER.info(

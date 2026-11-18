@@ -62,7 +62,7 @@ test("unconfirmed pause can be retried without offering resume", async ({ page, 
     return route.fulfill({ status: 503, body: "Not ready" });
   });
   await page.goto("/");
-  await expect(page.getByRole("alert")).toContainText("Остановка всех пиров не подтверждена");
+  await expect(page.locator(".publication-hint[role=alert]")).toContainText("Остановка всех пиров не подтверждена");
   await page.getByRole("button", { name: "Повторить остановку BGP" }).click();
   await expect(page.getByRole("dialog")).toContainText("Повторить остановку BGP?");
   await page.getByRole("dialog").getByRole("button", { name: "Остановить BGP" }).click();

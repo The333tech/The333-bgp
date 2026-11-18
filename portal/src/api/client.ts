@@ -1,3 +1,5 @@
+import type { ReadyResponse } from "../types/api";
+
 export type AuthState = {
   csrfToken: string;
   expiresAt: string;
@@ -96,4 +98,23 @@ export async function apiFetch<T>(
     credentials: "same-origin"
   });
   return readResponse<T>(response);
+}
+
+export async function apiReadiness(auth: AuthState, options: RequestInit = {}): Promise<ReadyResponse> {
+  const response = await fetch("/backend/ready", { ...options, credentials: "same-origin" });
+  if (response.status === 503) {
+    const payload: unknown = await response.clone().json().catch(() => null);
+    // Only the readiness endpoint's structured degraded state is data, not an API failure.
+    if (payload && typeof payload === "object" && "app" in payload && payload.app === "The333-BGP" &&
+        "ready" in payload && payload.ready === false &&
+        "gobgp_ready" in payload && typeof payload.gobgp_ready === "boolean" &&
+        "status_ok" in payload && typeof payload.status_ok === "boolean" &&
+        "errors" in payload && Array.isArray(payload.errors) && payload.errors.every((item) => typeof item === "string") &&
+        "advertised_count" in payload && Number.isSafeInteger(payload.advertised_count) && Number(payload.advertised_count) >= 0 &&
+        "last_good_count" in payload && Number.isSafeInteger(payload.last_good_count) && Number(payload.last_good_count) >= 0 &&
+        "rib_count" in payload && (payload.rib_count === null || (Number.isSafeInteger(payload.rib_count) && Number(payload.rib_count) >= 0))) {
+      return payload as ReadyResponse;
+    }
+  }
+  return readResponse<ReadyResponse>(response);
 }

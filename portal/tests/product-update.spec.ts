@@ -134,7 +134,7 @@ test("failed release check is not shown as current and recovers automatically", 
   await page.getByRole("button", { name: "Проверить обновления", exact: true }).click();
   await expect(footer).toContainText("проверка недоступна");
   await expect(page.getByRole("button", { name: "Обновить выбранную версию" })).toBeDisabled();
-  await expect(page.locator(".action-status-box")).toContainText("Повторная попытка выполняется автоматически");
+  await expect(page.locator(".updates-page .action-status-box")).toContainText("Повторная попытка выполняется автоматически");
   server.manifestOffline = false;
   server.latestBeta = "0.86b";
   await page.clock.fastForward(61_000);
