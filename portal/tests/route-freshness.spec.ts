@@ -54,7 +54,7 @@ test("warns about stale routes but not intentionally disabled updates", async ({
 });
 
 async function degradedFixture(context: BrowserContext, state: {
-  readinessStatus: number; diagnosticsStatus: number; invalidReady?: boolean; sourcesStatus?: number;
+  readinessStatus: number; diagnosticsStatus: number; invalidReady?: boolean; sourcesStatus?: number; historyStatus?: number;
 }) {
   const time = "2026-11-18T12:00:00Z";
   await context.route("**/backend/**", async (route) => {
@@ -74,7 +74,7 @@ async function degradedFixture(context: BrowserContext, state: {
     if (path === "/api/sources") return route.fulfill({ status: state.sourcesStatus ?? 200, json: {
       ok: true, sources: [{ name: "manual", type: "static", enabled: true, manual_entries: ["example.com"] }], time,
     } });
-    if (path === "/api/update-history") return route.fulfill({ json: { ok: true, count: 1, history: [{
+    if (path === "/api/update-history") return route.fulfill({ status: state.historyStatus ?? 200, json: { ok: true, count: 1, history: [{
       ok: false, trigger: "auto_failed", mode: "auto_update_failed", time,
       error: "Сбор маршрутов не выполнен.", final_count: 42,
     }], time } });
@@ -110,7 +110,7 @@ test("structured readiness 503 preserves independent status and route failure", 
 });
 
 test("one failed endpoint cannot hide successful data or turn unknown RIB green", async ({ page, context }) => {
-  const state = { readinessStatus: 503, diagnosticsStatus: 500, invalidReady: false };
+  const state = { readinessStatus: 503, diagnosticsStatus: 500, invalidReady: false, historyStatus: 200 };
   await degradedFixture(context, state);
   await page.goto("/");
   const facts = page.getByLabel("Ключевые показатели дашборда");
@@ -118,13 +118,16 @@ test("one failed endpoint cannot hide successful data or turn unknown RIB green"
   await expect(page.getByRole("alert")).toContainText("диагностика");
   await expect(page.locator(".ops-status-card")).toContainText("свободно");
   state.invalidReady = true;
+  state.historyStatus = 500;
   await page.reload();
   await expect(facts).toContainText("BGP: нет данных");
   await expect(facts).toContainText("RIB: нет данных");
   await expect(facts).not.toContainText("синхронно");
   await expect(facts).not.toContainText("офлайн");
+  await expect(page.locator(".ops-update-card .pill")).toHaveText("нет данных");
   await expect(page.locator(".ops-status-card")).toContainText("свободно");
   state.invalidReady = false;
+  state.historyStatus = 200;
   state.diagnosticsStatus = 200;
   await page.reload();
   await expect(facts).toContainText("BGP: онлайн");

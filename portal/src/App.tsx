@@ -2712,8 +2712,8 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
         <section className="panel-card compact-panel ops-card ops-update-card">
           <div className="panel-title">
             <h2>Последнее обновление</h2>
-            <span className={`pill ${latestEvent?.ok === false ? "bad" : "ok"}`}>
-              {latestEvent?.ok === false ? "ошибка" : "успешно"}
+            <span className={`pill ${statusClass(lastUpdateOk)}`}>
+              {lastUpdateOk === false ? "ошибка" : lastUpdateOk === true ? "успешно" : "нет данных"}
             </span>
           </div>
 
