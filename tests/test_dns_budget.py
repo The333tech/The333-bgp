@@ -167,6 +167,33 @@ class DnsBudgetTests(unittest.TestCase):
         self.assertTrue(routes)
         self.assertEqual(stat["domain_stats"][0]["resolve_attempts"], 2)
 
+    def test_negative_dns_answers_do_not_block_other_domains_or_retry(self):
+        for code, status in ((socket.EAI_NONAME, "not_found"),
+                             (getattr(socket, "EAI_NODATA", socket.EAI_NONAME),
+                              "no_ipv4" if hasattr(socket, "EAI_NODATA") else "not_found")):
+            with self.subTest(code=code), patch.object(dns_resolver, "resolve_ipv4", side_effect=[
+                socket.gaierror(code, "private resolver message"), ["8.8.8.8"]
+            ]) as resolve:
+                routes, stat = self.provider("empty.example", "working.example")
+            self.assertEqual(resolve.call_count, 2)
+            self.assertIsNone(stat["error"])
+            self.assertEqual(routes, {ipaddress.ip_network("8.8.8.8/32")})
+            empty = stat["domain_stats"][0]
+            self.assertEqual(empty["resolve_status"], status)
+            self.assertEqual(empty["resolve_error_code"], code)
+            self.assertEqual(empty["resolve_attempts"], 1)
+            self.assertIsNone(empty["warning"])
+            self.assertIn("префикс не добавлен", empty["note"])
+            self.assertNotIn("private", str(empty))
+
+    def test_real_resolver_failures_still_block_incomplete_collection(self):
+        for error in (socket.gaierror(socket.EAI_AGAIN, "temporary"),
+                      socket.gaierror(socket.EAI_FAIL, "failure"), OSError("worker failed")):
+            with self.subTest(error=type(error).__name__), patch.object(dns_resolver, "resolve_ipv4", side_effect=error):
+                routes, stat = self.provider("failed.example")
+            self.assertFalse(routes)
+            self.assertIsNotNone(stat["error"])
+
     def test_late_success_is_not_accepted_after_deadline(self):
         def late(domain, timeout):
             self.clock.value += timeout + 1

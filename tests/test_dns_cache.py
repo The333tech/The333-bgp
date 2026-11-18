@@ -49,6 +49,16 @@ class DnsCacheTests(unittest.TestCase):
         self.assertEqual(stat["resolve_status"], "not_found")
         self.assertEqual(self.resolve(61, error=error)[0], set())
 
+    @unittest.skipUnless(hasattr(socket, "EAI_NODATA"), "system has no distinct no-address code")
+    def test_no_ipv4_preserves_only_bounded_grace_without_renewing_success(self):
+        self.resolve(0, ["8.8.8.8"])
+        error = socket.gaierror(socket.EAI_NODATA, "no address")
+        routes, stat = self.resolve(30, error=error)
+        self.assertEqual(routes, {"8.8.8.8/32"})
+        self.assertEqual(stat["resolve_status"], "no_ipv4")
+        self.assertEqual(stat["last_success_at"], datetime.fromtimestamp(self.epoch, timezone.utc).isoformat())
+        self.assertEqual(self.resolve(61, error=error)[0], set())
+
     def test_failure_without_cache_does_not_invent_routes(self):
         routes, stat = self.resolve(0, error=socket.gaierror(socket.EAI_AGAIN, "temporary"))
         self.assertFalse(routes)

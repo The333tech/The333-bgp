@@ -32,6 +32,8 @@ export type ServiceProvider = {
     warning?: string | null;
     error?: string | null;
     resolve_status?: string;
+    resolve_error_code?: number | null;
+    note?: string | null;
     resolve_errors?: string[];
     cache_hit?: boolean;
     stale_ips?: string[];

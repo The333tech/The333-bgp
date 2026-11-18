@@ -1,6 +1,6 @@
 # Установка The333-BGP
 
-Версия: **v0.94.2b (beta)**
+Версия: **v0.94.3b (beta)**
 
 ## 1. Что делает The333-BGP
 
@@ -423,6 +423,8 @@ the333-bgp-updater.service active
 Справка MikroTik: [Route Selection and Filters](https://help.mikrotik.com/docs/spaces/ROS/pages/74678285/Route%20Selection%20and%20Filters) и [`/routing/bgp`](https://help.mikrotik.com/docs/spaces/ROS/pages/331612228/routing%2Bbgp).
 
 ### Ограничения DNS-сбора модулей
+
+Отсутствие A-записи (`EAI_NODATA`) или имени (`EAI_NONAME`) не означает отказ resolver: такой домен не даёт нового IPv4-префикса, а причина видна в диагностике. Сохранённые адреса действуют только в пределах прежнего срока кеша. Тайм-ауты и временные ошибки без пригодного кеша по-прежнему блокируют применение неполного набора.
 
 Провайдеры `dns_domains` и DNS-часть `geosite_plain` используют системный resolver контейнера, включая `/etc/hosts`. Дополнительный DNS-сервис и публичный resolver не подключаются. В `.env` доступны:
 

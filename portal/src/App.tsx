@@ -28,6 +28,7 @@ import {
   ApiError,
   AuthState,
   apiFetch,
+  apiReadiness,
   clearAuth,
   login,
   logout,
@@ -81,6 +82,21 @@ type PortalData = {
   runtimeSettings: RuntimeSettingsResponse | null;
   jobs: JobsResponse | null;
 };
+
+function serviceState(data: PortalData): { label: string; tone: "ok" | "warn" } {
+  if (data.ready?.ready === true) return { label: "работает", tone: "ok" };
+  return { label: data.ready ? "требует внимания" : "нет данных", tone: "warn" };
+}
+
+function bgpAvailable(data: PortalData): boolean | undefined {
+  return data.ready?.gobgp_ready ?? data.diagnostics?.gobgp_ready;
+}
+
+function bgpLabel(data: PortalData): string {
+  if (data.ready?.publication?.mode === "paused") return "пауза";
+  const available = bgpAvailable(data);
+  return available === true ? "онлайн" : available === false ? "офлайн" : "нет данных";
+}
 
 type ServiceCatalogItem = {
   id: string;
@@ -515,19 +531,19 @@ const navItems: Array<{ id: ActivePage; title: string; icon: React.ReactNode }> 
   { id: "history", title: "История", icon: <IconHistory {...iconProps} /> }
 ];
 
-const PRODUCT_VERSION = "0.94.2b";
+const PRODUCT_VERSION = "0.94.3b";
 const UPDATE_VERSIONS = [
   {
-    id: "0.94.2b",
-    version: "0.94.2b",
-    title: "v0.94.2b",
+    id: "0.94.3b",
+    version: "0.94.3b",
+    title: "v0.94.3b",
     channel: "beta",
     status: "текущая версия",
     date: "ноябрь 2026",
     changelog: [
-      "Центр задач показывает ход расчёта и применения маршрутов без выдуманных процентов.",
-      "Экстренная пауза отключает все пиры GoBGP и сохраняет список для возобновления.",
-      "DNS-запросы и сбор модулей ограничены по времени. Неполный результат без пригодного кеша не заменяет рабочие маршруты."
+      "Готовность сервиса, доступность GoBGP и состояние отдельных API показываются независимо.",
+      "Отсутствие IPv4-записи у домена не блокирует DNS-сбор остальных модулей.",
+      "Тайм-ауты и реальные сбои DNS по-прежнему сохраняют последний рабочий набор маршрутов."
     ]
   }
 ];
@@ -2213,13 +2229,7 @@ function routeValue(value: number | null | undefined): string | number {
   return typeof value === "number" ? value : "—";
 }
 
-function Dashboard({
-  data,
-  actionText
-}: {
-  data: PortalData;
-  actionText: string | null;
-}) {
+function Dashboard({ data }: { data: PortalData }) {
   const ready = data.ready;
   const diagnostics = data.diagnostics as DashboardDiagnostics | null;
   const latestEvent = data.history?.history.slice(-1)[0] ?? null;
@@ -2272,8 +2282,10 @@ function Dashboard({
   const totalModuleCount = services
     ? serviceCatalog.length || servicesCache?.services_count
     : serviceRoutes?.services_count ?? (serviceStats.length || "—");
-  const backendOk = ready?.ready === true && (ready?.publication?.mode === "paused" || ready?.unconfigured === true || ready?.status_ok !== false);
-  const healthOk = backendOk && ready?.gobgp_ready === true && !routeMismatch;
+  const backendOk = ready !== null || diagnostics?.ok === true;
+  const bgpReady = bgpAvailable(data);
+  const ribKnown = typeof publishedCount === "number" && typeof ribCount === "number";
+  const healthOk = ready?.ready === true && !routeMismatch;
   const lastUpdateOk = latestEvent ? latestEvent.ok : lastStatus?.ok;
   const disk = data.serverResources?.disk;
   const diskTone: DashboardStatusItem["tone"] =
@@ -2285,13 +2297,11 @@ function Dashboard({
         ? ready?.unconfigured
           ? "готов к первичной настройке"
           : "отвечает штатно"
-        : "не отвечает или не прошёл ready-check",
-      tone: backendOk ? "ok" : "bad",
+        : "нет актуального ответа API",
+      tone: backendOk ? "ok" : "warn",
       help: backendOk ? undefined : `Backend API:
 Источник данных: /backend/ready
-ready=${String(ready?.ready ?? "нет данных")}
-status_ok=${String(ready?.status_ok ?? "нет данных")}
-errors=${(ready?.errors ?? []).length > 0 ? (ready?.errors ?? []).join("; ") : "нет данных"}
+Не получен актуальный ответ проверки готовности или диагностики.
 
 Что проверить:
 1. Контейнер the333-bgp-backend.
@@ -2300,9 +2310,9 @@ errors=${(ready?.errors ?? []).length > 0 ? (ready?.errors ?? []).join("; ") : "
     },
     {
       label: "BGP",
-      detail: ready?.publication?.mode === "paused" ? "публикация остановлена" : ready?.gobgp_ready ? "GoBGP доступен" : "GoBGP недоступен",
-      tone: ready?.publication?.mode === "paused" ? "warn" : ready?.gobgp_ready ? "ok" : "bad",
-      help: ready?.gobgp_ready ? undefined : `BGP:
+      detail: ready?.publication?.mode === "paused" ? "публикация остановлена" : bgpReady === true ? "GoBGP доступен" : bgpReady === false ? "GoBGP недоступен" : "нет данных GoBGP",
+      tone: ready?.publication?.mode === "paused" ? "warn" : statusClass(bgpReady),
+      help: bgpReady === true ? undefined : `BGP:
 Источник данных: /backend/ready
 gobgp_ready=${String(ready?.gobgp_ready ?? "нет данных")}
 
@@ -2313,8 +2323,8 @@ gobgp_ready=${String(ready?.gobgp_ready ?? "нет данных")}
     },
     {
       label: "RIB и опубликованные",
-      detail: ready?.publication?.mode === "paused" ? "публикация приостановлена" : routeMismatch ? `${routeValue(publishedCount)} / ${routeValue(ribCount)}` : "количество маршрутов совпадает",
-      tone: ready?.publication?.mode === "paused" ? "warn" : routeMismatch ? "bad" : "ok",
+      detail: ready?.publication?.mode === "paused" ? "публикация приостановлена" : !ribKnown ? "недостаточно данных для сверки" : routeMismatch ? `${routeValue(publishedCount)} / ${routeValue(ribCount)}` : "количество маршрутов совпадает",
+      tone: ready?.publication?.mode === "paused" || !ribKnown ? "warn" : routeMismatch ? "bad" : "ok",
       help: routeMismatch ? `RIB и опубликованные маршруты:
 Источник данных: /backend/ready
 advertised_count=${routeValue(publishedCount)}
@@ -2330,8 +2340,8 @@ rib_count=${routeValue(ribCount)}
     },
     {
       label: "Последнее обновление",
-      detail: lastUpdateOk === false ? (latestEvent?.error ?? lastStatus?.error ?? "есть ошибка обновления") : "последний запуск без ошибки",
-      tone: lastUpdateOk === false ? "bad" : "ok",
+      detail: lastUpdateOk === false ? (latestEvent?.error ?? lastStatus?.error ?? "есть ошибка обновления") : lastUpdateOk === true ? "последний запуск без ошибки" : "нет данных о последнем запуске",
+      tone: statusClass(lastUpdateOk),
       help: lastUpdateOk === false ? `Последнее обновление:
 Источник данных: update_history.jsonl / status.json
 trigger=${latestEvent?.trigger ?? "нет данных"}
@@ -2390,7 +2400,12 @@ ${disk?.update_budget_mode === "adaptive" ? "Точный объём прове�
 3. Свободное место перед обновлением.`
     }
   ];
-  const readyErrors = ready?.errors ?? [];
+  const readyMessages: Record<string, string> = {
+    "last status is not ok": "Последний сбор маршрутов завершился ошибкой.",
+    "gobgp API is not ready": "GoBGP не отвечает на проверку готовности.",
+    "publication pause is not confirmed by GoBGP": "Остановка публикации не подтверждена GoBGP."
+  };
+  const readyErrors = (ready?.errors ?? []).map((error) => readyMessages[error] ?? error);
   const routeFreshness = diagnostics?.route_freshness;
 
   if (routeFreshness?.status === "stale") {
@@ -2481,20 +2496,20 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
   const heroFactItems: Array<{ key: string; tone: "ok" | "warn" | "bad"; text: string; help?: string }> = [
     {
       key: "backend",
-      tone: backendOk ? "ok" : "bad",
-      text: `Backend: ${backendOk ? "работает" : "ошибка"}`,
+      tone: backendOk ? "ok" : "warn",
+      text: `Backend: ${backendOk ? "работает" : "нет данных"}`,
       help: backendOk ? undefined : backendStatusHelp
     },
     {
       key: "bgp",
-      tone: ready?.gobgp_ready ? "ok" : "bad",
-      text: `BGP: ${ready?.gobgp_ready ? "онлайн" : "офлайн"}`,
-      help: ready?.gobgp_ready ? undefined : bgpStatusHelp
+      tone: ready?.publication?.mode === "paused" ? "warn" : statusClass(bgpReady),
+      text: `BGP: ${bgpLabel(data)}`,
+      help: bgpReady === true ? undefined : bgpStatusHelp
     },
     {
       key: "rib",
-      tone: routeMismatch ? "bad" : "ok",
-      text: `RIB: ${routeMismatch ? "расхождение" : "синхронно"}`,
+      tone: !ribKnown || ready?.publication?.mode === "paused" ? "warn" : routeMismatch ? "bad" : "ok",
+      text: `RIB: ${!ribKnown ? "нет данных" : ready?.publication?.mode === "paused" ? "пауза" : routeMismatch ? "расхождение" : "синхронно"}`,
       help: routeMismatch ? ribStatusHelp : undefined
     },
     {
@@ -2534,7 +2549,6 @@ ${attentionStatusItems.map((item) => `- ${item.label}: ${item.detail}`).join("\n
         </div>
       </section>
 
-      {actionText && <div className="action-status-box ops-action-status">{actionText}</div>}
 
       <div className="ops-metrics-grid">
         <MetricCard
@@ -4306,9 +4320,9 @@ function DiagnosticsPage({ data, auth }: { data: PortalData; auth: AuthState | n
       <div className="compact-summary-grid">
         <MetricCard
           label="GoBGP"
-          value={data.diagnostics?.gobgp_ready ? "Онлайн" : "Офлайн"}
+          value={bgpLabel(data)}
           note="Состояние Backend API"
-          tone={data.diagnostics?.gobgp_ready ? "ok" : "bad"}
+          tone={data.ready?.publication?.mode === "paused" ? "warn" : statusClass(bgpAvailable(data))}
         />
         <MetricCard
           label="Маршрутов в RIB"
@@ -4889,7 +4903,7 @@ function providerIssueText(provider: ServiceProvider): string {
   }
 
   const domainIssues = provider.domain_stats?.filter((domain) =>
-    Boolean(domain.warning) || Boolean(domain.error) || Boolean(domain.resolve_errors?.length)
+    Boolean(domain.warning) || Boolean(domain.error) || Boolean(domain.note) || Boolean(domain.resolve_errors?.length)
   ) ?? [];
 
   if (domainIssues.length > 0) {
@@ -4898,6 +4912,7 @@ function providerIssueText(provider: ServiceProvider): string {
       const reason =
         domain.error ??
         domain.warning ??
+        domain.note ??
         domain.resolve_errors?.[0] ??
         "есть предупреждение";
       lines.push(`${index + 1}. ${domain.domain ?? "домен"}: ${reason}`);
@@ -7495,14 +7510,14 @@ function AppShell({
           <div className="sidebar-runtime-grid">
             <div>
               <span>Сервис</span>
-              <strong className={statusClass(data.ready?.ready)}>
-                {data.ready?.ready ? "работает" : "недоступен"}
+              <strong className={serviceState(data).tone}>
+                {serviceState(data).label}
               </strong>
             </div>
             <div>
               <span>BGP</span>
-              <strong className={data.ready?.publication?.mode === "paused" ? "warn" : statusClass(data.ready?.gobgp_ready)}>
-                {data.ready?.publication?.mode === "paused" ? "пауза" : data.ready?.gobgp_ready ? "онлайн" : "офлайн"}
+              <strong className={data.ready?.publication?.mode === "paused" ? "warn" : statusClass(bgpAvailable(data))}>
+                {bgpLabel(data)}
               </strong>
             </div>
             <div>
@@ -7616,11 +7631,11 @@ function AppShell({
         <div className="mobile-status-strip">
           <div>
             <span>Сервис</span>
-            <strong className={statusClass(data.ready?.ready)}>{data.ready?.ready ? "работает" : "недоступен"}</strong>
+            <strong className={serviceState(data).tone}>{serviceState(data).label}</strong>
           </div>
           <div>
             <span>BGP</span>
-            <strong className={data.ready?.publication?.mode === "paused" ? "warn" : statusClass(data.ready?.gobgp_ready)}>{data.ready?.publication?.mode === "paused" ? "пауза" : data.ready?.gobgp_ready ? "онлайн" : "офлайн"}</strong>
+            <strong className={data.ready?.publication?.mode === "paused" ? "warn" : statusClass(bgpAvailable(data))}>{bgpLabel(data)}</strong>
           </div>
           <div>
             <span>Маршруты</span>
@@ -7707,7 +7722,8 @@ export default function App() {
     jobs: null
   });
   const [loginError, setLoginError] = useState<string | null>(null);
-  const [actionText, setActionText] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
   const [timeZone, setTimeZoneState] = useState(() => getStoredPortalTimeZone());
   const [timeSettingsOpen, setTimeSettingsOpen] = useState(false);
   const [routeAutoUpdateOpen, setRouteAutoUpdateOpen] = useState(false);
@@ -7736,44 +7752,40 @@ export default function App() {
   const loadData = useCallback(async () => {
     if (!auth || updateLocked.current) return;
 
-    try {
-      const [ready, diagnostics, sources, history, services, serverResources, runtimeSettings, jobs] = await Promise.all([
-        apiFetch<ReadyResponse>("/ready", auth),
-        apiFetch<DiagnosticsResponse>("/api/diagnostics", auth),
-        apiFetch<SourcesResponse>("/api/sources", auth),
-        apiFetch<UpdateHistoryResponse>("/api/update-history", auth),
-        apiFetch<ServicesResponse>("/api/services", auth),
-        apiFetch<ServerResourcesResponse>("/api/server-resources", auth),
-        apiFetch<RuntimeSettingsResponse>("/api/runtime-settings", auth),
-        apiFetch<JobsResponse>("/api/jobs?limit=30", auth)
-      ]);
-
-      setData({ ready, diagnostics, sources, history, services, serverResources, runtimeSettings, jobs });
-      setLoginError(null);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        if (updateLocked.current) return;
-        setLoginError("Неверный пароль или доступ временно ограничен.");
-        clearAuth();
-        setAuth(null);
-        return;
-      }
-
-      if (error instanceof ApiError && error.status === 429) {
-        setLoginError("Слишком много попыток входа. Подожди несколько минут и попробуй снова.");
-        clearAuth();
-        setAuth(null);
-        return;
-      }
-
-      setActionText(error instanceof Error ? error.message : String(error));
+    const generation = ++loadGeneration.current;
+    const options = { signal: AbortSignal.timeout(15_000) };
+    const results = await Promise.allSettled([
+      apiReadiness(auth, options),
+      apiFetch<DiagnosticsResponse>("/api/diagnostics", auth, options),
+      apiFetch<SourcesResponse>("/api/sources", auth, options),
+      apiFetch<UpdateHistoryResponse>("/api/update-history", auth, options),
+      apiFetch<ServicesResponse>("/api/services", auth, options),
+      apiFetch<ServerResourcesResponse>("/api/server-resources", auth, options),
+      apiFetch<RuntimeSettingsResponse>("/api/runtime-settings", auth, options),
+      apiFetch<JobsResponse>("/api/jobs?limit=30", auth, options)
+    ]);
+    if (generation !== loadGeneration.current || updateLocked.current) return;
+    if (results.some((result) => result.status === "rejected" && result.reason instanceof ApiError && result.reason.status === 401)) {
+      setLoginError("Сессия завершена. Войди в портал снова.");
+      clearAuth();
+      setAuth(null);
+      return;
     }
+    const value = <T,>(result: PromiseSettledResult<T>): T | null => result.status === "fulfilled" ? result.value : null;
+    const [ready, diagnostics, sources, history, services, serverResources, runtimeSettings, jobs] = results;
+    setData({ ready: value(ready), diagnostics: value(diagnostics), sources: value(sources),
+      history: value(history), services: value(services), serverResources: value(serverResources),
+      runtimeSettings: value(runtimeSettings), jobs: value(jobs) });
+    const labels = ["готовность", "диагностика", "источники", "история", "модули", "ресурсы VM", "расписания", "задачи"];
+    const failures = results.flatMap((result, index) => result.status === "rejected" ? [labels[index]] : []);
+    setLoadError(failures.length ? `Не удалось получить данные: ${failures.join(", ")}. Проверка повторится автоматически.` : null);
+    setLoginError(null);
   }, [auth]);
 
   useEffect(() => {
     void loadData();
     const timer = window.setInterval(() => void loadData(), 30000);
-    return () => window.clearInterval(timer);
+    return () => { window.clearInterval(timer); loadGeneration.current += 1; };
   }, [loadData]);
 
   useEffect(() => {
@@ -7907,10 +7919,7 @@ export default function App() {
   const page = useMemo(() => {
     if (activePage === "dashboard") {
       return (
-        <Dashboard
-          data={data}
-          actionText={actionText}
-        />
+        <Dashboard data={data} />
       );
     }
 
@@ -7948,7 +7957,7 @@ export default function App() {
     }
 
     return null;
-  }, [activePage, actionText, auth, data, loadData, productUpdate.start,
+  }, [activePage, auth, data, loadData, productUpdate.start,
     availableUpdates.updates, availableUpdates.checking, availableUpdates.error, availableUpdates.refresh]);
 
   if (!authReady) {
@@ -7978,6 +7987,7 @@ export default function App() {
         onOpenBackup={() => setBackupModalOpen(true)}
         onLogout={onLogout}
       >
+        {loadError && <div className="action-status-box ops-action-status" role="alert">{loadError}</div>}
         {page}
       </AppShell>
 
